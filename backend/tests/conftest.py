@@ -1,0 +1,74 @@
+"""Testes usam um Postgres de TESTE (TEST_DATABASE_URL). O banco é recriado do zero a cada sessão."""
+import os
+
+import pytest
+
+TEST_URL = os.environ.get("TEST_DATABASE_URL")
+if not TEST_URL:
+    pytest.exit("Defina TEST_DATABASE_URL (Postgres de teste, nunca produção).", returncode=2)
+os.environ["DATABASE_URL"] = TEST_URL
+os.environ.setdefault("JWT_SECRET", "segredo-de-teste-somente-pytest")
+os.environ.setdefault("APP_ENV", "test")
+
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+
+BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SENHA = "Senha-de-teste-123"
+
+
+def alembic_cfg() -> Config:
+    cfg = Config(os.path.join(BACKEND, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(BACKEND, "alembic"))
+    cfg.set_main_option("sqlalchemy.url", TEST_URL)
+    return cfg
+
+
+def zera_banco() -> None:
+    eng = create_engine(TEST_URL)
+    with eng.begin() as c:
+        for s in ("bronze", "silver", "gold", "controle"):
+            c.execute(text(f"DROP SCHEMA IF EXISTS {s} CASCADE"))
+    eng.dispose()
+
+
+@pytest.fixture(scope="session")
+def banco():
+    zera_banco()
+    command.upgrade(alembic_cfg(), "head")
+    yield TEST_URL
+
+
+@pytest.fixture(scope="session")
+def client(banco):
+    from app.core.db import SessionLocal
+    from app.core.security import hash_senha
+    from app.main import app
+    from app.models.controle import Usuario
+    db = SessionLocal()
+    for perfil in ("admin", "admin_lgpd", "operador", "leitura"):
+        db.add(Usuario(email=f"{perfil}@aion.local", nome=f"Teste {perfil}", perfil=perfil, senha_hash=hash_senha(SENHA)))
+    db.commit()
+    db.close()
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture(scope="session")
+def tokens(client):
+    out = {}
+    for perfil in ("admin", "admin_lgpd", "operador", "leitura"):
+        r = client.post("/api/auth/login", json={"usuario": f"{perfil}@aion.local", "senha": SENHA})
+        assert r.status_code == 200, r.text
+        out[perfil] = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    return out
+
+
+@pytest.fixture
+def db(banco):
+    from app.core.db import SessionLocal
+    s = SessionLocal()
+    yield s
+    s.close()

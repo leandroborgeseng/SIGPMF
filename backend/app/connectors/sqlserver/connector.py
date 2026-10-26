@@ -1,0 +1,97 @@
+"""Conector SQL Server SOMENTE LEITURA.
+
+Só monta e executa SELECT; tudo passa por `app.core.sql_guard.garante_somente_leitura`.
+O teste tests/test_conector_somente_leitura.py varre este pacote e falha se surgir comando de escrita.
+Nesta entrega não há conexão com origem real.
+"""
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from app.core.config import Settings
+from app.core.sql_guard import garante_somente_leitura
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+def _ident(nome: str) -> str:
+    partes = nome.split(".")
+    if not 1 <= len(partes) <= 2 or not all(_IDENT.match(p) for p in partes):
+        raise ValueError(f"Identificador inválido: {nome!r}")
+    return ".".join(f"[{p}]" for p in partes)
+
+
+@dataclass
+class ConfigSqlServer:
+    host: str | None
+    port: int
+    database: str | None
+    user: str | None
+    password: str | None
+    timeout: int
+    amostra_limite: int
+
+    @classmethod
+    def do_ambiente(cls, s: Settings) -> "ConfigSqlServer":
+        return cls(s.sqlserver_host, s.sqlserver_port, s.sqlserver_database, s.sqlserver_user,
+                   s.sqlserver_password, s.sqlserver_timeout, s.amostra_limite)
+
+    def resumo_publico(self) -> dict[str, Any]:
+        """Sem senha nem usuário."""
+        return {"host": self.host, "port": self.port, "database": self.database,
+                "configurado": bool(self.host and self.database and self.user),
+                "amostra_limite": self.amostra_limite}
+
+
+class SqlServerConnector:
+    def __init__(self, config: ConfigSqlServer, nome: str | None = None):
+        self.config = config
+        self.nome = nome
+
+    def montar_select(self, tabela: str, colunas: list[str] | None = None, campo_incremental: str | None = None,
+                      limite: int | None = None) -> str:
+        n = min(limite or self.config.amostra_limite, self.config.amostra_limite)
+        cols = ", ".join(_ident(c) for c in colunas) if colunas else "*"
+        sql = f"SELECT TOP ({int(n)}) {cols} FROM {_ident(tabela)}"
+        if campo_incremental:
+            sql += f" WHERE {_ident(campo_incremental)} > %s ORDER BY {_ident(campo_incremental)}"
+        return garante_somente_leitura(sql)
+
+    def _conectar(self):
+        import pymssql  # import tardio: o driver só é necessário com origem real
+        c = self.config
+        return pymssql.connect(server=c.host, port=c.port, user=c.user, password=c.password,
+                               database=c.database, login_timeout=c.timeout, timeout=c.timeout,
+                               read_only=True)
+
+    def testar_conexao(self) -> dict[str, Any]:
+        if not self.config.resumo_publico()["configurado"]:
+            return {"ok": False, "erro": f"Falha ao conectar em {self.nome or 'a origem'}: origem não configurada no ambiente."}
+        try:
+            conn = self._conectar()
+            try:
+                cur = conn.cursor()
+                cur.execute(garante_somente_leitura("SELECT 1"))
+                cur.fetchone()
+            finally:
+                conn.close()
+            return {"ok": True, "erro": None}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "erro": self._erro_limpo(exc)}
+
+    def _erro_limpo(self, exc: Exception) -> str:
+        """Mensagem clara SEM senha, usuário, host nem string de conexão."""
+        nome = self.nome or "a origem"
+        if isinstance(exc, (TimeoutError, OSError)) or "timeout" in type(exc).__name__.lower():
+            return f"Falha ao conectar em {nome}: servidor não respondeu. Verifique a configuração do ambiente."
+        return f"Falha ao conectar em {nome}: servidor não respondeu ou recusou a conexão. Verifique a configuração do ambiente."
+
+    def ler_amostra(self, tabela: str, campo_incremental: str | None = None,
+                    desde: datetime | None = None) -> list[dict[str, Any]]:
+        sql = self.montar_select(tabela, campo_incremental=campo_incremental if desde else None)
+        conn = self._conectar()
+        try:
+            cur = conn.cursor(as_dict=True)
+            cur.execute(sql, (desde,) if desde else None)
+            return list(cur.fetchall())
+        finally:
+            conn.close()

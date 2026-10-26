@@ -1,0 +1,25 @@
+{
+  "seed": 20261025,
+  "amostra_100": {
+    "bronze_registros": 199,
+    "silver_cidadaos": 107,
+    "silver_identificadores": 101,
+    "silver_vinculos": 197,
+    "silver_enderecos": 197,
+    "silver_correlacoes_pendentes": 2,
+    "silver_inconsistencias": 3,
+    "gold_cidadao_sistemas": 107,
+    "lidos": 200
+  },
+  "completa": {
+    "bronze_registros": 768,
+    "silver_cidadaos": 512,
+    "silver_identificadores": 506,
+    "silver_vinculos": 766,
+    "silver_enderecos": 766,
+    "silver_correlacoes_pendentes": 2,
+    "silver_inconsistencias": 3,
+    "gold_cidadao_sistemas": 512,
+    "lidos": 769
+  }
+}
