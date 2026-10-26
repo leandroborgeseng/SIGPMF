@@ -69,7 +69,8 @@ def test_m3_juridica_em_bronze_e_silver_sem_cidadao(client, db):
                                   "Renda", "RendaFamiliar", "renda_per_capita", "CTPS", "Título_Eleitor", "Reservista",
                                   "CNH", "Raça", "Cor", "Secret_Key", "Deficiência", "secret",
                                   "client_secret", "ClientSecret", "pwd", "user_pwd", "UserPwd", "renda",
-                                  "renda_familiar", "RENDA-MENSAL"])
+                                  "renda_familiar", "RENDA-MENSAL", "secretkey", "SECRETKEY_V2",
+                                  "oauthclientsecret", "Xapisecret", "userpwd", "olduserpwdhash", "CampoSecretKey"])
 def test_r2_detecta_variantes(nome):
     assert coluna_proibida(nome)
 

@@ -16,7 +16,7 @@ class TabelaRecusada(ValueError):
 # (a) trecho sensível em qualquer posição (prefixo/sufixo: Senha_Web, UserPassword, api_token...) e
 # (b) tokens curtos só como palavra inteira (CID, CID10, Cod_CID, Cor, Renda, Secret, Pwd...), para não pegar
 #     Cidade/Cidadao/Corpo/Secretaria.
-_TRECHOS_PROIBIDOS = ("senha", "password", "passwd", "token", "segredo", "hash_senha", "ctps",
+_TRECHOS_PROIBIDOS = ("senha", "password", "passwd", "token", "segredo", "secretkey", "clientsecret", "apisecret", "userpwd", "hash_senha", "ctps",
                       "titulo_eleitor", "tituloeleitor", "reservista", "cnh", "salario", "deficien",
                       "religi", "etnia", "biometri", "remember")
 _TOKENS_PROIBIDOS = re.compile(r"^(?:cid\d*|cor|raca|pin|titulo|cnh|renda|secret|secrets|pwd)$")
