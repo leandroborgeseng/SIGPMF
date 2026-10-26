@@ -14,7 +14,7 @@ from app.models.controle import Execucao, Log, Sistema, TabelaCatalogo
 from app.silver import processamento
 
 # Carga sintética (demo/OrigemMock) só com APP_ENV exatamente "dev" ou "test" (alinhado ao #7).
-# "development", vazio, ausente (padrão do código), prod etc. -> bloqueada.
+# "development", vazio, ausente (padrão do código = "prod"), prod etc. -> bloqueada.
 AMBIENTES_SINTETICOS = frozenset({"dev", "test"})
 
 

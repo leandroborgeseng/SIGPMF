@@ -200,3 +200,9 @@ def test_listagem_mostra_banco_sem_credencial(client, tokens, leitor):
     saude = next(c for c in r.json()["conectores"] if c.get("conector_id") == "saude")
     assert saude["banco_origem"] == "Saude" and saude["banco_origem_fallback"] is False
     assert HOST not in r.text and USER not in r.text and PWD not in r.text
+
+
+def test_padrao_do_app_env_e_prod(monkeypatch):
+    from app.core.config import Settings
+    monkeypatch.delenv("APP_ENV", raising=False)
+    assert Settings(_env_file=None).app_env == "prod"
