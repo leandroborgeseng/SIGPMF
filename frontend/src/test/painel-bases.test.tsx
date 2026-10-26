@@ -73,13 +73,17 @@ describe('painel de bases', () => {
     expect(screen.queryByRole('heading', { name: /^Saude/ })).toBeNull()
   })
 
-  it('perda em destaque (UX-C5, PB10)', async () => {
+  it('perda só bronze→prata; ouro rotulado cidadãos únicos (UX-C5, PB10, PB5 v2)', async () => {
     expect(perda(1200, 1080)).toBe(10)
     expect(perda(100, 100)).toBeNull()
     mock(() => [200, RESP])
     montar('leitura')
     expect(within(await cartao('Saude')).getByText(/−10% na prata/)).toBeInTheDocument()
-    expect(within(await cartao('Cemiterio')).getByText(/−17% no ouro/)).toBeInTheDocument()
+    const cem = await cartao('Cemiterio') // prata 300 → ouro 250: não é perda (ouro = cidadãos únicos)
+    expect(within(cem).queryByText(/%/)).toBeNull()
+    expect(within(cem).queryByText(/no ouro/)).toBeNull()
+    expect(within(cem).getByText('(cidadãos únicos)')).toBeInTheDocument()
+    expect(screen.getByText('Ouro (cidadãos únicos)')).toBeInTheDocument()
   })
 
   it('admin: amostra dispara, completa travada sem amostra, reprocessar pede confirmação (UX-C6..C8)', async () => {

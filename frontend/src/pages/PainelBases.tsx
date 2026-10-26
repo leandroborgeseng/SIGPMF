@@ -83,7 +83,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
             <ul className="totais" aria-label="Totais por camada das bases visíveis">
               <li className="cartao"><span className="cartao-rotulo">Bronze</span> <span className="cartao-valor">{milhar(tot.bronze)}</span></li>
               <li className="cartao"><span className="cartao-rotulo">Prata</span> <span className="cartao-valor">{milhar(tot.prata)}</span></li>
-              <li className="cartao"><span className="cartao-rotulo">Ouro</span> <span className="cartao-valor">{milhar(tot.ouro)}</span></li>
+              <li className="cartao"><span className="cartao-rotulo">Ouro (cidadãos únicos)</span> <span className="cartao-valor">{milhar(tot.ouro)}</span></li>
             </ul>
             <p>Última carga: {ultima ? dataHoraBR(ultima) : 'Nunca carregado'}</p>
             <div className="filtros" role="group" aria-label="Filtrar bases">
@@ -119,7 +119,6 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
-  const pOuro = b.tem_conector ? perda(c.prata, c.ouro) : null
   const ocupado = rodando !== null || !habilitada
   const u = b.ultima_carga
   return (
@@ -134,11 +133,11 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
       <dl className="camadas">
         <div><dt>Bronze</dt><dd>{n(c.bronze)}</dd></div>
         <div><dt>Prata</dt><dd>{n(c.prata)}</dd></div>
-        <div><dt>Ouro</dt><dd>{n(c.ouro)}</dd></div>
+        <div><dt>Ouro <span className="sutil">(cidadãos únicos)</span></dt><dd>{n(c.ouro)}</dd></div>
       </dl>
-      {(pPrata !== null || pOuro !== null) && (
-        <p className="perda" title="Diferença entre camadas: descartes, duplicatas e pendências de correspondência">
-          {pPrata !== null && <>−{pPrata}% na prata </>}{pOuro !== null && <>−{pOuro}% no ouro</>}
+      {pPrata !== null && (
+        <p className="perda" title="Diferença bronze → prata: descartes, duplicatas e pendências de correspondência">
+          −{pPrata}% na prata
           <span className="sr-only"> (descartes, duplicatas e pendências de correspondência)</span>
         </p>
       )}

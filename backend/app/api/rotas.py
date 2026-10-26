@@ -188,7 +188,7 @@ def carga_habilitada() -> bool:
 
 
 @api.post("/conectores/{base_id:int}/executar")
-def executa_base(base_id: int, req: Request, dados: ExecutarBaseIn | None = None, u: Usuario = Depends(ADMIN),
+def executa_base(base_id: int, req: Request, dados: ExecutarBaseIn | None = None, u: Usuario = Depends(usuario_atual),
                  db: Session = Depends(get_db)):
     """Puxar e processar uma base do catálogo (só admin, sempre auditado).
     amostra: limite AMOSTRA_LIMITE; completa: só depois de uma amostra bem-sucedida; reprocessar: refaz prata/ouro
@@ -196,6 +196,10 @@ def executa_base(base_id: int, req: Request, dados: ExecutarBaseIn | None = None
     if not carga_habilitada():  # carga real em preparação: rota inexistente fora de dev/test
         _404()
     modo = dados.modo if dados else "amostra"
+    if u.perfil != "admin":  # 403 de perfil também fica auditado
+        audita(db, u.email, "executar_conector_negado", f"base_id:{base_id}", {"modo": modo, "motivo": "perfil",
+                                                                              "perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
     b = db.get(BaseCatalogo, base_id) or _404()
     motivo = bloqueio(b)
     if motivo is not None:

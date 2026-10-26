@@ -76,6 +76,12 @@ def test_contagens_batem_com_count(carregado):
     assert carregado["Saude"]["contagens"]["prata"] > 0
 
 
+def test_ouro_conta_cidadaos_unicos(carregado):
+    c = carregado["Saude"]["contagens"]
+    linhas = _q("select count(*) from gold.cidadao_dados where sistema='SAUDE'")[0][0]
+    unicos = _q("select count(distinct cidadao_id) from gold.cidadao_dados where sistema='SAUDE'")[0][0]
+    assert c["ouro"] == unicos < linhas  # ouro = cidadãos únicos, não linhas de cidadao_dados
+
 def test_base_sem_conector_zera(carregado):
     for nome in ("ISS", "Senhas", "Bibliotecario"):
         assert carregado[nome]["contagens"] == {"bronze": 0, "prata": 0, "ouro": 0, "pendentes": 0}
@@ -165,3 +171,18 @@ def test_executar_funciona_em_dev(client, tokens, monkeypatch, env):
     r = client.post(f"/api/conectores/{_id(client, h, 'Saude')}/executar", headers=h)
     assert r.status_code == 200, r.text
     _limpa()
+
+
+def test_403_de_perfil_auditado(client, tokens):
+    sid = _id(client, tokens["admin"], "Saude")
+    n0 = _q("select count(*) from controle.execucoes")[0][0]
+    for p in ("admin_lgpd", "operador", "leitura"):
+        antes = _q("select count(*) from controle.auditoria where acao='executar_conector_negado' and usuario=:u",
+                   u=f"{p}@aion.local")[0][0]
+        assert client.post(f"/api/conectores/{sid}/executar", headers=tokens[p]).status_code == 403
+        rows = _q("select alvo, detalhe from controle.auditoria where acao='executar_conector_negado' and usuario=:u "
+                  "order by id", u=f"{p}@aion.local")
+        assert len(rows) == antes + 1
+        assert rows[-1][0] == f"base_id:{sid}" and rows[-1][1]["motivo"] == "perfil" and rows[-1][1]["perfil"] == p
+    assert _q("select count(*) from controle.execucoes")[0][0] == n0
+
