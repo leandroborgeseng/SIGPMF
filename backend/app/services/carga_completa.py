@@ -294,8 +294,7 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
     try:
         from app.services import trava as tv
         for velha in tv.em_andamento(db, sistema):  # temos a trava: ninguém roda; sobrou de um reinício
-            # completa -> 'pausada' (retomável do checkpoint, como antes); amostra -> 'interrompida'. Auditado.
-            tv.interromper(db, velha, usuario, "sem processo vivo (trava livre)", automatico=True)
+            _interrompe_orfa(db, velha, usuario, "sem processo vivo (trava livre)")
         ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
                       etapa="prata" if somente_camadas else "leitura", atualizado_em=datetime.now(UTC))
         if somente_camadas:  # leitura já concluída: total/contagens vêm da bronze, a origem não é lida

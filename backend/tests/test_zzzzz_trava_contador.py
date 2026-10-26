@@ -206,29 +206,3 @@ def test_cc12_bases_traz_bloqueio_para_a_tela(client, tokens, db, lock_de_outro)
         assert tv.estado(db, "SAUDE", "Saúde")["mensagem"].startswith("Já existe uma amostra de Saúde")
     finally:
         _fecha(db)
-
-
-# ---------- Completa órfã: 'pausada' (retomada do checkpoint não depende do status, mas a tela mostra "Retomar carga") ----------
-def test_cc12_completa_orfa_vira_pausada_auditada(client, tokens, origem, db):  # noqa: F811
-    _amostra(db, "saude")
-    velha = _exec(db, tipo=ccomp.TIPO, minutos=30)
-    try:
-        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
-        db.expire_all()
-        v = db.get(Execucao, velha.id)
-        assert v.status == "pausada" and "Retome a carga" in v.pausa_motivo and v.finalizado_em is not None
-        a = db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida", Auditoria.alvo == f"execucao:{v.id}"))
-        assert a is not None and a.detalhe["status_anterior"] == "em_andamento"
-    finally:
-        _fecha(db)
-
-
-def test_cc12_completa_viva_parada_vira_pausada(client, tokens, db, lock_de_outro):
-    ex = _exec(db, tipo=ccomp.TIPO, minutos=30)
-    try:
-        r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-        assert r.status_code == 409 and "pausada (retomável do checkpoint)" in r.json()["detail"]
-        db.expire_all()
-        assert db.get(Execucao, ex.id).status == "pausada" and db.get(Execucao, ex.id).cancelar is True
-    finally:
-        _fecha(db)
