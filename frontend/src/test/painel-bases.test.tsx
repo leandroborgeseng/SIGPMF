@@ -14,7 +14,7 @@ const ULT = { id: 9, tipo: 'carga_demo_amostra', status: 'sucesso', iniciado_em:
 const BASES = [
   base({ id: 1, nome: 'Saude', status: 'implementado', prioridade: 1, conector_id: 'saude', tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: false, contagens: { bronze: 1200, prata: 1080, ouro: 1080, pendentes: 7 }, ultima_carga: ULT }),
   base({ id: 2, nome: 'Cemiterio', status: 'implementado', prioridade: 2, tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: true, com_erro: true, contagens: { bronze: 300, prata: 300, ouro: 250, pendentes: 0 }, ultima_carga: { ...ULT, status: 'falha' } }),
-  base({ id: 3, nome: 'ISS', status: 'mapeado', prioridade: 3, motivo_bloqueio: 'Sem lista de colunas aprovada' }),
+  base({ id: 3, nome: 'CadastroUnico', status: 'mapeado', prioridade: 3, motivo_bloqueio: 'Sem lista de colunas aprovada' }),
   base({ id: 4, nome: 'Bibliotecario', status: 'triado', triagem: 'nome' }),
   base({ id: 5, nome: 'Senhas', status: 'excluido', grupo: 'descartavel', motivo_bloqueio: 'Base descartada na triagem' }),
 ]
@@ -45,7 +45,7 @@ describe('painel de bases', () => {
     expect(within(saude).getByText('Pronto')).toBeInTheDocument()
     expect(within(saude).getByText('1.200')).toBeInTheDocument()
     expect(within(saude).getByText(/7 sem correspondência/)).toBeInTheDocument()
-    const iss = await cartao('ISS')
+    const iss = await cartao('CadastroUnico')
     expect(within(iss).getByText('Mapeado')).toBeInTheDocument()
     expect(within(iss).getAllByText('—').length).toBe(3)
     expect(within(iss).getByText(/Pendências: —/)).toBeInTheDocument()
@@ -92,7 +92,7 @@ describe('painel de bases', () => {
     const saude = await cartao('Saude')
     expect(within(saude).getByRole('button', { name: 'Puxar carga completa de Saude' })).toBeDisabled()
     expect(within(saude).getByText(/Libera depois da conferência da amostra/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Puxar amostra de ISS' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Puxar amostra de CadastroUnico' })).toBeNull()
     await userEvent.click(within(saude).getByRole('button', { name: 'Puxar amostra de Saude' }))
     expect(await screen.findByText(/Puxar amostra de Saude concluída/)).toBeInTheDocument()
     const post = f.mock.calls.find(([, i]) => i?.method === 'POST')!

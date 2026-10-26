@@ -52,7 +52,7 @@ def linhas_iss():
 
 @pytest.fixture(scope="module", autouse=True)
 def _reaplica_0006(banco):
-    """Outros testes (#7) re-semeiam o catálogo (ISS volta a 'mapeado'); reaplica a 0006 como em produção."""
+    """Reaplica a 0006 (downgrade/upgrade) para exercitar a migração de dados antes dos testes de ISS."""
     from alembic import command
 
     from tests.conftest import alembic_cfg

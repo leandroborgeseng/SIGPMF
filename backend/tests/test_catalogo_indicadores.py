@@ -64,6 +64,15 @@ def test_seed_idempotente_sem_delete(db):
     assert _q("select count(*), max(id) from controle.bases_catalogo")[0] == antes
 
 
+def test_seed_nao_altera_linha_existente(db):
+    """Depois da 0006, semear de novo mantém o ISS implementado (seed só insere)."""
+    with db.get_bind().begin() as c:
+        c.exec_driver_sql("UPDATE controle.bases_catalogo SET descricao = 'editada' WHERE nome = 'Saude'")
+        semeia(c)
+    assert _q("select status, conjunto from controle.bases_catalogo where nome='ISS'")[0] == ("implementado", "iss")
+    assert _q("select descricao from controle.bases_catalogo where nome='Saude'")[0][0] == "editada"
+
+
 def test_contagens_batem_com_count(carregado):
     for nome, sis in (("Saude", "SAUDE"), ("Cemiterio", "CEMITERIO")):
         c = carregado[nome]["contagens"]
@@ -83,7 +92,7 @@ def test_ouro_conta_cidadaos_unicos(carregado):
     assert c["ouro"] == unicos < linhas  # ouro = cidadãos únicos, não linhas de cidadao_dados
 
 def test_base_sem_conector_zera(carregado):
-    for nome in ("ISS", "Senhas", "Bibliotecario"):
+    for nome in ("CadastroUnico", "Senhas", "Bibliotecario"):
         assert carregado[nome]["contagens"] == {"bronze": 0, "prata": 0, "ouro": 0, "pendentes": 0}
         assert carregado[nome]["ultima_carga"] is None
         assert carregado[nome]["tem_conector"] is False
@@ -108,7 +117,7 @@ def test_auth_e_perfis(client, tokens):
 def test_nao_implementado_409_excluido_422_inexistente_404(client, tokens):
     h = tokens["admin"]
     n0 = _q("select count(*) from controle.execucoes")[0][0]
-    assert client.post(f"/api/conectores/{_id(client, h, 'ISS')}/executar", headers=h).status_code == 409
+    assert client.post(f"/api/conectores/{_id(client, h, 'CadastroUnico')}/executar", headers=h).status_code == 409
     assert client.post(f"/api/conectores/{_id(client, h, 'Senhas')}/executar", headers=h).status_code == 422
     assert client.post("/api/conectores/999999/executar", headers=h).status_code == 404
     assert _q("select count(*) from controle.execucoes")[0][0] == n0
@@ -125,7 +134,7 @@ def test_totais_e_bloqueios(client, tokens, carregado):
         assert d["totais"][k] == sum(b["contagens"][k] for b in d["bases"])
     b = {x["nome"]: x for x in d["bases"]}
     assert b["Saude"]["pode_carregar"] and b["Saude"]["tem_amostra"] and not b["Saude"]["com_erro"]
-    assert b["ISS"]["motivo_bloqueio"] == "Sem lista de colunas aprovada"
+    assert b["CadastroUnico"]["motivo_bloqueio"] == "Sem lista de colunas aprovada"
     assert b["Senhas"]["motivo_bloqueio"] == "Base descartada na triagem"
     assert b["Bibliotecario"]["motivo_bloqueio"] == "Conector ainda não implementado"
 
