@@ -133,7 +133,8 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
             lidas = {}
             for t in tabelas:  # tudo lido antes de gravar
                 try:
-                    lidas[t] = [linha_json(r) for r in leitor.ler_amostra(t, politica=pol)]
+                    cols = pol.colunas_select(t)
+                    lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
                 except Exception as exc:  # noqa: BLE001
                     raise FalhaLeitura(t, exc) from exc
             if not any(lidas.values()):  # 0 linhas: nunca "sem_novidades"

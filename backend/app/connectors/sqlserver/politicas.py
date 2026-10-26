@@ -90,6 +90,8 @@ SAUDE = Politica(
 _CHAVE_SEP = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
 _OBITO = _CHAVE_SEP + ("FALECIDO", "PAI", "MAE", "SEXO", "NATURAL", "EST_CIVIL", "IDADE", "DT_MORTE", "DT_SEPULTADO",
                        "Data_Inclusao", "Data_Ultima_Alteracao")
+# Decisão do TL (#10): tabelas AAA_NAO_UTILIZADO_* fora de qualquer política (em prod faltavam colunas).
+# A lista fica só para referência/demo sintética; a política recusa todas.
 HISTORICAS_OBITO = ("AAA_NAO_UTILIZADO_OBITO01", "AAA_NAO_UTILIZADO_OBITO02",
                     "AAA_NAO_UTILIZADO_OBITO01_Sepulta_Anterior1982", "AAA_NAO_UTILIZADO_ObitosSAUDADE",
                     "AAA_NAO_UTILIZADO_ObitosSTOAGOSTINHO", "AAA_NAO_UTILIZADO_Obitos2018")
@@ -98,7 +100,6 @@ CEMITERIO = Politica(
     sistema="CEMITERIO", base="Cemiterio",
     colunas={
         "Obitos": _OBITO,
-        **{h: _OBITO for h in HISTORICAS_OBITO},
         "Titulares": ("Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia", "Titular", "CPF", "Endereco", "Ativo", "Inclusao"),
         "Pessoas_Autorizadas": ("Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia", "Nome", "CPF", "Parentesco", "Inclusao"),
         "Leilao": ("Cod_Cemiterio", "Quadra", "Sepultura", "DataVenda", "Nome", "CPF", "DataLiberacao"),
@@ -110,7 +111,7 @@ CEMITERIO = Politica(
         "Cemiterio": ("codcemite", "nome"),
     },
     apoio=frozenset({"AuxQuadra", "AuxSepultura", "Aux_Quadra", "Aux_EstCivil", "ALTERACAO"}),
-    recusar=(r"^Novo_Cemiterio", r"CONGELADO", r"VELHO", r"Antigo", r"^AAA_NAO_UTILIZADO_(?!OBITO0[12]$|OBITO01_Sepulta_Anterior1982$|Obitos(SAUDADE|STOAGOSTINHO|2018)$)",
+    recusar=(r"^Novo_Cemiterio", r"CONGELADO", r"VELHO", r"Antigo", r"^AAA_NAO_UTILIZADO",
              r"Senha", r"^USUARIO$", r"USUARIODNOVO", r"bak", r"teste"),
     proibidas=frozenset({"COR", "CAUSA_MORTIS", "CAUSA", "CODIGO_OMS", "ASS_MEDICA", "MEDICO_OBITO", "CRM_MEDICO",
                          "AAA_NAO_UTILIZADO_Senha", "Usuario_Sistema", "CodUsu", "RG", "Fone", "Email"}),

@@ -133,6 +133,7 @@ def gerar() -> dict[tuple[str, str], list[dict]]:
 ESPERADO = {
     "saude": {"bronze_registros": 13, "silver_cidadaos": 4, "silver_identificadores": 7, "silver_vinculos": 4,
               "silver_correlacoes_pendentes": 5, "silver_inconsistencias": 2, "tabelas_recusadas": 2},
-    "saude+cemiterio": {"bronze_registros": 22, "silver_cidadaos": 5, "silver_identificadores": 8, "silver_vinculos": 6,
-                        "silver_correlacoes_pendentes": 11, "silver_inconsistencias": 4, "tabelas_recusadas": 4},
+    # #10 (TL): históricas AAA_NAO_UTILIZADO_* fora da política -> 2 linhas a menos na bronze, sem o dedupe histórico
+    "saude+cemiterio": {"bronze_registros": 20, "silver_cidadaos": 5, "silver_identificadores": 8, "silver_vinculos": 6,
+                        "silver_correlacoes_pendentes": 10, "silver_inconsistencias": 3, "tabelas_recusadas": 4},
 }

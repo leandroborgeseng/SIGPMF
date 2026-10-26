@@ -51,7 +51,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
     try:
         if linhas is None:
             try:
-                linhas = [linha_json(r) for r in ler_origem(connector)]
+                linhas = [linha_json(r, ISS.colunas_select(TABELA)) for r in ler_origem(connector)]
             except Exception as exc:  # noqa: BLE001
                 raise FalhaLeitura(TABELA, exc) from exc
         if not linhas:  # 0 linhas lidas: nunca "sem_novidades"

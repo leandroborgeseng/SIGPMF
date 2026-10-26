@@ -5,6 +5,7 @@ SQL Server, a tabela sendo lida, o nome do objeto inexistente (207/208) e o últ
 (arquivo:linha em função).
 """
 import datetime as dt
+import hashlib
 import os
 import re
 import traceback
@@ -16,7 +17,10 @@ MSG_ORIGEM_VAZIA = "Nenhuma linha lida da origem. Verifique a conexão ou o banc
 _NOME = re.compile(r"Invalid (?:column|object) name '([A-Za-z0-9_.\[\]]{1,128})'")
 
 
-def valor_json(v):
+_VERSAO = re.compile(r"rowversion|timestamp|versao", re.IGNORECASE)
+
+
+def valor_json(v, coluna: str | None = None):
     """Tipos do pymssql -> JSON (JSONB da bronze): datetime/date/time -> ISO; Decimal -> int ou texto;
     bytes -> hex '0x..'; UUID -> texto."""
     if isinstance(v, (dt.datetime, dt.date, dt.time)):
@@ -24,14 +28,39 @@ def valor_json(v):
     if isinstance(v, Decimal):
         return int(v) if v == v.to_integral_value() else str(v)
     if isinstance(v, (bytes, bytearray, memoryview)):
-        return "0x" + bytes(v).hex()
+        return bytes_json(bytes(v), coluna)
     if isinstance(v, uuid.UUID):
         return str(v)
     return v
 
 
-def linha_json(r: dict) -> dict:
-    return {k: valor_json(v) for k, v in r.items()}
+BINARIO_MAX = 1024  # bytes > 1 KB na bronze: só tamanho + sha256 (nota do Tester)
+
+
+def bytes_json(b: bytes, coluna: str | None = None):
+    """varchar que o driver devolve como bytes vira texto (utf-8, senão cp1252); binário curto vira '0x..';
+    binário grande vira {bytes, sha256}."""
+    if len(b) > BINARIO_MAX:
+        return {"bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+    if len(b) == 8 or (coluna and _VERSAO.search(coluna)):  # rowversion/timestamp: sempre 0x hex (formato estável)
+        return "0x" + b.hex()
+    for enc in ("utf-8", "cp1252"):
+        try:
+            t = b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        if t and all(ch.isprintable() or ch in "\t\r\n" for ch in t):
+            return t
+    return "0x" + b.hex()
+
+
+def linha_json(r, colunas=None) -> dict:
+    """Aceita dict (as_dict=True) ou tupla (as_dict=False, na ordem das colunas da política)."""
+    if not isinstance(r, dict):
+        if colunas is None or len(colunas) != len(r):
+            raise ValueError("Linha da origem em tupla sem a lista de colunas correspondente.")
+        r = dict(zip(colunas, r, strict=True))
+    return {k: valor_json(v, k) for k, v in r.items()}
 
 
 class FalhaLeitura(Exception):

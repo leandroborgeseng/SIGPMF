@@ -143,7 +143,7 @@ def test_testar_conexao_admin(client, tokens, db, origem):
     r = client.post("/api/conectores/saude/diagnostico", headers=tokens["admin"])
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d["ok"] is True and d["banco"] == "Saude"
+    assert d["banco"] == "Saude" and "estrutura" in d  # estrutura: ver test_zz_estrutura.py
     assert any("DB_NAME()" in s for s in origem.sqls)
     for t in (r.text,):
         assert HOST not in t and USER not in t and PWD not in t

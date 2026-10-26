@@ -9,8 +9,10 @@ _NAO_DIGITO = re.compile(r"\D")
 
 
 def normaliza(cns: str | None) -> str | None:
-    if not cns:
+    if cns is None or cns == "" or cns is False:
         return None
+    if isinstance(cns, int) and not isinstance(cns, bool):  # numérico na origem perde zeros à esquerda
+        return str(cns).zfill(15) if cns > 0 else None
     d = _NAO_DIGITO.sub("", str(cns))
     return d or None
 
