@@ -462,14 +462,23 @@ def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0,
              "confianca": m.confianca} for m in db.scalars(q.limit(min(limite, 200)).offset(offset))]
 
 
+def mascara_nome(nome: str | None) -> str | None:
+    """Mantém só a inicial de cada palavra: "FULANO DE TAL" -> "F***** D* T**"."""
+    if not nome:
+        return nome
+    return " ".join(w[0] + "*" * (len(w) - 1) for w in str(nome).split())
+
+
 @api.get("/silver/municipes/pendencias")
 def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    """M10: perfil leitura recebe 403; operador/admin veem o documento só mascarado (a pendência guarda apenas
+    """M10: perfil leitura recebe 403; operador/admin veem documento e nome só mascarados (só admin_lgpd vê o nome) (a pendência guarda apenas
     a máscara; a chave é um hash)."""
     if u.perfil == "leitura":
         raise HTTPException(403, "Perfil leitura não acessa pendências de Munícipe")
-    return [{"chave": p.chave, "motivo": p.motivo, "tipo_pessoa": p.tipo_pessoa, "nome": p.nome,
-             "documento": p.documento_mascarado, "status": p.status}
+    revela = u.perfil == "admin_lgpd"  # ressalva 3 do Tester: nome só em claro para admin_lgpd
+    return [{"chave": p.chave, "motivo": p.motivo, "tipo_pessoa": p.tipo_pessoa,
+             "nome": p.nome if revela else mascara_nome(p.nome), "documento": p.documento_mascarado,
+             "status": p.status}
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 

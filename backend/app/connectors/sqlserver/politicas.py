@@ -11,10 +11,40 @@ class TabelaRecusada(ValueError):
     pass
 
 
-# R2 do QA do #6: nomes sensíveis por padrão (sem distinção de caixa), não só pelo nome exato.
-# "cid" só como token (CID, Cod_CID, CID10), para não pegar Cidade/Cidadao.
-_PADRAO_PROIBIDO = re.compile(r"ctps|titulo|reservista|cnh|senha|password|token|(?:^|_)cid(?:\d*|_.*)$",
-                              re.IGNORECASE)
+# R2 do QA do #6 + ressalva 2 do Tester: nomes sensíveis reconhecidos de forma robusta, não só pelo nome exato.
+# O nome é normalizado (sem acento, minúsculo, camelCase/espaço/hífen/ponto viram "_") e comparado por
+# (a) trecho sensível em qualquer posição (prefixo/sufixo: Senha_Web, UserPassword, api_token...) e
+# (b) tokens curtos só como palavra inteira (CID, CID10, Cod_CID, Cor, Renda...), para não pegar Cidade/Cidadao/Corpo.
+_TRECHOS_PROIBIDOS = ("senha", "password", "passwd", "pwd", "token", "secret", "segredo", "hash_senha", "ctps",
+                      "titulo_eleitor", "tituloeleitor", "reservista", "cnh", "renda", "salario", "deficien",
+                      "religi", "etnia", "biometri", "remember")
+_TOKENS_PROIBIDOS = re.compile(r"^(?:cid\d*|cor|raca|pin|titulo|cnh|renda)$")
+
+
+def normaliza_coluna(nome: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(nome))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", s)          # camelCase -> camel_Case
+    s = re.sub(r"[^A-Za-z0-9]+", "_", s).strip("_").lower()
+    return re.sub(r"_+", "_", s)
+
+
+def coluna_proibida(nome: str, proibidas=frozenset()) -> bool:
+    """True se a coluna é sensível pelo nome (padrão comum) ou consta da lista da política (comparação normalizada)."""
+    n = normaliza_coluna(nome)
+    compacto = n.replace("_", "")
+    if n in {normaliza_coluna(p) for p in proibidas} or compacto in {normaliza_coluna(p).replace("_", "") for p in proibidas}:
+        return True
+    if any(t.replace("_", "") in compacto for t in _TRECHOS_PROIBIDOS):
+        return True
+    return any(_TOKENS_PROIBIDOS.match(tok) for tok in n.split("_"))
+
+
+def filtra_colunas(linha: dict, permitidas, proibidas=frozenset()) -> dict:
+    """Só colunas da lista permitida e nunca uma sensível: o que sobra é o que pode chegar à bronze."""
+    perm = set(permitidas)
+    return {k: v for k, v in linha.items() if k in perm and not coluna_proibida(k, proibidas)}
 
 
 @dataclass(frozen=True)
@@ -49,7 +79,7 @@ class Politica:
         cols = self.colunas.get(nome, ())
         if not cols:  # tabelas de apoio ainda sem lista de colunas: recusa explícita (ressalva do QA do #4)
             raise TabelaRecusada(f"Tabela {nome} de {self.sistema} sem colunas definidas na política.")
-        ruins = {c for c in cols if c.lower() in {p.lower() for p in self.proibidas} or _PADRAO_PROIBIDO.search(c)}
+        ruins = {c for c in cols if coluna_proibida(c, self.proibidas)}
         if ruins:
             raise TabelaRecusada(f"Colunas proibidas na política: {sorted(ruins)}")
         return cols
