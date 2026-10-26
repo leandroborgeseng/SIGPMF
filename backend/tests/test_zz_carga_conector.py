@@ -147,12 +147,47 @@ def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
     assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 501
 
 
-def test_demo_bloqueada_fora_de_dev(client, tokens, monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
+@pytest.mark.parametrize("ambiente", ["development", "", None, "prod", "production", "DEV", " test"])
+def test_demo_bloqueada_fora_de_dev_test(client, tokens, monkeypatch, db, ambiente):
     from app.core.config import get_settings
+    if ambiente is None:
+        monkeypatch.delenv("APP_ENV", raising=False)
+    else:
+        monkeypatch.setenv("APP_ENV", ambiente)
     get_settings.cache_clear()
+    antes = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "carga_demo_negada"))
     try:
         assert client.post("/api/conectores/demo/executar", headers=tokens["admin"]).status_code == 403
+        db.expire_all()
+        depois = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "carga_demo_negada"))
+        assert depois == antes + 1
+    finally:
+        monkeypatch.setenv("APP_ENV", "test")
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("ambiente", ["development", "prod"])
+def test_cli_demo_tambem_bloqueado(db, monkeypatch, ambiente):
+    from app.core.config import get_settings
+    from app.services.pipeline import CargaSinteticaBloqueada, executar_demo
+    monkeypatch.setenv("APP_ENV", ambiente)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(CargaSinteticaBloqueada):
+            executar_demo(db, "cli")
+    finally:
+        monkeypatch.setenv("APP_ENV", "test")
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("ambiente", ["dev", "test"])
+def test_demo_permitida_em_dev_test(monkeypatch, ambiente):
+    from app.core.config import get_settings
+    from app.services.pipeline import carga_sintetica_permitida
+    monkeypatch.setenv("APP_ENV", ambiente)
+    get_settings.cache_clear()
+    try:
+        assert carga_sintetica_permitida()
     finally:
         monkeypatch.setenv("APP_ENV", "test")
         get_settings.cache_clear()

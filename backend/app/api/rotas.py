@@ -28,10 +28,8 @@ from app.models.camadas import (
 )
 from app.models.controle import Auditoria, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
 from app.services import carga_conector as cc
-from app.services.pipeline import executar_demo
+from app.services.pipeline import carga_sintetica_permitida, executar_demo
 from app.silver import processamento
-
-AMBIENTES_DEMO = {"development", "dev", "test"}
 
 publico = APIRouter()
 api = APIRouter(dependencies=[Depends(usuario_atual)])
@@ -183,7 +181,7 @@ def testar(conector: str, req: Request, u: Usuario = Depends(CARGA), db: Session
 
 @api.post("/conectores/demo/executar")
 def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
-    if get_settings().app_env not in AMBIENTES_DEMO:  # PB13: carga sintética só em dev/teste
+    if not carga_sintetica_permitida():  # PB13: carga sintética só com APP_ENV exatamente dev/test
         audita(db, u.email, "carga_demo_negada", "conector:demo", {"ambiente": get_settings().app_env}, _ip(req))
         raise HTTPException(403, "Carga de demonstração bloqueada fora do ambiente de desenvolvimento")
     completa = bool(dados and dados.completa)
