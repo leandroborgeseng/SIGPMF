@@ -13,3 +13,7 @@
 .explorar .funil-etapas { display: flex; gap: 2rem; list-style: none; padding: 0; }
 .explorar .nota { color: #555; font-size: .85rem; }
 .explorar .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.explorar .filtros .campo { height: auto; flex: 0 0 auto; }
+.explorar .filtros .campo input { width: 11rem; height: 2.2rem !important; min-height: 0 !important; flex: 0 0 auto; padding: .3rem .4rem; }
+.explorar label.campo:has(input[type=checkbox]) { display: inline-flex; align-items: center; gap: .4rem; }
+.explorar input[type=checkbox] { width: 1.1rem !important; height: 1.1rem !important; min-height: 0 !important; padding: 0; }

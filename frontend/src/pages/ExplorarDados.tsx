@@ -161,7 +161,7 @@ function TabelaDetalhe({ conector, camada, tabela, podeRevelar }: { conector: st
       )}
       {am && (
         <form onSubmit={aplicar} className="filtros" aria-label="Filtros">
-          {(pend ? ['motivo'] : am.colunas.slice(0, 6)).map((c) => (
+          {(pend ? ['motivo'] : am.colunas.filter((c) => !['id', 'extraido_em', 'quarentena'].includes(c)).slice(0, 6)).map((c) => (
             <label key={c} className="campo">{c}
               <input value={rascunho[c] ?? ''} onChange={(e) => setRascunho({ ...rascunho, [c]: e.target.value })}
                 placeholder={sensiveis.has(c) ? 'valor exato' : 'contém'} autoComplete="off" />
