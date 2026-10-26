@@ -259,8 +259,19 @@ def limite_50(monkeypatch):
     get_settings.cache_clear()
 
 
+def _isola_bronze(db, sistema):
+    """Banco de TESTE: zera a prata/ouro (derivadas, reconstruídas pela carga), a bronze e os checkpoints do sistema."""
+    for t in ("silver.enderecos", "silver.vinculos", "silver.identificadores", "silver.correlacoes_pendentes",
+              "silver.inconsistencias", "gold.cidadao_dados", "gold.cidadao_sistemas"):
+        db.execute(text(f"delete from {t}"))
+    db.execute(text("delete from bronze.registros where sistema_origem = :s"), {"s": sistema})
+    db.execute(text("delete from controle.checkpoints_carga where sistema = :s"), {"s": sistema})
+    db.commit()
+
+
 def test_cc9_chave_nula_vai_para_quarentena_e_reconcilia_com_pendencias(client, tokens, origem, db, limite_50):  # noqa: F811
     from app.connectors.sqlserver.politicas import politica
+    _isola_bronze(db, "CEMITERIO")  # só a bronze desta carga conta (sem sobras de outros módulos)
     _amostra(db, "cemiterio")
     o = origem["CEMITERIO"]
     base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
@@ -287,11 +298,11 @@ def test_cc9_chave_nula_vai_para_quarentena_e_reconcilia_com_pendencias(client, 
             assert db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.bronze_id == q[0].id)) == 0
             s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()
             assert s["quarentena"] == 1
-            # o banco de teste pode ter bronze de outros módulos (bronze >= origem); igualdade exata no teste isolado
-            for t, r in s["reconciliacao"].items():
-                assert r["origem"] == len(o.linhas(t)) and r["bronze"] + r["quarentena"] >= r["origem"], (rodada, t, r)
-                assert r["quarentena"] == (1 if t == "Obitos" else 0)
-                assert r["status"] == (("ok_com_pendencias" if r["quarentena"] else "ok") if r["ok"] else "divergente")
+            for t, r in s["reconciliacao"].items():  # igualdade exata: bronze_ok + quarentena == COUNT(*) da origem
+                assert r["bronze"] + r["quarentena"] == r["origem"] == len(o.linhas(t)), (rodada, t, r)
+                assert r["quarentena"] == (1 if t == "Obitos" else 0) and r["ok"] is True
+                assert r["status"] == ("ok_com_pendencias" if t == "Obitos" else "ok")
+            assert "reconciliacao=ok com pendências" in ex.mensagem
             # keyset: nenhuma linha de chave completa perdida nem repetida (todas as chaves completas na bronze)
             ord_o = ccomp.ordem("CEMITERIO", "Obitos")
             from app.bronze.ingestao import _id
@@ -312,6 +323,28 @@ def test_cc9_chave_nula_vai_para_quarentena_e_reconcilia_com_pendencias(client, 
         assert [(x["tabela"], x["motivo"], x["campos_nulos"]) for x in linhas] == [("Obitos", "Chave nula na origem", ["GAVETA"])]
         corpo = r.text
         assert nome_sint not in corpo and "S-NULA" not in corpo and "cpf" not in corpo.lower()
+    finally:
+        o.extras.clear()
+
+
+def test_cc9_duplicatas_identicas_de_chave_nula_nao_colapsam(client, tokens, origem, db, limite_50):  # noqa: F811
+    from app.connectors.sqlserver.politicas import politica
+    _isola_bronze(db, "CEMITERIO")
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
+    nula = {**base[0], "SEPULTURA": "S-NULA", "GAVETA": None, "NOME": "PESSOA SINTETICA DUPLICADA"}
+    o.extras["Obitos"] = [dict(nula), dict(nula)]  # duas linhas idênticas com chave nula
+    try:
+        for _ in range(2):  # reexecução idempotente: continua 2, sem duplicar
+            assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+            assert _ultima(db, "CEMITERIO").status == "sucesso"
+            q = list(db.scalars(select(RegistroBronze.id_origem).where(
+                RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.quarentena.is_not(None))))
+            assert len(q) == len(set(q)) == 2 and all(x.endswith((":1", ":2")) for x in q)
+            r = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()["reconciliacao"]["Obitos"]
+            assert r["quarentena"] == 2 and r["bronze"] + r["quarentena"] == r["origem"] == len(o.linhas("Obitos"))
+            assert r["ok"] is True and r["status"] == "ok_com_pendencias"
     finally:
         o.extras.clear()
 

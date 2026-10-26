@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 import zlib
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -102,14 +103,16 @@ MOTIVO_CHAVE_NULA = "chave_nula"
 
 def _quarentena(db: Session, ex: Execucao, sistema: str, tabela: str, linhas: list[dict], ord_: tuple[str, ...]) -> int:
     """CC9: linhas com chave nula entram na bronze marcadas (quarentena), com os campos nulos; id = hash da linha
-    (nenhum valor da linha no id). Idempotente: a mesma linha não duplica. Prata e ouro ignoram."""
+    + ordinal da ocorrência (nenhum valor da linha no id; duplicatas idênticas não colapsam). Idempotente: a mesma linha não duplica. Prata e ouro ignoram."""
     from sqlalchemy.dialects.postgresql import insert
 
     from app.bronze.ingestao import hash_registro
-    vals = {}
+    vals, vistas = {}, defaultdict(int)
     for r in linhas:
         h = hash_registro(r)
-        vals[h] = {"sistema_origem": sistema, "tabela": tabela, "id_origem": f"{MOTIVO_CHAVE_NULA}:{h[:32]}", "dados": r,
+        vistas[h] += 1  # linhas idênticas: uma entrada por ocorrência (ordinal), estável entre reexecuções
+        k = f"{MOTIVO_CHAVE_NULA}:{h[:32]}:{vistas[h]}"
+        vals[k] = {"sistema_origem": sistema, "tabela": tabela, "id_origem": k, "dados": r,
                    "hash": h, "execucao_id": ex.id, "quarentena": MOTIVO_CHAVE_NULA,
                    "quarentena_campos": [c for c in ord_ if r.get(c) is None]}
     if not vals:
