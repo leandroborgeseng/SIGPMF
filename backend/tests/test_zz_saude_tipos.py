@@ -163,3 +163,13 @@ def test_nenhuma_politica_seleciona_coluna_binaria_conhecida():
     for p in POLITICAS.values():
         for tab, cols in p.colunas.items():
             assert not [c for c in cols if suspeita.search(c)], (p.sistema, tab)
+
+
+def test_rowversion_sempre_hex():
+    from app.services.diagnostico import bytes_json, linha_json
+    rv = b"ABCDEFGH"  # 8 bytes imprimíveis: ainda assim hex
+    assert bytes_json(rv) == "0x4142434445464748"
+    for col in ("RowVersion", "TIMESTAMP", "Versao_Registro", "dt_timestamp"):
+        assert bytes_json(b"AB", col) == "0x4142"
+    assert linha_json({"RowVer": b"\x00" * 8, "rowversion": b"XY", "Nome": b"JOSE"}) == {
+        "RowVer": "0x0000000000000000", "rowversion": "0x5859", "Nome": "JOSE"}
