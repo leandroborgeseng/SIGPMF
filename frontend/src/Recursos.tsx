@@ -58,7 +58,7 @@ export default function Recursos() {
       </div>
       <div className="recursos-grade">
         <Barra rotulo="Disco do banco" uso={dados?.disco} unidade="no volume" />
-        <Barra rotulo="Memória" uso={dados?.memoria} unidade="no container" />
+        <Barra rotulo="Memória" uso={dados?.memoria} unidade="no servidor" />
         <div className="recurso">
           <div className="recurso-topo"><span>Tamanho do banco</span></div>
           {banco ? (

@@ -134,12 +134,17 @@ def tamanho_banco(db) -> dict[str, float] | None:
     return {k: round(por.get(s, 0) / 1024 ** 2, 1) for k, s in SCHEMAS.items()}
 
 
-def motivo_disco_cheio(limite: int | None = None) -> str | None:
+SEM_LEITURA_DISCO = "Sem leitura do disco do servidor. A carga completa fica bloqueada até o disco voltar a ser lido."
+
+
+def motivo_disco_cheio(limite: int | None = None, exige_leitura: bool = False) -> str | None:
     """Motivo para não iniciar (limite padrão RS3) ou pausar (limite_pausa(), RS4). None = pode seguir.
-    Sem leitura do disco não bloqueia: o card mostra "Sem leitura do servidor" e o log da carga registra."""
+    Com exige_leitura (carga completa), disco sem leitura também bloqueia (fail-closed)."""
     d = disco()
     lim = limite_disco() if limite is None else limite
-    if d is not None and d.usado_pct > lim:
+    if d is None:
+        return SEM_LEITURA_DISCO if exige_leitura else None
+    if d.usado_pct > lim:
         return f"Disco do servidor com {d.usado_pct:.0f}% usado (limite {lim}%). Libere espaço e retome a carga."
     return None
 

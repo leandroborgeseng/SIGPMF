@@ -20,6 +20,11 @@ from tests.test_zz_carga_conector import Leitor
 _FROM = re.compile(r"FROM \[dbo\]\.\[(\w+)\]")
 
 
+def _k(valores):
+    """Ordenação da origem sintética: NULL primeiro (como o SQL Server), depois o valor."""
+    return tuple((0, "") if v is None else (1, str(v)) for v in valores)
+
+
 class Cursor:
     def __init__(self, origem):
         self.o, self.res = origem, []
@@ -28,17 +33,27 @@ class Cursor:
         self.o.sqls.append((sql, params))
         tabela = _FROM.search(sql).group(1)
         linhas = self.o.linhas(tabela)
+        chave = ccomp.ordem(self.o.sistema, tabela)
+        if "SELECT DISTINCT" in sql:  # combinações distintas da chave
+            self.res = [(len({tuple(r.get(c) for c in chave) for r in linhas}),)]
+            return
+        if "SUM(CASE WHEN" in sql:  # total + linhas com NULL na chave
+            self.res = [(len(linhas), sum(1 for r in linhas if any(r.get(c) is None for c in chave)))]
+            return
         if "COUNT(*)" in sql:
             self.res = [(len(linhas),)]
             return
-        pos, n = params
         if self.o.falha_na_pagina is not None and self.o.paginas == self.o.falha_na_pagina:
             self.o.falha_na_pagina = None
             raise TimeoutError("timeout sintético em srv-sintetico.invalid")
         self.o.paginas += 1
         if self.o.ao_ler:
             self.o.ao_ler(self.o.paginas)
-        self.res = linhas[pos:pos + n]
+        n = int(re.search(r"TOP \((\d+)\)", sql).group(1))
+        ult = self.o.ultima
+        if ult is not None:
+            linhas = [r for r in linhas if _k(tuple(r.get(c) for c in chave)) > _k(ult)]
+        self.res = linhas[:n]
 
     def fetchmany(self, n):
         return self.res[:n]
@@ -64,13 +79,18 @@ class Origem(SqlServerConnector):
         super().__init__(ConfigSqlServer(None, 1433, "Sintetico", None, None, 5, 100), nome="sintetico")
         self.sistema, self.mock = sistema, OrigemMock(conjunto="saude+cemiterio")
         self.sqls, self.rollbacks, self.paginas, self.falha_na_pagina, self.ao_ler = [], 0, 0, None, None
+        self.ultima, self.extras = None, {}
 
     def linhas(self, tabela):
         pol = politica(self.sistema)
         cols = pol.colunas_select(tabela)
-        rows = self.mock.ler(self.sistema, tabela, None, cols)
+        rows = self.mock.ler(self.sistema, tabela, None, cols) + [dict(r) for r in self.extras.get(tabela, [])]
         chave = ccomp.ordem(self.sistema, tabela)
-        return sorted(rows, key=lambda r: tuple(str(r.get(c)) for c in chave))
+        return sorted(rows, key=lambda r: _k(tuple(r.get(c) for c in chave)))
+
+    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite):
+        self.ultima = ultima  # a origem sintética aplica o mesmo keyset que o SQL montado pelo conector
+        return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite)
 
     def _conectar(self):
         return Conn(self)
@@ -82,7 +102,7 @@ def origem(monkeypatch):
     o = {"SAUDE": Origem("SAUDE"), "CEMITERIO": Origem("CEMITERIO")}
     monkeypatch.setenv("CARGA_COMPLETA_LOTE", "2")
     monkeypatch.setenv("CARGA_COMPLETA_PAUSA_MS", "0")
-    monkeypatch.setenv("RECURSOS_DISCO_CAMINHO", "/caminho/inexistente-sintetico")
+    monkeypatch.setattr(recursos, "disco", lambda: recursos.Uso(total=100, livre=50))  # 50%: liberado
     from app.core.config import get_settings
     get_settings.cache_clear()
     monkeypatch.setattr(ccomp, "leitor_padrao", lambda conector, db: o[cc.CONECTORES[conector][0]])
@@ -138,6 +158,7 @@ def test_cc5_so_admin(client, tokens, origem):
         assert client.get("/api/conectores/saude/completa/estimativa", headers=h).status_code == 403
         assert client.post("/api/conectores/saude/completa/cancelar", headers=h).status_code == 403
         assert client.get("/api/sistema/recursos", headers=h).status_code == 403
+        assert client.get("/api/conectores/saude/completa", headers=h).status_code == 403
     assert client.post("/api/conectores/saude/completa").status_code == 401
     assert client.post("/api/conectores/naoexiste/completa", headers=tokens["admin"]).status_code == 404
 
@@ -150,7 +171,7 @@ def test_cc2_estimativa_pelo_guard(client, tokens, origem, db):
     tabs = cc.tabelas_do_conector("SAUDE")
     assert set(r.json()["tabelas"]) == set(tabs) and r.json()["total"] == sum(len(origem["SAUDE"].linhas(t)) for t in tabs)
     for sql, _ in origem["SAUDE"].sqls:
-        assert sql.startswith("SELECT COUNT(*) FROM [dbo].") and garante_somente_leitura(sql)
+        assert sql.startswith("SELECT COUNT(*)") and "FROM [dbo]." in sql and garante_somente_leitura(sql)
 
 
 # ---------- CC3 / CC4 / CC6: carga, guard, lotes, auditoria, card final ----------
@@ -166,23 +187,25 @@ def test_cc3_cc4_cc6_carga_completa_em_lotes(client, tokens, origem, db):
     origem_total = sum(len(o.linhas(t)) for t in tabs)
     assert ex.total_origem == origem_total and ex.lidos == origem_total
     # guard: só SELECT, colunas da política (sem CID/senha), ORDER BY pela chave, OFFSET/FETCH com lote <= 2
-    paginas = [(s, p) for s, p in o.sqls if "OFFSET" in s]
-    assert paginas and all(p[1] == 2 for _, p in paginas)
+    paginas = [(s, p) for s, p in o.sqls if "TOP (" in s]
+    assert paginas and all("TOP (2)" in s for s, _ in paginas)
     for sql, _ in o.sqls:
         assert garante_somente_leitura(sql) and "*" not in sql.replace("COUNT(*)", "")
         assert not re.search(r"\[(?:\w*_)?CID\w*\]|senha", sql, re.IGNORECASE)
+        assert "OFFSET" not in sql
     for t in tabs:
-        sqls_t = [s for s, _ in paginas if f"[dbo].[{t}]" in s]
+        sqls_t = [(s, p) for s, p in paginas if f"[dbo].[{t}]" in s]
         chave = ", ".join(f"[{c}]" for c in ccomp.ordem("SAUDE", t))
-        assert sqls_t and all(f"ORDER BY {chave} OFFSET %s ROWS FETCH NEXT %s ROWS ONLY" in s for s in sqls_t)
-        offs = [p[0] for s, p in paginas if f"[dbo].[{t}]" in s]
-        assert offs == list(range(0, 2 * len(offs), 2))  # paginação contínua, sem pular nem repetir
+        assert sqls_t and all(s.endswith(f"ORDER BY {chave}") for s, _ in sqls_t)
+        assert "WHERE" not in sqls_t[0][0] and all("WHERE" in s for s, _ in sqls_t[1:])  # keyset a partir da 2ª página
+        assert all("%s" in s and p for s, p in sqls_t[1:])  # sempre parametrizado
     assert o.rollbacks == len(o.sqls)  # toda consulta termina em ROLLBACK
     # CC6: card final e reconciliação bronze x COUNT(*)
     s = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()
     assert s["execucao"]["status"] == "sucesso" and s["execucao"]["lidos"] == origem_total
     assert s["camadas"]["bronze"] >= origem_total and "prata" in s["camadas"] and "pendencias" in s["camadas"]
-    assert all(v["ok"] and v["bronze"] >= v["origem"] == len(o.linhas(t)) for t, v in s["reconciliacao"].items())
+    for t, v in s["reconciliacao"].items():  # ok só quando bronze == origem (o banco de teste pode ter bronze de outros módulos)
+        assert v["origem"] == len(o.linhas(t)) and v["ok"] == (v["bronze"] == v["origem"]) and v["bronze"] >= v["origem"]
     # CC4: auditoria com usuário, horário, lidas, gravadas e resultado
     a = db.scalar(select(Auditoria).where(Auditoria.acao == "carga_completa_finalizada",
                                           Auditoria.alvo == f"execucao:{ex.id}"))
@@ -211,14 +234,17 @@ def test_cc3_falha_mantem_lotes_e_retoma_do_checkpoint(client, tokens, origem, d
     ex = _ultima(db, "CEMITERIO")
     assert ex.status == "falha" and "Tentar de novo" in ex.mensagem and "srv-sintetico" not in ex.mensagem
     cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "CEMITERIO", CheckpointCarga.tabela == "Obitos"))
-    assert cp.posicao == 2 and not cp.concluida
+    assert cp.posicao == 2 and not cp.concluida and cp.ultima_chave is not None
+    ckpt = list(cp.ultima_chave)
     o.sqls.clear()
     assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
     ex2 = _ultima(db, "CEMITERIO")
     assert ex2.status == "sucesso", ex2.mensagem
-    offs = [p[0] for s, p in o.sqls if "OFFSET" in s and "[dbo].[Obitos]" in s]
-    assert offs[0] == 2  # retomou do checkpoint, não do zero
-    assert _bronze(db, "CEMITERIO", "Obitos") == len(o.linhas("Obitos")) or ccomp.reconciliacao(db, "CEMITERIO")["Obitos"]["ok"]
+    primeira = next(p for s, p in o.sqls if "TOP (" in s and "[dbo].[Obitos]" in s)
+    assert list(primeira)[-len(ckpt):] == ckpt  # retomou do checkpoint (último termo do keyset = chave salva)
+    ids = [r[0] for r in db.execute(select(RegistroBronze.id_origem).where(
+        RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos"))]
+    assert len(ids) == len(set(ids))
     assert all(v["ok"] for v in ccomp.reconciliacao(db, "CEMITERIO").values())
 
 
@@ -302,8 +328,8 @@ def test_rs4_disco_acima_de_90_pausa_sem_apagar_e_retoma(client, tokens, origem,
 def test_pagina_recusa_ordem_fora_da_politica_e_lote_invalido():
     c = SqlServerConnector(ConfigSqlServer(None, 1433, "x", None, None, 5, 100))
     pol = politica("SAUDE")
-    sql = c.montar_pagina(pol, "pacientes", ("Matricula",), 500)
-    assert sql.startswith("SELECT [Matricula], [Nome]") and "TOP" not in sql and garante_somente_leitura(sql)
+    sql, _ = c.montar_pagina(pol, "pacientes", ("Matricula",), 500)
+    assert sql.startswith("SELECT TOP (500) [Matricula], [Nome]") and "OFFSET" not in sql and garante_somente_leitura(sql)
     with pytest.raises(TabelaRecusada):
         c.montar_pagina(pol, "pacientes", ("Hipertenso",), 10)
     with pytest.raises(TabelaRecusada):
@@ -325,6 +351,7 @@ def test_lote_da_carga_completa_tem_teto(monkeypatch):
 def test_rs5_disco_sem_leitura_e_memoria(tmp_path, monkeypatch):
     monkeypatch.setenv("RECURSOS_DISCO_CAMINHO", str(tmp_path / "nao-existe"))
     assert recursos.disco() is None and recursos.motivo_disco_cheio() is None
+    assert recursos.motivo_disco_cheio(exige_leitura=True) == recursos.SEM_LEITURA_DISCO
     monkeypatch.setenv("RECURSOS_DISCO_CAMINHO", str(tmp_path))
     d = recursos.disco()
     assert d is not None and d.total > 0
@@ -368,3 +395,152 @@ def test_rs1_rs5_rota_recursos_sem_caminho_nem_host(client, tokens, monkeypatch,
     assert str(tmp_path) not in corpo and "srvdisk" not in corpo and "/" not in str(j["disco"])
     import socket
     assert socket.gethostname() not in corpo
+
+
+# ---------- Keyset ----------
+def test_keyset_chave_simples_e_composta_parametrizado():
+    c = SqlServerConnector(ConfigSqlServer(None, 1433, "x", None, None, 5, 100))
+    pol = politica("SAUDE")
+    sql, p = c.montar_pagina(pol, "pacientes", ("Matricula",), 500)
+    assert sql.endswith("FROM [dbo].[pacientes] ORDER BY [Matricula]") and p == () and sql.startswith("SELECT TOP (500) ")
+    sql, p = c.montar_pagina(pol, "pacientes", ("Matricula",), 500, ("M9",))
+    assert "WHERE (([Matricula] > %s)) ORDER BY [Matricula]" in sql and p == ("M9",) and garante_somente_leitura(sql)
+    sql, p = c.montar_pagina(pol, "Pacientes_CNS", ("Matricula", "Cartao_Sus"), 10, ("M1", "700"))
+    assert "WHERE (([Matricula] > %s) OR ([Matricula] = %s AND [Cartao_Sus] > %s))" in sql and p == ("M1", "M1", "700")
+    w, p = SqlServerConnector.filtro_keyset(("a", "b", "c"), (1, None, 3))
+    assert w == " WHERE (([a] > %s) OR ([a] = %s AND [b] IS NOT NULL) OR ([a] = %s AND [b] IS NULL AND [c] > %s))"
+    assert p == (1, 1, 1, 3)
+    with pytest.raises(ValueError):
+        SqlServerConnector.filtro_keyset(("a", "b"), (1,))
+    for v in (("x'; DROP TABLE y",), ("1 OR 1=1",)):  # valor nunca vai para o texto do SQL
+        sql, p = c.montar_pagina(pol, "pacientes", ("Matricula",), 5, v)
+        assert v[0] not in sql and p == v
+
+
+def test_keyset_codifica_tipos_do_checkpoint():
+    from datetime import date, datetime
+    from decimal import Decimal
+    v = (datetime(2026, 1, 2, 3, 4, 5), date(2026, 1, 2), Decimal("1.50"), b"\x01\xff", None, "A", 7)
+    assert ccomp.decodifica_chave(ccomp.codifica_chave(v)) == v
+    assert ccomp.decodifica_chave(None) is None
+
+
+def test_keyset_linhas_novas_durante_a_carga_sem_pular_nem_duplicar(client, tokens, origem, db):
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
+    originais = {ccomp.ordem("CEMITERIO", "Obitos") and "|".join("" if r.get(c) is None else str(r.get(c))
+                 for c in ccomp.ordem("CEMITERIO", "Obitos")) for r in base}
+    novo = lambda cod: {**base[0], "COD_CEMITERIO": cod, "SEQUENCIA": 1}  # noqa: E731
+
+    def entra_linha(n):
+        if n == 1:  # durante a carga: uma linha antes do cursor e uma depois
+            o.extras["Obitos"] = [novo("0000-ANTES"), novo("zzzz-DEPOIS")]
+    o.paginas, o.ao_ler = 0, entra_linha
+    assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+    o.ao_ler = None
+    ex = _ultima(db, "CEMITERIO")
+    assert ex.status == "sucesso", ex.mensagem
+    ids = [r[0] for r in db.execute(select(RegistroBronze.id_origem).where(
+        RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos",
+        RegistroBronze.execucao_id == ex.id))]
+    assert len(ids) == len(set(ids))  # nenhuma duplicada nesta carga
+    todos = {r[0] for r in db.execute(select(RegistroBronze.id_origem).where(
+        RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos"))}
+    assert originais <= todos  # nenhuma linha original pulada
+    assert any(i.startswith("zzzz-DEPOIS") for i in todos)  # a que entrou depois do cursor também veio
+    o.extras.clear()
+
+
+def test_rs5_sem_leitura_do_disco_bloqueia_a_carga(client, tokens, origem, db, monkeypatch):
+    _amostra(db, "saude")
+    monkeypatch.setattr(recursos, "disco", lambda: None)
+    r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and r.json()["detail"] == recursos.SEM_LEITURA_DISCO
+    s = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()
+    assert s["liberada"] is False and s["motivo"] == recursos.SEM_LEITURA_DISCO
+    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200  # amostra segue
+
+
+# ---------- Keyset: chave única e sem NULL; fronteira do lote ----------
+def test_keyset_recusa_chave_com_null(client, tokens, origem, db):
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
+    o.extras["Obitos"] = [{**base[0], "SEPULTURA": "S-NULA", "GAVETA": None}]  # chave composta com NULL
+    try:
+        r = client.get("/api/conectores/cemiterio/completa/estimativa", headers=tokens["admin"])
+        assert r.status_code == 409 and "Obitos" in r.json()["detail"] and "nula" in r.json()["detail"]
+        o.sqls.clear()
+        assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+        ex = _ultima(db, "CEMITERIO")
+        assert ex.status == "falha" and "chave" in ex.mensagem and "nula" in ex.mensagem
+        assert not [x for x, _ in o.sqls if "TOP (" in x]  # recusou antes de ler qualquer página
+        q = [x for x, _ in o.sqls if "SUM(CASE WHEN" in x]
+        assert q and "[GAVETA] IS NULL" in q[0] and all(garante_somente_leitura(x) for x, _ in o.sqls)
+    finally:
+        o.extras.clear()
+
+
+def test_keyset_recusa_chave_repetida(client, tokens, origem, db):
+    _amostra(db, "saude")
+    o = origem["SAUDE"]
+    base = o.mock.ler("SAUDE", "pacientes", None, politica("SAUDE").colunas_select("pacientes"))
+    o.extras["pacientes"] = [{**base[0], "Nome": "OUTRO NOME SINTETICO"}]  # mesma Matricula
+    try:
+        r = client.get("/api/conectores/saude/completa/estimativa", headers=tokens["admin"])
+        assert r.status_code == 409 and "pacientes" in r.json()["detail"] and "não é única" in r.json()["detail"]
+        q = [x for x, _ in o.sqls if "SELECT DISTINCT" in x][-1]
+        assert q == "SELECT COUNT(*) FROM (SELECT DISTINCT [Matricula] FROM [dbo].[pacientes]) AS chaves"
+    finally:
+        o.extras.clear()
+
+
+def test_keyset_valores_iguais_na_fronteira_do_lote(client, tokens, origem, db):
+    """Chave composta (Matricula, Cartao_Sus) com a mesma Matricula atravessando o limite do lote (lote = 2)."""
+    _amostra(db, "saude")
+    o = origem["SAUDE"]
+    base = o.mock.ler("SAUDE", "Pacientes_CNS", None, politica("SAUDE").colunas_select("Pacientes_CNS"))
+    o.extras["Pacientes_CNS"] = [{**base[0], "Matricula": 1001, "Cartao_Sus": f"79550515948527{i}"} for i in range(5)]
+    try:
+        assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
+        ex = _ultima(db, "SAUDE")
+        assert ex.status == "sucesso", ex.mensagem
+        esperado = {f"{r['Matricula']}|{r['Cartao_Sus']}" for r in o.linhas("Pacientes_CNS")}
+        lidos = {r[0] for r in db.execute(select(RegistroBronze.id_origem).where(
+            RegistroBronze.sistema_origem == "SAUDE", RegistroBronze.tabela == "Pacientes_CNS"))}
+        assert esperado <= lidos
+        ps = [p for x, p in o.sqls if "TOP (" in x and "[dbo].[Pacientes_CNS]" in x and p]
+        assert any(p[0] == p[1] == 1001 for p in ps)  # houve página cortada no meio da Matricula 1001
+        rec = ccomp.reconciliacao(db, "SAUDE")["Pacientes_CNS"]
+        assert rec["origem"] == len(esperado) and rec["ok"] == (rec["bronze"] == rec["origem"])
+    finally:
+        o.extras.clear()
+
+
+def test_reconciliacao_bronze_acima_da_origem_e_divergencia(db):
+    cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SAUDE", CheckpointCarga.tabela == "pacientes"))
+    assert cp is not None
+    b = db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
+        RegistroBronze.sistema_origem == "SAUDE", RegistroBronze.tabela == "pacientes"))
+    cp.total_origem = b - 1  # origem perdeu uma linha: bronze acima
+    db.commit()
+    r = ccomp.reconciliacao(db, "SAUDE")["pacientes"]
+    assert r["bronze"] > r["origem"] and r["ok"] is False
+
+
+def test_rs5_sem_leitura_do_disco_durante_a_carga_pausa(client, tokens, origem, db, monkeypatch):
+    _amostra(db, "saude")
+    leitura = {"ok": True}
+    monkeypatch.setattr(recursos, "disco", lambda: recursos.Uso(total=100, livre=50) if leitura["ok"] else None)
+    o = origem["SAUDE"]
+    o.paginas, o.ao_ler = 0, (lambda n: leitura.update(ok=False) if n == 1 else None)
+    antes = _bronze(db, "SAUDE")
+    assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
+    o.ao_ler = None
+    ex = _ultima(db, "SAUDE")
+    assert ex.status == "pausada" and ex.pausa_motivo == recursos.SEM_LEITURA_DISCO
+    assert _bronze(db, "SAUDE") >= antes  # nada apagado
+    leitura["ok"] = True
+    assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
+    assert _ultima(db, "SAUDE").status == "sucesso"

@@ -1,4 +1,4 @@
-"""Carga completa por conector: checkpoint por tabela e progresso/cancelamento na execução.
+"""Carga completa por conector: checkpoint por tabela (último valor da chave, keyset) e progresso/cancelamento na execução.
 
 Aditiva: tabela nova (controle.checkpoints_carga) e colunas novas, nulas ou com padrão, em controle.execucoes.
 
@@ -7,6 +7,7 @@ Revises: 0007
 """
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = '0008'
 down_revision = '0007'
@@ -25,7 +26,8 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("sistema", sa.String(50), nullable=False),
         sa.Column("tabela", sa.String(200), nullable=False),
-        sa.Column("posicao", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("posicao", sa.Integer(), nullable=False, server_default="0"),  # linhas já gravadas (progresso)
+        sa.Column("ultima_chave", JSONB(), nullable=True),  # keyset: último valor da chave gravado (retomada)
         sa.Column("total_origem", sa.Integer(), nullable=True),
         sa.Column("concluida", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("execucao_id", sa.Integer(), sa.ForeignKey("controle.execucoes.id"), nullable=True),

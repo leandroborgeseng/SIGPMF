@@ -188,6 +188,8 @@ def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
             s.close()
             ccomp._solta(trava, "SAUDE")
         mp.setattr(ccomp, "disparar", nao_roda)
+        from app.core import recursos
+        mp.setattr(recursos, "disco", lambda: recursos.Uso(total=100, livre=50))
         assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
 
 

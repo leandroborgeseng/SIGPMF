@@ -111,7 +111,52 @@ describe('carga completa (CC1-CC6)', () => {
     const al = await within(c).findByRole('alert')
     expect(al).toHaveTextContent('88% usado')
     await userEvent.click(within(al).getByRole('button', { name: 'Tentar de novo' }))
+    expect(posts).toBe(1)  // "Tentar de novo" abre a confirmação, não dispara direto
+    await userEvent.click(await screen.findByRole('button', { name: 'Iniciar carga completa' }))
     await waitFor(() => expect(posts).toBe(2))
+  })
+
+  it('UX: modal com foco no Cancelar e "Iniciar" desabilitado enquanto conta as linhas', async () => {
+    let solta: (v: unknown) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.endsWith('/estimativa')) return new Promise((r) => { solta = r })
+      const c = url.endsWith('/conectores') ? resp({}) : sit()
+      return Promise.resolve(new Response(JSON.stringify(c), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    }))
+    montar('admin')
+    const c = await cartao()
+    const b = within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    await waitFor(() => expect(b).toBeEnabled())
+    await userEvent.click(b)
+    const d = await screen.findByRole('dialog')
+    expect(within(d).getByRole('button', { name: 'Cancelar' })).toHaveFocus()
+    expect(within(d).getByText('Contando as linhas…')).toBeInTheDocument()
+    expect(within(d).getByRole('button', { name: 'Iniciar carga completa' })).toBeDisabled()
+    await act(async () => { solta(new Response(JSON.stringify({ tabelas: { pacientes: 7 }, total: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } })) })
+    await waitFor(() => expect(within(d).getByRole('button', { name: 'Iniciar carga completa' })).toBeEnabled())
+    expect(within(d).queryByText('Contando as linhas…')).toBeNull()
+  })
+
+  it('UX: falha da carga -> "Tentar de novo" abre a confirmação (sem POST)', async () => {
+    const f = mock((u) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/estimativa')) return [200, { tabelas: { pacientes: 7 }, total: 7 }]
+      return [200, sit({ execucao: { ...EX, status: 'falha', mensagem: 'Falha na carga completa de Saúde: timeout.' } })]
+    })
+    montar('admin')
+    const c = await cartao()
+    const al = await within(c).findByRole('alert')
+    await userEvent.click(within(al).getByRole('button', { name: 'Tentar de novo' }))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(f.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false)
+  })
+
+  it('UX: pausa sem motivo mostra só "Carga pausada"', async () => {
+    mock((u) => [200, u.endsWith('/conectores') ? resp({}) : sit({ execucao: { ...EX, status: 'pausada', pausa_motivo: null } })])
+    montar('admin')
+    const c = await cartao()
+    const st = await within(c).findByText(/^Carga pausada/)
+    expect(st.textContent).toBe('Carga pausada')
   })
 })
 
@@ -130,6 +175,8 @@ describe('recursos do servidor (RS1/RS2/RS5)', () => {
     expect(await within(card).findByText(/Crítico/)).toBeInTheDocument()
     expect(within(card).getByText('Normal', { exact: false })).toBeInTheDocument()
     expect(within(card).getByText('12,0 GB livres de 100,0 GB no volume')).toBeInTheDocument()
+    expect(within(card).getByText('6,5 GB livres de 16,0 GB no servidor')).toBeInTheDocument()
+    expect(within(card).queryByText(/no container/)).toBeNull()
     expect(within(card).getByText('812,4 MB')).toHaveClass('num')
     expect(within(card).getByText(/Atualizado às/)).toHaveTextContent('Atualizado às 13:05')
     expect(within(card).getByRole('meter', { name: /Disco do banco: 88,0% usado/ })).toBeInTheDocument()

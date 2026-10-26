@@ -342,7 +342,7 @@ def _conector_completa(db: Session, conector: str) -> str:
 
 
 @api.get("/conectores/{conector}/completa")
-def completa_situacao(conector: str, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+def completa_situacao(conector: str, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Liberação (CC1), progresso da carga em andamento e card final (lidos/bronze/prata/pendências/reconciliação)."""
     return ccomp.situacao(db, _conector_completa(db, conector))
 
@@ -356,6 +356,9 @@ def completa_estimativa(conector: str, req: Request, u: Usuario = Depends(admin_
         raise HTTPException(409, motivo)
     try:
         return ccomp.estimativa(db, conector)
+    except ccomp.ChaveInvalida as exc:
+        audita(db, u.email, "carga_completa_chave_invalida", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
     except Exception as exc:  # noqa: BLE001 - nunca devolve host/usuário; só o motivo seguro
         from app.services.diagnostico import categoria, motivo
         c = categoria(exc)

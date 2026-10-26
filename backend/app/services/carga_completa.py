@@ -3,12 +3,13 @@
 Aceite TL/Tester/Analista (CC1-CC5):
 - Liberada só para admin, com a última amostra do conector sem erro e bronze > 0 (motivo visível se não).
 - Leitura só pelo guard (um SELECT/WITH por vez, ROLLBACK após cada consulta, timeout da conexão), só com as
-  colunas da política (allowlist; nada de CID/senha). Paginação com ORDER BY estável pela chave do mapeamento
-  (OFFSET/FETCH parametrizados), lote limitado (CARGA_COMPLETA_LOTE, teto 5000) e pausa entre lotes
+  colunas da política (allowlist; nada de CID/senha). Paginação keyset pela chave do mapeamento
+  (WHERE chave > última ORDER BY chave, chave composta em ordem lexicográfica, parametrizado), lote limitado (CARGA_COMPLETA_LOTE, teto 5000) e pausa entre lotes
   (CARGA_COMPLETA_PAUSA_MS).
 - Cada lote grava bronze + checkpoint numa única transação: reexecutar/retomar não duplica a bronze
   (unique (origem, tabela, id, hash)) e a silver/ouro são reconstruídas a partir da bronze (idempotentes).
 - Roda em background; uma carga por conector por vez (advisory lock de sessão, o mesmo da amostra) -> 409.
+- Sem leitura do disco (srvdisk) a carga não inicia nem continua (fail-closed, RS3/RS4/RS5).
 - Cancelar para no próximo lote sem apagar o que já entrou; disco > RECURSOS_LIMITE_DISCO recusa o início (409) e disco
   sozinha acima de RECURSOS_LIMITE_PAUSA (retomável). Nada é apagado; o checkpoint só volta a 0 quando um ciclo completo termina.
 - Card final: lidos, gravados, bronze, prata, pendências e reconciliação bronze x COUNT(*) da origem.
@@ -16,7 +17,8 @@ Aceite TL/Tester/Analista (CC1-CC5):
 import threading
 import time
 import zlib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -42,6 +44,33 @@ NOMES = {"saude": "Saúde", "cemiterio": "Cemitério"}
 
 
 SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
+
+
+class ChaveInvalida(RuntimeError):
+    """Tabela cuja chave não serve para keyset (repetida ou com NULL na origem)."""
+
+
+def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
+    chave = ", ".join(ordem_)
+    if v["nulos"]:
+        return f"Tabela {tabela}: {v['nulos']} linha(s) com chave ({chave}) nula na origem; a carga completa exige chave sem NULL."
+    if v["distintas"] != v["total"]:
+        return (f"Tabela {tabela}: chave ({chave}) não é única na origem ({v['total']} linhas, {v['distintas']} chaves "
+                "distintas); a carga completa exige chave única.")
+    return None
+
+
+def verificar_chaves(leitor, conn, sistema: str, pol) -> dict[str, int]:
+    """Antes de qualquer leitura: COUNT(*) x COUNT(DISTINCT chave) e NULLs, pelo guard. Recusa a tabela inválida."""
+    totais = {}
+    for t in cc.tabelas_do_conector(sistema):
+        o = ordem(sistema, t)
+        v = leitor.verificar_chave(conn, t, pol, o)
+        erro = problema_chave(t, o, v)
+        if erro:
+            raise ChaveInvalida(erro)
+        totais[t] = v["total"]
+    return totais
 
 
 class Bloqueado(RuntimeError):
@@ -94,7 +123,7 @@ def estimativa(db: Session, conector: str, leitor=None) -> dict:
     leitor = leitor or leitor_padrao(conector, db)
     conn = leitor.abrir()
     try:
-        tabs = {t: leitor.contar(conn, t, pol) for t in cc.tabelas_do_conector(sistema)}
+        tabs = verificar_chaves(leitor, conn, sistema, pol)  # ChaveInvalida -> 409 na rota
     finally:
         conn.close()
     return {"tabelas": tabs, "total": sum(tabs.values())}
@@ -115,7 +144,7 @@ def iniciar(db: Session, usuario: str, conector: str) -> Execucao:
     motivo = motivo_bloqueio(db, conector)
     if motivo:
         raise Bloqueado(motivo)
-    disco = recursos.motivo_disco_cheio()
+    disco = recursos.motivo_disco_cheio(exige_leitura=True)
     if disco:
         raise Bloqueado(disco)
     # Trava de sessão numa conexão dedicada que acompanha a carga até o fim (passa para o background).
@@ -163,7 +192,7 @@ def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, Che
     cps = {t: cps[t] for t in tabelas}
     if all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
         for c in cps.values():
-            c.posicao, c.concluida = 0, False
+            c.posicao, c.concluida, c.ultima_chave = 0, False, None
     db.flush()
     return cps
 
@@ -192,7 +221,8 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.status = "falha"
             ex.registra_erro(exc)
             ex.tabela_atual = None
-            _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {ex.erro_publico()['motivo']}. "
+            motivo = str(exc) if isinstance(exc, ChaveInvalida) else ex.erro_publico()["motivo"]
+            _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
     finally:
         if proprio:
@@ -210,8 +240,9 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     db.commit()
     conn = leitor.abrir()
     try:
+        totais = verificar_chaves(leitor, conn, sistema, pol)  # chave repetida/NULL: falha com motivo claro
         for t, cp in cps.items():
-            cp.total_origem = leitor.contar(conn, t, pol)
+            cp.total_origem = totais[t]
         ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
         retoma = sum(c.posicao for c in cps.values())
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
@@ -232,12 +263,14 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                     ex.tabela_atual = None
                     return _finaliza(db, ex, "cancelada", f"Carga completa de {NOMES[conector]} cancelada. "
                                      "Nada foi apagado; ao iniciar de novo, ela retoma do ponto em que parou.")
-                disco = recursos.motivo_disco_cheio(recursos.limite_pausa())
+                disco = recursos.motivo_disco_cheio(recursos.limite_pausa(), exige_leitura=True)
                 if disco:
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
-                linhas = [linha_json(r, cols) for r in leitor.ler_pagina(conn, t, pol, ord_, cp.posicao, s.carga_lote)]
-                if linhas:
+                brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
+                linhas = [linha_json(r, cols) for r in brutas]
+                if brutas:
+                    cp.ultima_chave = codifica_chave(_valores_chave(brutas[-1], ord_, cols))
                     c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id, s.carga_lote,
                                rowversion=m.get("rowversion"), confirmar=False)
                     for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
@@ -266,13 +299,49 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                                  f"reconciliacao={'ok' if ok else 'divergente'}")
 
 
+def _valores_chave(r, ord_: tuple[str, ...], cols: tuple[str, ...]) -> tuple:
+    if isinstance(r, dict):
+        return tuple(r.get(c) for c in ord_)
+    return tuple(r[cols.index(c)] for c in ord_)
+
+
+def codifica_chave(valores: tuple) -> list:
+    """Valor da chave -> JSON com o tipo preservado (datetime/date/Decimal/bytes) para reenviar como parâmetro."""
+    out = []
+    for v in valores:
+        if isinstance(v, datetime):
+            out.append({"dt": v.isoformat()})
+        elif isinstance(v, date):
+            out.append({"d": v.isoformat()})
+        elif isinstance(v, Decimal):
+            out.append({"dec": str(v)})
+        elif isinstance(v, (bytes, bytearray)):
+            out.append({"hex": bytes(v).hex()})
+        else:
+            out.append(v)
+    return out
+
+
+def decodifica_chave(j: list | None) -> tuple | None:
+    if j is None:
+        return None
+    out = []
+    for v in j:
+        if isinstance(v, dict) and len(v) == 1:
+            (k, x), = v.items()
+            v = {"dt": datetime.fromisoformat, "d": date.fromisoformat, "dec": Decimal, "hex": bytes.fromhex}[k](x)
+        out.append(v)
+    return tuple(out)
+
+
 def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
-    """Bronze (chaves distintas por tabela) x COUNT(*) da origem lido no início da carga."""
+    """Bronze (chaves distintas por tabela) x COUNT(*) da origem lido no início da carga: ok só se forem iguais
+    (bronze acima = registro que saiu da origem ou chave antiga; bronze abaixo = faltou linha)."""
     out = {}
     for cp in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema).order_by(CheckpointCarga.id)):
         b = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela)) or 0)
-        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "ok": cp.total_origem is not None and b >= cp.total_origem}
+        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "ok": cp.total_origem is not None and b == cp.total_origem}
     return out
 
 
@@ -284,7 +353,7 @@ def situacao(db: Session, conector: str) -> dict:
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
     motivo = motivo_bloqueio(db, conector) if conector in cc.CONECTORES else None
     if motivo is None and (ex is None or ex.status != "em_andamento"):
-        motivo = recursos.motivo_disco_cheio()
+        motivo = recursos.motivo_disco_cheio(exige_leitura=True)
     execucao = None
     if ex is not None:
         execucao = {

@@ -87,7 +87,8 @@ class CheckpointCarga(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sistema: Mapped[str] = mapped_column(String(50))
     tabela: Mapped[str] = mapped_column(String(200))
-    posicao: Mapped[int] = mapped_column(Integer, default=0)
+    posicao: Mapped[int] = mapped_column(Integer, default=0)  # linhas já gravadas (progresso)
+    ultima_chave: Mapped[list | None] = mapped_column(JSONType)  # keyset: último valor da chave gravado
     total_origem: Mapped[int | None] = mapped_column(Integer)
     concluida: Mapped[bool] = mapped_column(Boolean, default=False)
     execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))

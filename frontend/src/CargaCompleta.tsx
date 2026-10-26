@@ -32,7 +32,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
   const [toast, setToast] = useState('')
   const [enviando, setEnviando] = useState(false)
   const anterior = useRef<string | null>(null)
-  const iniciar = useRef<HTMLButtonElement>(null)
+  const cancelarModal = useRef<HTMLButtonElement>(null)
 
   const carregar = useCallback(async () => {
     try {
@@ -66,7 +66,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
   }, [toast, onFim])
   useEffect(() => {
     if (!modal) return
-    iniciar.current?.focus()
+    cancelarModal.current?.focus()  // foco no Cancelar (ação segura)
     const f = (e: KeyboardEvent) => { if (e.key === 'Escape') setModal(false) }
     document.addEventListener('keydown', f)
     return () => document.removeEventListener('keydown', f)
@@ -124,10 +124,10 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
             {est ? (
               <p>A origem tem <strong className="num">{milhar(est.total)}</strong> linhas em {Object.keys(est.tabelas).length} tabelas.
                 A leitura é só de consulta, em lotes; nada é apagado e dá para cancelar.</p>
-            ) : estErro ? <p className="erro-texto">{estErro}</p> : <p aria-busy="true">Contando as linhas da origem…</p>}
+            ) : estErro ? <p className="erro-texto">{estErro}</p> : <p aria-busy="true">Contando as linhas…</p>}
             <div className="acoes">
-              <button className="btn secundario" onClick={() => setModal(false)}>Cancelar</button>
-              <button ref={iniciar} className="btn" onClick={disparar}>Iniciar carga completa</button>
+              <button ref={cancelarModal} className="btn secundario" onClick={() => setModal(false)}>Cancelar</button>
+              <button className="btn" onClick={disparar} disabled={!est}>Iniciar carga completa</button>
             </div>
           </div>
         </div>
@@ -148,19 +148,19 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
       {erro && (
         <div role="alert" className="aviso erro">
           <p>{erro}</p>
-          <button className="btn" onClick={disparar}>Tentar de novo</button>
+          <button className="btn" onClick={abrir}>Tentar de novo</button>
         </div>
       )}
 
       {ex && !rodando && ex.status === 'falha' && !erro && (
         <div role="alert" className="aviso erro">
           <p>{ex.mensagem}</p>
-          <button className="btn" onClick={disparar} disabled={!ok}>Tentar de novo</button>
+          <button className="btn" onClick={abrir} disabled={!ok}>Tentar de novo</button>
         </div>
       )}
       {ex && !rodando && (ex.status === 'pausada' || ex.status === 'cancelada') && (
         <div className="aviso-ambar" role="status">
-          <p>{ex.status === 'pausada' ? `Carga pausada: ${ex.pausa_motivo ?? ''}` : ex.mensagem}</p>
+          <p>{ex.status === 'pausada' ? (ex.pausa_motivo ? `Carga pausada: ${ex.pausa_motivo}` : 'Carga pausada') : ex.mensagem}</p>
           <button className="btn" onClick={abrir} disabled={!ok}>Retomar carga</button>
         </div>
       )}
