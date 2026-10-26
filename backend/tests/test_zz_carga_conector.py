@@ -265,3 +265,35 @@ def test_iss_falha_sem_vazar_credencial(client, tokens, leitor, db):
     assert ex.status == "falha" and ex.finalizado_em is not None
     for t in (r.text, ex.mensagem):
         assert HOST not in t and USER not in t and PWD not in t
+
+
+@pytest.mark.parametrize("rota", ["/api/conectores/iss/municipes/executar", "/api/conectores/iss/amostra",
+                                  "/api/conectores/iss/completa"])
+def test_rotas_iss_admin_403_auditado(client, tokens, db, rota):
+    assert client.post(rota).status_code == 401
+    for perfil in ("leitura", "operador"):
+        antes = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "acesso_negado",
+                                                                            Auditoria.alvo == rota))
+        assert client.post(rota, headers=tokens[perfil]).status_code == 403
+        db.expire_all()
+        depois = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "acesso_negado",
+                                                                             Auditoria.alvo == rota))
+        assert depois == antes + 1
+
+
+def test_rota_antiga_iss_delega_a_amostra(client, tokens, leitor, db):
+    r = client.post("/api/conectores/iss/municipes/executar", headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["tipo"] == cc.TIPO_AMOSTRA_ISS
+    assert db.scalar(select(func.count()).select_from(Auditoria).where(
+        Auditoria.acao == "amostra_conector_solicitada", Auditoria.alvo == "conector:iss")) >= 1
+
+
+def test_rota_antiga_iss_409_concorrente(client, tokens, leitor, db):
+    db.add(Execucao(tipo=cc.TIPO_AMOSTRA_ISS, sistema="ISS", status="em_andamento", usuario="outro-iss@aion.local"))
+    db.commit()
+    try:
+        assert client.post("/api/conectores/iss/municipes/executar", headers=tokens["admin"]).status_code == 409
+    finally:
+        for e in db.scalars(select(Execucao).where(Execucao.usuario == "outro-iss@aion.local")):
+            e.status = "falha"
+        db.commit()

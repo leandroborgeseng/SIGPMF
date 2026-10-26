@@ -144,6 +144,14 @@ def cria_tabela(sid: int, dados: TabelaIn, req: Request, u: Usuario = Depends(AD
     return {"id": t.id, **dados.model_dump()}
 
 
+def admin_auditado(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Usuario:
+    """Como ADMIN, mas o 403 também fica auditado (rotas de carga por conector)."""
+    if u.perfil != "admin":
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    return u
+
+
 def _404():
     raise HTTPException(404, "Não encontrado")
 
@@ -196,7 +204,7 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
 
 
 @api.post("/conectores/{conector}/amostra")
-def amostra_conector(conector: str, req: Request, u: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
+def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """PB13: carga real por conector, só pela política de tabelas, TOP (AMOSTRA_LIMITE). Admin, auditado."""
     audita(db, u.email, "amostra_conector_solicitada", f"conector:{conector}", ip=_ip(req))
     try:
@@ -215,7 +223,7 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(ADMIN), d
 
 
 @api.post("/conectores/{conector}/completa")
-def completa_conector(conector: str, req: Request, u: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
+def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Carga completa só depois de uma amostra com contagens reconciliadas (PB/UX-C: travada até existir amostra)."""
     if conector not in cc.CONECTORES:
         _404()
@@ -228,7 +236,7 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(ADMIN), 
 
 
 @api.post("/conectores/iss/municipes/executar")
-def executa_municipe(req: Request, u: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
+def executa_municipe(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Compatibilidade com o #6: a carga real só passa pela amostra por conector (PB13), admin e auditada."""
     return amostra_conector("iss", req, u, db)
 
