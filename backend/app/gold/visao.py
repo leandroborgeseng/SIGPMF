@@ -6,10 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.ingestion.mapeamentos import canonico
 from app.models.camadas import Cidadao, CidadaoSistemas, DadoGold, RegistroBronze, SistemaSilver, Vinculo
+from app.util.datas import normaliza_data_iso
 
 DOMINIO_CAMPO = {"nome": "identificacao", "data_nascimento": "identificacao", "nome_mae": "identificacao",
                  "nome_pai": "identificacao", "sexo": "identificacao", "data_obito": "identificacao",
                  "endereco": "endereco"}
+CAMPOS_DATA = {"data_nascimento", "data_obito"}
 FORA_DA_GOLD = {"cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado", "pista_matricula_correta"}
 
 
@@ -25,6 +27,8 @@ def reconstruir(db: Session) -> dict[str, int]:
         sistemas.setdefault(v.cidadao_id, set()).add(v.sistema)
         c = canonico(r.sistema_origem, r.tabela, r.dados)
         for campo, valor in c.items():
+            if campo in CAMPOS_DATA:
+                valor = normaliza_data_iso(valor)
             if campo in FORA_DA_GOLD or valor is None:
                 continue
             k = (v.cidadao_id, campo)

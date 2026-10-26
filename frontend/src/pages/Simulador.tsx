@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
-import { Erro, Esqueleto } from '../componentes'
+import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
 
-type Item = { cidadao_id: string; nome: string; cpf: string | null; sistemas: string[] }
-type Dado = { dominio: string; campo: string; valor: string; fonte: string; atualizado_em: string | null }
-type Ficha = { cidadao_id: string; nome: string; cpf: string | null; sistemas: string[]; dados: Dado[]; enderecos: { valor: string; fonte: string; atualizado_em: string | null; mais_recente: boolean }[] }
+type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
+type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
+type Ficha = { cidadao_id: string; nome: string | null; cpf: string | null; cns?: string | null; sistemas: string[] | null; dados: Dado[] | null; enderecos: { valor: string | null; fonte: string | null; atualizado_em: string | null; mais_recente: boolean }[] | null }
 
 const DOMINIO: Record<string, string> = { identificacao: 'Identificação', endereco: 'Endereço', saude: 'Saúde', cemiterio: 'Cemitério' }
 const CAMPO: Record<string, string> = { nome: 'Nome', data_nascimento: 'Data de nascimento', nome_mae: 'Nome da mãe', endereco: 'Endereço', cadastro: 'Cadastro' }
@@ -22,7 +22,7 @@ export default function Simulador() {
   const buscar = async (e?: FormEvent) => {
     e?.preventDefault()
     setErro(false); setCarregando(true); setSel(null); setBuscado(busca)
-    try { setLista(await api<Item[]>(`/silver/cidadaos?busca=${encodeURIComponent(busca)}`)) }
+    try { setLista((await api<Item[] | null>(`/silver/cidadaos?busca=${encodeURIComponent(busca)}`)) ?? []) }
     catch { setErro(true) } finally { setCarregando(false) }
   }
 
@@ -42,13 +42,17 @@ export default function Simulador() {
           <ul className="lista-cartoes" aria-label="Resultados">
             {lista.map((c) => (
               <li key={c.cidadao_id} className="cartao">
-                <button className="link-btn" onClick={() => setSel(c.cidadao_id)}>{c.nome}</button>
-                <div>CPF: {c.cpf ?? 'não informado'} · Sistemas: {c.sistemas.join(', ')}</div>
+                <button className="link-btn" onClick={() => setSel(c.cidadao_id)}>{c.nome || 'Nome não informado'}</button>
+                <div>CPF: {c.cpf ?? 'não informado'} · Sistemas: {(c.sistemas ?? []).join(', ') || '—'}</div>
               </li>
             ))}
           </ul>
         )}
-      {sel && <FichaCidadao id={sel} voltar={() => setSel(null)} />}
+      {sel && (
+        <ErrorBoundary chave={sel} titulo="Não foi possível carregar os dados deste cidadão." onVoltar={() => setSel(null)} rotuloVoltar="Voltar à busca">
+          <FichaCidadao id={sel} voltar={() => setSel(null)} />
+        </ErrorBoundary>
+      )}
     </section>
   )
 }
@@ -62,7 +66,13 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
   const [aviso, setAviso] = useState('')
   const btnRevelar = useRef<HTMLButtonElement>(null)
 
-  const carregar = () => { setErro(false); api<Ficha>(`/gold/cidadaos/${id}`).then(setF).catch(() => setErro(true)) }
+  const [motivo, setMotivo] = useState('')
+  const carregar = () => {
+    setErro(false); setF(null)
+    api<Ficha>(`/gold/cidadaos/${id}`).then(setF).catch((e) => {
+      setMotivo(e instanceof ApiErro ? `HTTP ${e.status}` : 'falha de rede'); setErro(true)
+    })
+  }
   useEffect(carregar, [id])
   useEffect(() => () => setCpf(null), [id])
 
@@ -70,14 +80,20 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
     setCpf(valor); setAviso('Revelação registrada na auditoria.')
     window.setTimeout(() => setCpf(null), segundos * 1000)
   }
-  if (erro) return <Erro texto="Não foi possível carregar os dados do cidadão. Tente novamente." onRetry={carregar} />
-  if (!f) return <Esqueleto />
-  const grupos = f.dados.reduce<Record<string, Dado[]>>((acc, d) => ((acc[d.dominio] ??= []).push(d), acc), {})
-  const fmt = (c: string) => `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}`
+  if (erro) return (
+    <>
+      <Erro texto={`Não foi possível carregar os dados deste cidadão (${motivo}). Tente de novo.`} onRetry={carregar} />
+      <button className="btn secundario" onClick={voltar}>Voltar à busca</button>
+    </>
+  )
+  if (!f) return <Esqueleto texto="Carregando dados do cidadão…" />
+  const enderecos = f.enderecos ?? []
+  const grupos = (f.dados ?? []).reduce<Record<string, Dado[]>>((acc, d) => ((acc[d.dominio] ??= []).push(d), acc), {})
+  const fmt = (c: string) => c.length !== 11 ? c : `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}`
   return (
     <article className="ficha" aria-labelledby="t-ficha">
-      <button className="btn secundario" onClick={voltar}>Voltar</button>
-      <h2 id="t-ficha">{f.nome}</h2>
+      <button className="btn secundario" onClick={voltar}>Voltar à busca</button>
+      <h2 id="t-ficha">{f.nome || 'Nome não informado'}</h2>
       <p>
         CPF: <span data-testid="cpf">{cpf ? fmt(cpf) : (f.cpf ?? 'não informado')}</span>{' '}
         {sessao?.perfil === 'admin_lgpd' && f.cpf && !cpf && (
@@ -85,6 +101,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
         )}
       </p>
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
+      {Object.keys(grupos).length === 0 && <p className="vazio">—</p>}
       {Object.entries(grupos).map(([dom, itens]) => (
         <section key={dom} aria-labelledby={`d-${dom}`}>
           <h3 id={`d-${dom}`}>{DOMINIO[dom] ?? dom}</h3>
@@ -92,8 +109,8 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
             {itens.map((d) => (
               <div key={`${d.campo}-${d.fonte}`} className="campo">
                 <dt>{CAMPO[d.campo] ?? d.campo}</dt>
-                <dd>{d.campo === 'data_nascimento' ? dataBR(d.valor + 'T12:00:00') : d.valor} — Fonte: {d.fonte} · Atualizado em {dataBR(d.atualizado_em)}
-                  {d.campo === 'endereco' && f.enderecos.length > 1 && <div className="nota">Há outras versões em outras fontes</div>}
+                <dd>{d.campo === 'data_nascimento' || d.campo === 'data_obito' ? dataBR(d.valor) : (d.valor || '—')} — Fonte: {d.fonte || '—'} · Atualizado em {dataBR(d.atualizado_em)}
+                  {d.campo === 'endereco' && enderecos.length > 1 && <div className="nota">Há outras versões em outras fontes</div>}
                 </dd>
               </div>
             ))}
