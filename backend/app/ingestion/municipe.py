@@ -5,7 +5,8 @@ O ISS não tem PK e o `CPF` é varchar(18) com formatação livre. Regras:
 - M1: deduplicação pelo documento normalizado; vale a linha de `Data_Alteracao` mais recente (empate: a última lida).
   As demais linhas do mesmo documento contam como duplicadas; as que divergem da vencedora ficam como versões.
 - M3: `Tipo_Pessoa = 'J'` vira empresa, nunca cidadão.
-- M4: `Tipo_Pessoa` 'R', nulo ou desconhecido -> pendência (até o DBA definir o significado).
+- M4: `Tipo_Pessoa` 'R', nulo ou desconhecido -> pendência (até o DBA definir o significado). Conferido ANTES
+  da deduplicação: cada linha R/nula vira uma pendência com motivo, nunca some como duplicada (ressalva 1).
 - M2: `Documento_SoNumeros` (só dígitos, do ISS) confere a normalização: se diferir, vale o normalizado e a
   linha conta em `divergencia_documento` (sem expor o documento).
 - M2: documento nulo ou com dígito verificador inválido -> pendência, sem `cidadao_id`.
@@ -97,10 +98,23 @@ class Resultado:
         return c["lidas"] == c["novas"] + c["atualizadas"] + c["inalteradas"] + c["duplicadas"] + c["pendentes"]
 
 
+def _pendencia(r: "Resultado", c: dict, pos: int, motivo: str, vistos: dict[str, int]) -> None:
+    """Uma pendência por linha lida. Linhas idênticas recebem sufixo de ocorrência para não colapsarem."""
+    k = chave_linha(c, pos)
+    n = vistos.get(k, 0)
+    vistos[k] = n + 1
+    if n:
+        k = hashlib.sha256(f"{k}#{n}".encode()).hexdigest()[:32]
+    r.contagem["pendentes"] += 1
+    r.pendencias.append({"chave": k, "motivo": motivo, "nome": c["nome"], "tipo_pessoa": c["tipo_pessoa"],
+                         "documento_mascarado": docmod.mascara(c["documento"])})
+
+
 def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
     """`existentes`: documento normalizado -> hash já gravado na silver (para separar nova/atualizada/inalterada)."""
     existentes = existentes or {}
     r = Resultado()
+    vistos: dict[str, int] = {}
     grupos: dict[str, list[tuple[int, dict]]] = {}
     for pos, linha in enumerate(linhas):
         r.contagem["lidas"] += 1
@@ -108,10 +122,7 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
         if diverge_documento(linha):
             r.contagem["divergencia_documento"] += 1   # informativo: não muda a categoria da linha (M6)
         if c["documento"] is None:
-            r.contagem["pendentes"] += 1
-            r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "documento_nulo", "nome": c["nome"],
-                                 "tipo_pessoa": c["tipo_pessoa"],
-                                 "documento_mascarado": docmod.mascara(c["documento"])})
+            _pendencia(r, c, pos, "documento_nulo", vistos)
             continue
         grupos.setdefault(c["documento"], []).append((pos, c))
 
@@ -120,13 +131,23 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
         # linhas vão para pendência "tipo_divergente"; a deduplicação só acontece dentro do mesmo tipo.
         if len({c["tipo_pessoa"] for _p, c in itens}) > 1:
             for pos, c in itens:
-                r.contagem["pendentes"] += 1
-                r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "tipo_divergente", "nome": c["nome"],
-                                     "tipo_pessoa": c["tipo_pessoa"],
-                                     "documento_mascarado": docmod.mascara(c["documento"])})
+                _pendencia(r, c, pos, "tipo_divergente", vistos)
+            continue
+        # Ressalva 1 do Tester: Tipo_Pessoa e documento são conferidos ANTES da deduplicação. Se o grupo não pode
+        # virar registro (R/nulo/desconhecido, ou documento inválido), TODAS as linhas vão para pendência com motivo,
+        # cada uma com chave própria: nenhuma some como "duplicada" de uma linha que nem entrou na silver.
+        tipo = itens[0][1]["tipo_pessoa"]
+        motivo = None
+        if tipo not in ("F", "J"):
+            motivo = "tipo_pessoa_indefinido"          # M4: R, nulo ou desconhecido
+        elif not docmod.valido(doc, tipo):
+            motivo = "documento_invalido"              # M2: DV inválido (ou tamanho incompatível com o tipo)
+        if motivo:
+            for pos, c in itens:
+                _pendencia(r, c, pos, motivo, vistos)
             continue
         ordenados = sorted(itens, key=lambda t: (_quando(t[1]["data_alteracao"]), t[0]))
-        pos_v, venc = ordenados[-1]
+        _pos_v, venc = ordenados[-1]
         h = hash_conteudo(venc)
         divergentes = {}
         for _pos, c in ordenados[:-1]:
@@ -134,17 +155,6 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
             hc = hash_conteudo(c)
             if hc != h and hc not in divergentes:
                 divergentes[hc] = c
-        tipo = venc["tipo_pessoa"]
-        motivo = None
-        if tipo not in ("F", "J"):
-            motivo = "tipo_pessoa_indefinido"          # M4: R, nulo ou desconhecido
-        elif not docmod.valido(doc, tipo):
-            motivo = "documento_invalido"              # M2: DV inválido (ou tamanho incompatível com o tipo)
-        if motivo:
-            r.contagem["pendentes"] += 1
-            r.pendencias.append({"chave": chave_linha(venc, pos_v), "motivo": motivo, "nome": venc["nome"],
-                                 "tipo_pessoa": tipo, "documento_mascarado": docmod.mascara(doc)})
-            continue
         for hc, c in divergentes.items():
             r.versoes.append({"documento": doc, "hash": hc, "dados": c})
         if tipo == "J":

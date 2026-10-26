@@ -259,8 +259,15 @@ def limite_50(monkeypatch):
     get_settings.cache_clear()
 
 
+def exige_banco_de_teste(nome: str | None) -> None:
+    """Trava: só apaga dados se o banco conectado for de teste (nome contém '_test'). Nunca em produção/HEF."""
+    if not nome or "_test" not in nome.lower():
+        raise RuntimeError(f"Recusado: _isola_bronze só roda em banco de teste (nome com '_test'); banco={nome!r}")
+
+
 def _isola_bronze(db, sistema):
     """Banco de TESTE: zera a prata/ouro (derivadas, reconstruídas pela carga), a bronze e os checkpoints do sistema."""
+    exige_banco_de_teste(db.execute(text("select current_database()")).scalar())
     for t in ("silver.enderecos", "silver.vinculos", "silver.identificadores", "silver.correlacoes_pendentes",
               "silver.inconsistencias", "gold.cidadao_dados", "gold.cidadao_sistemas"):
         db.execute(text(f"delete from {t}"))
@@ -392,3 +399,22 @@ def test_cc9_limite_proporcional():
     assert ccomp.problema_chave("T", ("a",), v) is None  # 1,0%: no limite, quarentena
     assert "exige chave sem NULL" in ccomp.problema_chave("T", ("a",), {**v, "nulos": 11, "distintas": 989})
     assert "não é única" in ccomp.problema_chave("T", ("a",), {**v, "distintas": 989})
+
+
+@pytest.mark.parametrize("nome", ["sigpmf", "sigpmf_prod", "hef", "postgres", "", None])
+def test_isola_bronze_recusa_banco_que_nao_e_de_teste(nome):
+    with pytest.raises(RuntimeError, match="banco de teste"):
+        exige_banco_de_teste(nome)
+
+
+@pytest.mark.parametrize("nome", ["sigpmf_test", "sigpmf_mun_ress_teste", "SIGPMF_TEST_CI"])
+def test_isola_bronze_aceita_banco_de_teste(nome):
+    exige_banco_de_teste(nome)
+
+
+def test_isola_bronze_confere_o_banco_conectado(db, monkeypatch):
+    class Falso:
+        def execute(self, *a, **k):
+            return type("R", (), {"scalar": lambda self: "sigpmf"})()
+    with pytest.raises(RuntimeError):
+        _isola_bronze(Falso(), "CEMITERIO")
