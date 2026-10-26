@@ -201,7 +201,7 @@ def test_m7_api_mascara_documento(carga, client, tokens):
     assert tipos <= {"cidadao", "empresa"}
     emp = [x for x in r.json() if x["tipo"] == "empresa"]
     assert emp and all(x["cidadao_id"] is None for x in emp)
-    p = client.get("/api/silver/municipes/pendencias", headers=tokens["leitura"])
+    p = client.get("/api/silver/municipes/pendencias", headers=tokens["operador"])
     assert p.status_code == 200 and A not in p.text
 
 
@@ -245,3 +245,52 @@ def test_documento_sonumeros_confere_normalizacao():
     docs = {reg.documento for reg in r.registros}
     assert A in docs and B in docs  # vale o normalizado do CPF mesmo com divergência
     assert not mun.diverge_documento(ok) and mun.diverge_documento(diverge) and not mun.diverge_documento(sem)
+
+
+# ---------- Ressalvas baixas do QA do #6 (R1-R4) ----------
+def test_m9_tipo_divergente_manda_todas_para_pendencia():
+    f = linha(A, nome="PESSOA F", quando="2026-01-01T10:00:00")
+    r_ = linha(A, tipo="R", nome="PESSOA R", quando="2026-02-01T10:00:00")
+    n_ = linha(B, tipo=None, nome="NULA B")
+    fb = linha(B, nome="F B")
+    f2 = linha(C, nome="C1", quando="2026-01-01T10:00:00")
+    f3 = linha(C, nome="C2", quando="2026-03-01T10:00:00")
+    r = mun.classificar([f, r_, n_, fb, f2, f3])
+    assert r.fecha()
+    div = [p for p in r.pendencias if p["motivo"] == "tipo_divergente"]
+    assert {p["nome"] for p in div} == {"PESSOA F", "PESSOA R", "NULA B", "F B"}
+    assert [g.dados["nome"] for g in r.registros] == ["C2"] and r.contagem["duplicadas"] == 1
+
+
+@pytest.mark.parametrize("col", ["Num_CTPS", "Titulo", "Senha_Web", "titulo_eleitor", "CNH_Numero", "remember_token",
+                                 "Password", "CID", "Cod_CID", "CID10"])
+def test_r2_coluna_sensivel_por_padrao(col):
+    from dataclasses import replace
+
+    from app.connectors.sqlserver.politicas import TabelaRecusada
+    p = replace(ISS, colunas={"Municipes": ISS.colunas["Municipes"] + (col,)})
+    with pytest.raises(TabelaRecusada):
+        p.colunas_select("Municipes")
+
+
+@pytest.mark.parametrize("col", ["Cidade", "Cidadao_Id", "Nome_Mae"])
+def test_r2_padrao_nao_pega_falsos_positivos(col):
+    from dataclasses import replace
+    p = replace(ISS, colunas={"Municipes": ISS.colunas["Municipes"] + (col,)})
+    assert col in p.colunas_select("Municipes")
+
+
+def test_r3_chave_de_pendencia_nao_depende_da_posicao():
+    a, b = linha(None, nome="SEM DOC 1"), linha(C, tipo="R", nome="TIPO R")
+    k1 = sorted(p["chave"] for p in mun.classificar([a, b]).pendencias)
+    k2 = sorted(p["chave"] for p in mun.classificar([linha(A), b, a]).pendencias)
+    assert k1 == k2
+
+
+def test_m10_pendencias_403_para_leitura(carga, client, tokens):
+    assert client.get("/api/silver/municipes/pendencias").status_code == 401
+    assert client.get("/api/silver/municipes/pendencias", headers=tokens["leitura"]).status_code == 403
+    for perfil in ("operador", "admin"):
+        p = client.get("/api/silver/municipes/pendencias", headers=tokens[perfil])
+        assert p.status_code == 200 and p.json()
+        assert A not in p.text and B not in p.text and C not in p.text and J not in p.text

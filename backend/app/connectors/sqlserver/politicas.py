@@ -11,6 +11,12 @@ class TabelaRecusada(ValueError):
     pass
 
 
+# R2 do QA do #6: nomes sensíveis por padrão (sem distinção de caixa), não só pelo nome exato.
+# "cid" só como token (CID, Cod_CID, CID10), para não pegar Cidade/Cidadao.
+_PADRAO_PROIBIDO = re.compile(r"ctps|titulo|reservista|cnh|senha|password|token|(?:^|_)cid(?:\d*|_.*)$",
+                              re.IGNORECASE)
+
+
 @dataclass(frozen=True)
 class Politica:
     sistema: str
@@ -43,7 +49,7 @@ class Politica:
         cols = self.colunas.get(nome, ())
         if not cols:  # tabelas de apoio ainda sem lista de colunas: recusa explícita (ressalva do QA do #4)
             raise TabelaRecusada(f"Tabela {nome} de {self.sistema} sem colunas definidas na política.")
-        ruins = {c for c in cols if c.lower() in {p.lower() for p in self.proibidas}}
+        ruins = {c for c in cols if c.lower() in {p.lower() for p in self.proibidas} or _PADRAO_PROIBIDO.search(c)}
         if ruins:
             raise TabelaRecusada(f"Colunas proibidas na política: {sorted(ruins)}")
         return cols

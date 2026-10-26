@@ -66,9 +66,12 @@ def hash_conteudo(c: dict) -> str:
     return hashlib.sha256(json.dumps(base, sort_keys=True).encode()).hexdigest()
 
 
-def chave_linha(c: dict, posicao: int) -> str:
-    """Chave sintética de uma linha sem PK (não expõe o documento)."""
-    return hashlib.sha256(json.dumps({**c, "_pos": posicao}, sort_keys=True).encode()).hexdigest()[:32]
+def chave_linha(c: dict, _posicao: int | None = None) -> str:
+    """Chave sintética de uma linha sem PK (não expõe o documento). Estável entre execuções (R3 do QA do #6):
+    documento + tipo + Data_Alteracao + hash do conteúdo, nunca a posição de leitura (que muda com a ordem)."""
+    base = {"doc": c.get("documento"), "tipo": c.get("tipo_pessoa"), "alt": c.get("data_alteracao"),
+            "h": hash_conteudo(c)}
+    return hashlib.sha256(json.dumps(base, sort_keys=True).encode()).hexdigest()[:32]
 
 
 @dataclass
@@ -112,6 +115,14 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
         grupos.setdefault(c["documento"], []).append((pos, c))
 
     for doc, itens in grupos.items():
+        # M9 (decisão do TL no #6): mesmo documento com Tipo_Pessoa diferente (F+R, F+nulo, F+J...) -> TODAS as
+        # linhas vão para pendência "tipo_divergente"; a deduplicação só acontece dentro do mesmo tipo.
+        if len({c["tipo_pessoa"] for _p, c in itens}) > 1:
+            for pos, c in itens:
+                r.contagem["pendentes"] += 1
+                r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "tipo_divergente", "nome": c["nome"],
+                                     "tipo_pessoa": c["tipo_pessoa"]})
+            continue
         ordenados = sorted(itens, key=lambda t: (_quando(t[1]["data_alteracao"]), t[0]))
         pos_v, venc = ordenados[-1]
         h = hash_conteudo(venc)
