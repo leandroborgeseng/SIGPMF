@@ -22,7 +22,7 @@ export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
 ]
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
-  camadas: { bronze: number; prata: number; pendencias: number }
+  camadas: { bronze: number; prata: number; pendencias: number; gerados_prata?: number }
   reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string }> | null
   quarentena?: number
 }
@@ -244,6 +244,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
             <div><dt>Gravados</dt><dd>{milhar(ex.gravados)}</dd></div>
             <div><dt>Bronze</dt><dd>{milhar(sit.camadas.bronze)}</dd></div>
             <div><dt>Prata</dt><dd>{milhar(sit.camadas.prata)}</dd></div>
+            {sit.camadas.gerados_prata != null && <div><dt>Registros gerados na prata</dt><dd>{milhar(sit.camadas.gerados_prata)}</dd></div>}
             <div><dt>Pendências</dt><dd>{milhar(sit.camadas.pendencias)}</dd></div>
           </dl>
           {(sit.quarentena ?? 0) > 0 && (
@@ -300,8 +301,10 @@ function Andamento({ ex, nome, onCancelar }: { ex: ExecCompleta; nome: string; o
       {atual === 'leitura'
         ? <p>Lendo da origem…{ex.tabela_atual && <span className="sutil"> · {ex.tabela_atual}</span>}</p>
         : <p>Leitura concluída · tratando os dados</p>}
-      {def.contador && proc != null && (
-        <p className="num">{def.contador}: {milhar(proc)}{tot != null && <> de {milhar(tot)}</>}</p>
+      {def.contador && proc != null && (atual === 'prata'
+        // CC11: uma unidade só (linhas da bronze tratadas), nunca acima do total
+        ? <p className="num">Tratando: {milhar(tot != null ? Math.min(proc, tot) : proc)}{tot != null && <> de {milhar(tot)}</>} linhas da bronze</p>
+        : <p className="num">{def.contador}: {milhar(proc)}{tot != null && <> de {milhar(tot)}</>}</p>
       )}
       <p className="sutil">Em processamento, números parciais</p>
       <p className="sutil">Decorrido: {duracao(ex.iniciado_em)} · Última atividade: {hora(ex.atualizado_em ?? ex.iniciado_em)}</p>

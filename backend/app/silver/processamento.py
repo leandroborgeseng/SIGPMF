@@ -184,9 +184,10 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
     total, feitos = len(regs), [0]
 
     def passo():
+        """CC11: uma unidade só, cada registro da bronze contado uma vez (nunca passa do total)."""
         feitos[0] += 1
         if progresso and feitos[0] % 5000 == 0:
-            progresso(feitos[0], total)
+            progresso(min(feitos[0], total), total)
 
     # CNS por pessoa (sistema, matrícula) e donos de cada CNS
     cns_pessoa: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -264,8 +265,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
             ident(vinculos[-1][2], "cns", x)
 
     # 3) atributos
-    for r, c in sem_ident:
-        passo()
+    for r, c in sem_ident:  # já contados na etapa 1 (CC11: sem contar de novo)
         melhor, mcid, mattrs = 0.0, None, []
         if indexado and pesos_positivos:
             top, cid = idx.melhor(c, p)
@@ -287,7 +287,10 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
             ident(cid, "cns", x)
 
     # 4) inconsistências do e-SUS: sempre revisão
+    for _ in por_papel["cns_extra"]:  # só alimentam o CNS acima: contam uma vez aqui
+        passo()
     for r, c, _, _ in por_papel["revisao"]:
+        passo()
         x = cnsmod.normaliza(c.get("cns"))
         cand = [ids[("cns", x)].cidadao_id] if x and ("cns", x) in ids else []
         pendente(r, c, "esus_inconsistencia", cand)
@@ -298,7 +301,8 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
     for r, c, _, m in por_papel["obito"]:
         grupos[(r.sistema_origem, r.id_origem)].append((m.get("prioridade", 9), r.tabela, r, c))
     for (sis, chave), itens in sorted(grupos.items()):
-        passo()
+        for _ in itens:  # cada registro da bronze do grupo conta uma vez
+            passo()
         itens.sort(key=lambda t: (t[0], t[1]))
         _, _, r, c = itens[0]
         for _, tab, r2, c2 in itens[1:]:
@@ -352,5 +356,6 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
     db.add_all(enderecos)
     db.flush()
     if progresso:
-        progresso(total, total)
-    return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend)}
+        progresso(min(feitos[0], total), total)
+    return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
+            "total_bronze": total}

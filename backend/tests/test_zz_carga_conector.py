@@ -143,12 +143,19 @@ def test_falha_na_origem_nao_deixa_carga_parcial(client, tokens, leitor, db):
         assert HOST not in t and USER not in t and PWD not in t
 
 
-def test_amostra_concorrente_409(client, tokens, leitor, db):
-    db.add(Execucao(tipo=cc.TIPO_AMOSTRA, sistema="SAUDE", status="em_andamento", usuario="outro@aion.local"))
+def test_amostra_orfa_sem_trava_vira_interrompida_e_nova_inicia(client, tokens, leitor, db):
+    """CC12: linha em_andamento sem processo vivo (trava livre, ex.: reinício) não bloqueia mais a amostra."""
+    from app.models.controle import Auditoria
+    velha = Execucao(tipo=cc.TIPO_AMOSTRA, sistema="SAUDE", status="em_andamento", usuario="outro@aion.local")
+    db.add(velha)
     db.commit()
     try:
         r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-        assert r.status_code == 409
+        assert r.status_code == 200, r.text
+        db.expire_all()
+        assert db.get(Execucao, velha.id).status == "interrompida"
+        assert db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida",
+                                                 Auditoria.alvo == f"execucao:{velha.id}")) is not None
     finally:
         for e in db.scalars(select(Execucao).where(Execucao.usuario == "outro@aion.local")):
             e.status = "falha"  # encerra a execução sintética (sem apagar nada)
@@ -314,11 +321,27 @@ def test_rota_antiga_iss_delega_a_amostra(client, tokens, leitor, db):
 
 
 def test_rota_antiga_iss_409_concorrente(client, tokens, leitor, db):
-    db.add(Execucao(tipo=cc.TIPO_AMOSTRA_ISS, sistema="ISS", status="em_andamento", usuario="outro-iss@aion.local"))
+    """Execução viva (trava segura por outra sessão): 409 dizendo qual execução e desde quando (CC12)."""
+    import zlib
+
+    from sqlalchemy import text
+
+    from app.core.db import SessionLocal
+    ex = Execucao(tipo=cc.TIPO_AMOSTRA_ISS, sistema="ISS", status="em_andamento", usuario="outro-iss@aion.local")
+    db.add(ex)
     db.commit()
+    outra = SessionLocal()
+    k = zlib.crc32(b"amostra:ISS")
+    assert outra.scalar(text("select pg_try_advisory_lock(:k)"), {"k": k})
     try:
-        assert client.post("/api/conectores/iss/municipes/executar", headers=tokens["admin"]).status_code == 409
+        r = client.post("/api/conectores/iss/municipes/executar", headers=tokens["admin"])
+        assert r.status_code == 409
+        assert "amostra de ISS em andamento desde" in r.json()["detail"] and "última atividade" in r.json()["detail"]
+        db.expire_all()
+        assert db.get(Execucao, ex.id).status == "em_andamento"  # viva e recente: não é interrompida
     finally:
+        outra.execute(text("select pg_advisory_unlock(:k)"), {"k": k})
+        outra.close()
         for e in db.scalars(select(Execucao).where(Execucao.usuario == "outro-iss@aion.local")):
             e.status = "falha"
         db.commit()

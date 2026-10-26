@@ -7,7 +7,6 @@
 - Uma amostra por conector por vez: 409 se já houver uma em andamento (advisory lock + status).
 - Nenhum host, usuário ou senha em mensagem, log ou resposta.
 """
-import zlib
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
@@ -105,23 +104,24 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
     if not tabelas:
         raise SemMapeamento(f"Conector {conector} ainda sem mapeamento para a silver nesta versão.")
     pol = politica(sistema)
-    lock = zlib.crc32(f"amostra:{sistema}".encode())
+    from app.services import trava as tv
+    lock = tv.chave_lock(sistema)
     # conexão dedicada: o lock de sessão não pode depender da conexão que a Session troca a cada commit
     trava = db.get_bind().connect()
     if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": lock}).scalar():
         trava.close()
-        raise Conflito(f"Já existe uma amostra de {conector} em andamento.")
+        raise Conflito(tv.conflito(db, sistema, conector, usuario))
     try:
-        if db.scalar(select(Execucao.id).where(Execucao.tipo.in_(TIPOS_AMOSTRA), Execucao.sistema == sistema,
-                                               Execucao.status == "em_andamento")):
-            raise Conflito(f"Já existe uma amostra de {conector} em andamento.")
+        # CC12: temos a trava, então nenhuma execução "em_andamento" deste sistema está viva (sobrou de reinício)
+        tv.limpa_orfas(db, sistema, usuario)
         cfg, fallback = config_do_conector(conector, db)
         especifico = getattr(get_settings(), f"sqlserver_database_{conector}", None)
         origem_banco = ("SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
                         if especifico else "catálogo (controle.bases_catalogo)")
         if sistema == "ISS":
             return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor)
-        ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario)
+        ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario,
+                      atualizado_em=datetime.now(UTC))
         db.add(ex)
         db.commit()
         db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
@@ -135,6 +135,7 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
                 try:
                     cols = pol.colunas_select(t)
                     lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
+                    tv.sinal_de_vida(ex.id)
                 except Exception as exc:  # noqa: BLE001
                     raise FalhaLeitura(t, exc) from exc
             if not any(lidas.values()):  # 0 linhas: nunca "sem_novidades"
@@ -153,7 +154,8 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
                     raise FalhaLeitura(t, exc) from exc
                 for k in tot:
                     tot[k] += c[k]
-            sres = processamento.reconstruir(db)
+                tv.sinal_de_vida(ex.id)
+            sres = processamento.reconstruir(db, progresso=lambda _n, _t: tv.sinal_de_vida(ex.id))
             gres = visao.reconstruir(db)
             for k, v in tot.items():
                 setattr(ex, k, v)

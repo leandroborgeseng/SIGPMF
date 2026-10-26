@@ -11,7 +11,13 @@ export type Base = {
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
   completa_disponivel?: boolean; completa_liberada?: boolean; completa_motivo?: string | null
   completa_em_andamento?: boolean
+  bloqueio?: Bloqueio | null
   contagens: Contagens; ultima_carga: UltimaCarga | null
+}
+/** CC12: execução (amostra ou completa) que segura o conector. */
+export type Bloqueio = {
+  execucao_id: number; tipo: 'amostra' | 'completa'; tipo_rotulo: string; iniciado_em: string; atualizado_em: string | null
+  viva: boolean; parada_min: number; alerta_min: number; parada: boolean; mensagem: string
 }
 type Modo = 'amostra' | 'completa' | 'reprocessar'
 
@@ -135,6 +141,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
   const ocupado = rodandoAlgo || !habilitada
   const u = b.ultima_carga
   const [ccRodando, setCcRodando] = useState(b.completa_em_andamento === true)
+  const bl = b.bloqueio ?? null
+  const travada = bl !== null && !bl.parada  // viva e com atividade recente: não dá para puxar outra
   return (
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
@@ -143,6 +151,7 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
         {b.com_erro && <> <span className="selo falha"><i aria-hidden="true" />Última carga falhou</span></>}
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
+      {bl && <AvisoBloqueio bl={bl} nome={b.nome} conector={b.conector_id ?? String(b.id)} ehAdmin={ehAdmin} onFim={onFim} />}
       <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
       {u?.status === 'origem_vazia' && <p className="aviso-ambar" role="status">{MSG_ORIGEM_VAZIA}</p>}
       {u?.status === 'falha' && u.erro && (
@@ -175,10 +184,14 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
       {ehAdmin && b.tem_conector && (
         <div className="acoes">
-          <button className="btn" disabled={rodandoAlgo || !b.pode_carregar} aria-label={`Puxar amostra de ${b.nome}`} onClick={() => onAcao(b, 'amostra')}>
+          <button className="btn" disabled={rodandoAlgo || !b.pode_carregar || travada} aria-label={`Puxar amostra de ${b.nome}`}
+            aria-describedby={travada ? `motivo-trava-${b.id}` : undefined} onClick={() => onAcao(b, 'amostra')}>
             {rodando === b.id ? 'Carregando…' : 'Puxar amostra'}
           </button>
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
+          {b.pode_carregar && travada && bl && (
+            <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>
+          )}
           {b.completa_disponivel && b.conector_id && (
             <CargaCompleta conector={b.conector_id} liberada={b.completa_liberada === true} motivo={b.completa_motivo ?? null} onFim={onFim}
               onRodando={setCcRodando} />
@@ -195,5 +208,50 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
         </div>
       )}
     </li>
+  )
+}
+
+/** CC12 (Designer UX): aviso âmbar com tipo, início e última atividade; "Interromper" só para admin, com confirmação. */
+export function AvisoBloqueio({ bl, nome, conector, ehAdmin, onFim }: { bl: Bloqueio; nome: string; conector: string; ehAdmin: boolean; onFim: () => void }) {
+  const [abrir, setAbrir] = useState(false)
+  const [motivo, setMotivo] = useState('')
+  const [erro, setErro] = useState<string | null>(null)
+  const [enviando, setEnviando] = useState(false)
+  const tipo = bl.tipo === 'completa' ? 'Carga completa' : 'Amostra'
+  const interromper = async () => {
+    setEnviando(true); setErro(null)
+    try {
+      await api(`/conectores/${conector}/execucoes/${bl.execucao_id}/interromper`, { method: 'POST', body: JSON.stringify({ motivo: motivo.trim() }) })
+      setAbrir(false); setMotivo(''); onFim()
+    } catch (e) {
+      setErro(e instanceof ApiErro ? e.message : 'Não foi possível interromper.')
+    } finally {
+      setEnviando(false)
+    }
+  }
+  return (
+    <div className="aviso-ambar bloqueio" role="status">
+      <p><strong>{tipo} de {nome} em andamento</strong> · iniciada em {dataHoraBR(bl.iniciado_em)}
+        {' '}· última atividade {dataHoraBR(bl.atualizado_em ?? bl.iniciado_em)}</p>
+      {bl.parada && <p>Sem atividade há {Math.round(bl.parada_min)} min (limite {bl.alerta_min} min){bl.viva ? '' : ' e sem processo ativo'}.
+        {' '}A próxima carga marca esta execução como interrompida, sem apagar a bronze.</p>}
+      {ehAdmin && (
+        <>
+          <button className="btn secundario" disabled={!bl.parada} aria-describedby={`int-${bl.execucao_id}`} onClick={() => setAbrir(true)}>Interromper</button>
+          {!bl.parada && <span className="sutil" id={`int-${bl.execucao_id}`}> Disponível depois de {bl.alerta_min} min sem atividade</span>}
+        </>
+      )}
+      {abrir && (
+        <div role="dialog" aria-modal="false" aria-labelledby={`t-int-${bl.execucao_id}`} className="cartao confirmar">
+          <p id={`t-int-${bl.execucao_id}`}>Interromper a {tipo.toLowerCase()} de {nome}? A execução fica como interrompida
+            {' '}e nada é apagado. O motivo fica na auditoria.</p>
+          <label htmlFor={`motivo-${bl.execucao_id}`}>Motivo</label>
+          <input id={`motivo-${bl.execucao_id}`} value={motivo} onChange={(e) => setMotivo(e.target.value)} maxLength={300} />
+          {erro && <p role="alert" className="aviso erro">{erro}</p>}
+          <button className="btn secundario" onClick={() => setAbrir(false)}>Cancelar</button>{' '}
+          <button className="btn" disabled={enviando || motivo.trim().length < 5} onClick={interromper}>Confirmar interrupção</button>
+        </div>
+      )}
+    </div>
   )
 }
