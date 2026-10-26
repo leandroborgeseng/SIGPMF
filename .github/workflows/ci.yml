@@ -106,11 +106,15 @@ jobs:
           porta=$(docker compose port postgres 5432 2>/dev/null || true)
           echo "docker compose port postgres 5432 -> '${porta}'"
           case "$porta" in ""|*:0) echo "ok: sem porta no host" ;; *) echo "postgres publica 5432"; exit 1 ;; esac
-      - name: alembic current = 0002 (head)
+      - name: alembic current = alembic heads
         run: |
-          out=$(docker compose exec -T backend alembic current 2>&1)
-          echo "$out"
-          echo "$out" | grep -q '0002 (head)'
+          cur=$(docker compose exec -T backend alembic current 2>&1)
+          heads=$(docker compose exec -T backend alembic heads 2>&1)
+          echo "current: $cur"; echo "heads: $heads"
+          head=$(echo "$heads" | grep -oE '^[0-9a-zA-Z_]+ \(head\)' | head -1 | cut -d' ' -f1)
+          test -n "$head"
+          test "$(echo "$heads" | grep -c '(head)')" -eq 1
+          echo "$cur" | grep -q "^$head (head)"
       - name: Smoke HTTP (dados sintéticos)
         run: |
           set -euo pipefail
