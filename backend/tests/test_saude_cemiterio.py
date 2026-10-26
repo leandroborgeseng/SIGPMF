@@ -81,9 +81,9 @@ def test_tabela_fora_da_lista_recusada():
             SAUDE.autoriza(nome)
 
 
-def test_s4_amostra_padrao_100():
-    from app.core.config import get_settings
-    assert get_settings().amostra_limite == 100
+def test_amostra_padrao_1000_configuravel():
+    from app.core.config import Settings
+    assert Settings.model_fields["amostra_limite"].default == 1000
 
 
 def test_cns_validacao_oficial():

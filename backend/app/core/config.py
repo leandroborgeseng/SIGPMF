@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
     sqlserver_password: str | None = Field(None, alias="SQLSERVER_PASSWORD")
     sqlserver_timeout: int = Field(5, alias="SQLSERVER_TIMEOUT")
-    amostra_limite: int = Field(100, alias="AMOSTRA_LIMITE", ge=1, le=10000)
+    amostra_limite: int = Field(1000, alias="AMOSTRA_LIMITE", ge=1, le=10000)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
 

@@ -66,10 +66,13 @@ def test_somente_leitura_consultas_capturadas_em_mock():
         def execute(self, sql, params=None):
             emitidas.append(sql)
 
-        def fetchone(self):
-            return (1,)
+        def fetchmany(self, n):
+            return [(1,)]
 
     class Conn:
+        def rollback(self):
+            pass
+
         def cursor(self, **kw):
             return Cur()
 

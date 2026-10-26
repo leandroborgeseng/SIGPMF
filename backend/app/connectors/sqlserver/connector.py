@@ -2,6 +2,7 @@
 
 Só monta e executa SELECT; tudo passa por `app.core.sql_guard.garante_somente_leitura`.
 O teste tests/test_conector_somente_leitura.py varre este pacote e falha se surgir comando de escrita.
+O usuário da origem pode não ser somente leitura: cada consulta roda em transação com ROLLBACK e timeout.
 Nesta entrega não há conexão com origem real.
 """
 import re
@@ -10,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.config import Settings
-from app.core.sql_guard import garante_somente_leitura
+from app.core.sql_guard import executa_somente_leitura, garante_somente_leitura
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 def _ident(nome: str) -> str:
@@ -61,7 +62,7 @@ class SqlServerConnector:
         c = self.config
         return pymssql.connect(server=c.host, port=c.port, user=c.user, password=c.password,
                                database=c.database, login_timeout=c.timeout, timeout=c.timeout,
-                               read_only=True)
+                               autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
 
     def testar_conexao(self) -> dict[str, Any]:
         if not self.config.resumo_publico()["configurado"]:
@@ -69,9 +70,7 @@ class SqlServerConnector:
         try:
             conn = self._conectar()
             try:
-                cur = conn.cursor()
-                cur.execute(garante_somente_leitura("SELECT 1"))
-                cur.fetchone()
+                executa_somente_leitura(conn, "SELECT 1", limite=1, como_dict=False)
             finally:
                 conn.close()
             return {"ok": True, "erro": None}
@@ -97,8 +96,6 @@ class SqlServerConnector:
             sql = self.montar_select(tabela, campo_incremental=campo_incremental if desde else None)
         conn = self._conectar()
         try:
-            cur = conn.cursor(as_dict=True)
-            cur.execute(sql, (desde,) if desde else None)
-            return list(cur.fetchall())
+            return executa_somente_leitura(conn, sql, (desde,) if desde else None, limite=self.config.amostra_limite)
         finally:
             conn.close()
