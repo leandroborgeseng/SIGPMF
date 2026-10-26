@@ -5,7 +5,7 @@ import { useAuth } from '../auth'
 import { Esqueleto } from '../componentes'
 import {
   type Abrir, type Amostra, CAMADAS, type Camada, type Estado, type Funil, type Linhagem, PERFIS_EXPLORADOR, type Perfil, type Tabelas,
-  UUID, explorar, formata, plural,
+  MOTIVOS_PENDENCIA, UUID, explorar, formata, plural,
 } from '../explorar'
 import '../explorar.css'
 
@@ -14,6 +14,7 @@ const LGPD = 'admin_lgpd'
 const MSG_ERRO = 'Não foi possível carregar os dados.'
 const MSG_FILTRO_LGPD = 'Filtro disponível só para o perfil LGPD'
 type Aba = 'perfil' | 'amostra' | 'pendencias' | 'origem'
+const ROTULO_PEND: Record<string, string> = { motivo: 'Motivo', tabela: 'Tabela', chave: 'Chave', data_carga: 'Data da carga' }
 const fmt = (v: unknown) => formata(v, dataBR, dataHoraBR)
 
 /** Hook de carga com estado de erro e "Tentar de novo" que refaz a MESMA chamada (UX-E7). */
@@ -210,7 +211,14 @@ function FunilQualidade({ conector, verPendencia }: { conector: string; verPende
           </ul>
         </div>
       ))}
-      {!d.quarentena_disponivel && <p className="nota">Quarentena de chave nula (CC9) ainda não disponível nesta versão.</p>}
+      {d.reconciliacao && (
+        <p className={`reconc ${d.reconciliacao.ok ? 'ok' : 'divergente'}`} role="note">
+          Reconciliação: origem <span className="num">{d.reconciliacao.origem?.toLocaleString('pt-BR') ?? '—'}</span> = bronze{' '}
+          <span className="num">{d.reconciliacao.bronze.toLocaleString('pt-BR')}</span> + em quarentena{' '}
+          <span className="num">{d.reconciliacao.quarentena.toLocaleString('pt-BR')}</span> ·{' '}
+          <strong>{d.reconciliacao.ok ? (d.reconciliacao.quarentena ? 'ok com pendências' : 'ok') : 'divergente'}</strong>
+        </p>
+      )}
     </div>
   )
 }
@@ -251,8 +259,12 @@ function CamadaEscolha({ conectores, conector, setConector, camada, setCamada, t
       {atual.dados && (
         <>
           <FaixaProcessando e={atual.dados.estado} />
+          {(atual.dados.vazia || !info || info.linhas === 0) && <p className="vazio">Esta camada ainda não foi processada para esta tabela.</p>}
+          {camada === 'prata' && escolhida && (atual.dados.vazia || !info || info.linhas === 0) && (
+            <div className="detalhe">{children(escolhida)}</div>  /* Pendências (ex.: quarentena CC9) existem antes da prata */
+          )}
           {atual.dados.vazia || !info || info.linhas === 0
-            ? <p className="vazio">Esta camada ainda não foi processada para esta tabela.</p>
+            ? null
             : (
               <div className="detalhe">
                 <h2>{escolhida} <small>({plural(info.linhas, 'linha', 'linhas')}{atual.dados.estado.processando ? ', parcial' : ''})</small></h2>
@@ -332,11 +344,25 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
       <form onSubmit={aplicar} className="ex-filtros" aria-label="Filtros">
         {colsFiltro.map((c) => {
           const bloqueado = sens.has(c) && !lgpd && !pendencias
+          if (pendencias && c === 'motivo') {
+            return (
+              <div key={c} className="pmf-campo">
+                <label htmlFor="f-motivo-pend">Motivo</label>
+                <select id="f-motivo-pend" className="pmf-select" value={rascunho.motivo ?? ''} onChange={(e) => setRascunho({ ...rascunho, motivo: e.target.value })}>
+                  <option value="">Todos os motivos</option>
+                  {MOTIVOS_PENDENCIA.map((m) => <option key={m.codigo} value={m.codigo}>{m.rotulo}</option>)}
+                </select>
+              </div>)
+          }
           return (
             <div key={c} className="pmf-campo">
-              <label htmlFor={`f-${c}`}>{c}{bloqueado && <span className="cadeado" title={MSG_FILTRO_LGPD} aria-label={MSG_FILTRO_LGPD}> 🔒</span>}</label>
-              <input id={`f-${c}`} value={rascunho[c] ?? ''} disabled={bloqueado} title={bloqueado ? MSG_FILTRO_LGPD : 'Busca por valor exato'}
-                onChange={(e) => setRascunho({ ...rascunho, [c]: e.target.value })} placeholder="valor exato" autoComplete="off" />
+              <label htmlFor={`f-${c}`}>{c}{bloqueado && <span className="cadeado" aria-hidden="true"> 🔒</span>}</label>
+              {/* campo bloqueado: readOnly + aria-disabled para continuar focável e anunciar o motivo (aria-describedby) */}
+              <input id={`f-${c}`} value={rascunho[c] ?? ''} readOnly={bloqueado} aria-disabled={bloqueado || undefined}
+                className={bloqueado ? 'bloqueado' : undefined} title={bloqueado ? MSG_FILTRO_LGPD : 'Busca por valor exato'}
+                aria-describedby={bloqueado ? `f-${c}-lgpd` : undefined}
+                onChange={(e) => { if (!bloqueado) setRascunho({ ...rascunho, [c]: e.target.value }) }} placeholder="valor exato" autoComplete="off" />
+              {bloqueado && <small id={`f-${c}-lgpd`} className="dica-lgpd">{MSG_FILTRO_LGPD}</small>}
             </div>)
         })}
         {lgpd && temSensivel && (
@@ -354,7 +380,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
           <div className="tabela-rolagem">
             <table>
               <caption>{pendencias ? 'Pendências' : 'Amostra'} · Página {am.pagina}</caption>
-              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{c === 'data_carga' ? 'Data da carga' : c === 'motivo' ? 'Motivo' : c}</th>)}</tr></thead>
+              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{pendencias ? (ROTULO_PEND[c] ?? c) : c}</th>)}</tr></thead>
               <tbody>
                 {am.linhas.length === 0 && <tr><td colSpan={am.colunas.length}>Nenhuma linha encontrada.</td></tr>}
                 {am.linhas.map((l, i) => {

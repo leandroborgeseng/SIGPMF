@@ -35,3 +35,9 @@
 .explorar .ex-rodape { margin-top: 2rem; padding-top: .75rem; border-top: 1px solid var(--line-2, #e5e7eb); color: var(--ink-2); font-size: 12.5px; }
 .explorar .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .explorar.sem-acesso .btn { margin-top: 1rem; }
+.explorar input.bloqueado { background: var(--muted-bg, #f1f3f5); color: var(--muted, #6b7280); cursor: not-allowed; }
+.explorar .dica-lgpd { display: block; max-width: 12rem; font-size: 12px; color: var(--ink-2); }
+.explorar .reconc { margin: .5rem 0 0; font-size: 13px; }
+.explorar .reconc.ok strong { color: #1a7f37; }
+.explorar .reconc.divergente strong { color: var(--danger-ink, #b42318); }
+.explorar .paginacao .btn[disabled] { background: var(--muted-bg, #f1f3f5); color: var(--muted, #6b7280); border-color: var(--line, #d0d7de); cursor: not-allowed; }

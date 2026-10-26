@@ -23,7 +23,9 @@ function mock(over: Partial<Record<string, Rota>> = {}, revelar = false) {
   const padrao: Record<string, Rota> = {
     conectores: () => [200, { conectores: [{ conector: 'EXSINT', estado: EST }], pode_revelar: revelar }],
     funil: () => [200, { bronze: 120, bronze_unicos: 120, quarentena: 0, prata: 1, prata_cidadaos: 1, ouro: 1, estado: EST, quarentena_disponivel: false,
-      descartes: [{ etapa: 'Bronze → Prata', motivo: 'obito_ambiguo', rotulo: 'Óbito com mais de um candidato', quantidade: 1 }] }],
+      reconciliacao: { origem: 122, bronze: 120, quarentena: 2, ok: true, status: 'ok_com_pendencias' },
+      descartes: [{ etapa: 'Bronze → Prata', motivo: 'obito_ambiguo', rotulo: 'Óbito com mais de um candidato', quantidade: 1 },
+        { etapa: 'Bronze → Prata', motivo: 'em_quarentena', rotulo: 'Chave nula na origem', quantidade: 2 }] }],
     tabelas: (c) => c.camada === 'ouro' ? [200, TAB('ouro', 'cidadao_dados', 1)] : c.camada === 'prata' ? [200, TAB('prata', 'vinculos', 1)] : [200, TAB('bronze')],
     perfil: () => [200, { tabela: 'Pacientes', linhas: 120, aprox: true, amostra_perfil: 100, colunas: [
       { coluna: 'cpf', tipo: 'Texto', tipo_tecnico: 'json:string', preenchido_pct: 0.8, nulo_pct: 99.2, distintos: 1, aprox: true, exemplos: ['***.982.247-**'], sensivel: true },
@@ -94,6 +96,9 @@ describe('Explorar dados', () => {
     expect(screen.getAllByText('Texto')[0]).toHaveAttribute('title', 'json:string')
     expect(document.body.textContent).not.toContain(CPF)
     expect(screen.getByText(/Visualização somente leitura · dados do SIGPMF/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Chave nula na origem' })).toHaveAttribute('title', 'em_quarentena')
+    expect(screen.getByRole('note')).toHaveTextContent('Reconciliação: origem 122 = bronze 120 + em quarentena 2 · ok com pendências')
+    expect(screen.queryByText(/ainda não disponível/)).toBeNull()
     expect(screen.queryByText(/csv|exportar/i)).toBeNull()
   })
 
@@ -136,10 +141,13 @@ describe('Explorar dados', () => {
     await abaAmostra(u)
     const form = await screen.findByRole('form', { name: 'Filtros' })
     const cpf = await within(form).findByLabelText(/^cpf/)
-    expect(cpf).toBeDisabled()
-    expect(cpf).toHaveAttribute('title', 'Filtro disponível só para o perfil LGPD')
-    expect(within(form).getAllByLabelText('Filtro disponível só para o perfil LGPD').length).toBe(3) // cpf, nome, email
-    expect(within(form).getByLabelText('id_origem')).toBeEnabled()
+    expect(cpf).toHaveAttribute('aria-disabled', 'true')
+    expect(cpf).toHaveAttribute('readonly')
+    expect(cpf).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
+    expect(within(form).getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(3) // visível: cpf, nome, email
+    await userEvent.setup().type(cpf, '123')
+    expect(cpf).toHaveValue('')
+    expect(within(form).getByLabelText('id_origem')).not.toHaveAttribute('aria-disabled')
     expect(screen.queryByRole('button', { name: /Revelar/ })).toBeNull()
   })
 
@@ -187,7 +195,15 @@ describe('Explorar dados', () => {
     await waitFor(() => expect(ch.some((c) => c.corpo.somente_pendencias === true && (c.corpo.filtros as Record<string, string>).motivo === 'obito_ambiguo')).toBe(true))
     const cel = await screen.findByText('Óbito com mais de um candidato', { selector: 'td span' })
     expect(cel).toHaveAttribute('title', 'obito_ambiguo')
-    expect(screen.getByRole('columnheader', { name: 'Data da carga' })).toBeInTheDocument()
+    for (const h of ['Motivo', 'Tabela', 'Chave', 'Data da carga']) expect(screen.getByRole('columnheader', { name: h })).toBeInTheDocument()
+    const sel = screen.getByRole('combobox', { name: 'Motivo' })
+    expect(sel).toHaveValue('obito_ambiguo')
+    expect(within(sel).getByRole('option', { name: 'CPF de terceiro inválido' })).toBeInTheDocument()
+    await u.selectOptions(sel, 'em_quarentena')
+    await u.click(screen.getByRole('button', { name: 'Filtrar' }))
+    await waitFor(() => expect(ch.some((c) => (c.corpo.filtros as Record<string, string>)?.motivo === 'em_quarentena')).toBe(true))
+    expect(screen.getByRole('button', { name: 'Anterior' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Próxima' })).toBeDisabled()
     expect(screen.getByText('26/10/2026 09:00')).toBeInTheDocument()
     expect(document.body.textContent?.toLowerCase()).not.toContain('ignorad')
   })
@@ -230,4 +246,14 @@ describe('Explorar dados', () => {
     expect(plural(1, 'linha', 'linhas')).toBe('1 linha')
     expect(plural(1200, 'linha', 'linhas')).toBe('1.200 linhas')
   })
+})
+
+it('CC9: Pendências da Prata abrem mesmo com a prata vazia (quarentena antes da prata)', async () => {
+  const ch = mock({ tabelas: (c) => [200, c.camada === 'prata' ? TAB('prata', 'vinculos', 0) : TAB(String(c.camada))] })
+  montar('admin')
+  const u = userEvent.setup()
+  await u.click(await screen.findByRole('button', { name: 'Chave nula na origem' }))
+  expect(await screen.findByText('Esta camada ainda não foi processada para esta tabela.')).toBeInTheDocument()
+  expect(await screen.findByRole('tab', { name: 'Pendências' })).toHaveAttribute('aria-selected', 'true')
+  await waitFor(() => expect(ch.some((c) => c.corpo.somente_pendencias === true && (c.corpo.filtros as Record<string, string>).motivo === 'em_quarentena')).toBe(true))
 })

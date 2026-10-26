@@ -21,6 +21,8 @@ export type Amostra = {
 export type Funil = {
   bronze: number; bronze_unicos: number; quarentena: number; prata: number; prata_cidadaos: number; ouro: number
   descartes: { etapa: string; motivo: string; rotulo: string; quantidade: number }[]; estado: Estado; quarentena_disponivel: boolean
+  bronze_ok?: number
+  reconciliacao: { origem: number | null; bronze: number; quarentena: number; ok: boolean; status: string } | null
 }
 export type Abrir = { camada: Camada; tabela: string; filtros: Record<string, string> }
 export type Linhagem = {
@@ -53,3 +55,13 @@ export function formata(v: unknown, dataBR: (s: string) => string, dataHoraBR: (
   if (typeof v === 'boolean') return v ? 'Sim' : 'Não'
   return texto(v)
 }
+
+/** Motivos de pendência (código → rótulo) usados no select do filtro de Pendências. */
+export const MOTIVOS_PENDENCIA: { codigo: string; rotulo: string }[] = [
+  { codigo: 'sem_correspondencia', rotulo: 'Sem correspondência' },
+  { codigo: 'em_quarentena', rotulo: 'Chave nula na origem (em quarentena)' },
+  { codigo: 'obito_ambiguo', rotulo: 'Óbito com mais de um candidato' },
+  { codigo: 'obito_revisao', rotulo: 'Óbito em revisão' },
+  { codigo: 'obito_sem_candidato', rotulo: 'Óbito sem cidadão correspondente' },
+  { codigo: 'terceiro_cpf_invalido', rotulo: 'CPF de terceiro inválido' },
+]

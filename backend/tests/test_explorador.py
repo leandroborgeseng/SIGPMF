@@ -361,3 +361,72 @@ def test_perfil_sem_count_distinct_na_tabela_inteira():
     import pathlib
     src = pathlib.Path("app/explorador/servico.py").read_text()
     assert "LIMIT :n" in src and ".limit(n).subquery()" in src
+
+
+# ---------- integração com #14 (CC7 etapa, CC9 quarentena e reconciliação) ----------
+@pytest.fixture(scope="module")
+def quar(client):
+    """Conector sintético EXQUAR: 10 linhas na origem = 8 na bronze + 2 em quarentena (chave nula); carga na etapa prata."""
+    import json as _j
+
+    from app.core.db import SessionLocal
+    from app.models.controle import CheckpointCarga
+    db = SessionLocal()
+    eid = db.execute(text("INSERT INTO controle.execucoes (tipo, sistema, status, etapa, atualizado_em) VALUES "
+                          "('carga_completa', 'EXQUAR', 'em_andamento', 'prata', now()) RETURNING id")).scalar()
+    for i in range(10):
+        q = "chave_nula" if i >= 8 else None
+        db.execute(text("INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id, quarentena) "
+                        "VALUES ('EXQUAR', 'Leilao', :io, CAST(:d AS jsonb), :h, :e, :q)"),
+                   {"io": f"L{i}", "d": _j.dumps({"Quadra": None if q else f"Q{i}", "cpf": CPF}), "h": f"q{i}", "e": eid, "q": q})
+    db.add(CheckpointCarga(sistema="EXQUAR", tabela="Leilao", posicao=10, total_origem=10, concluida=True, execucao_id=eid))
+    db.commit()
+    db.close()
+
+
+def test_cc9_funil_bate_com_reconciliacao(client, tokens, quar, db):
+    from app.services.carga_completa import reconciliacao
+    f = client.post("/api/explorar/funil", json={"conector": "EXQUAR"}, headers=tokens["admin"]).json()
+    rec = reconciliacao(db, "EXQUAR")
+    assert f["bronze_ok"] == rec["Leilao"]["bronze"] == 8 and f["quarentena"] == rec["Leilao"]["quarentena"] == 2
+    r = f["reconciliacao"]
+    assert r["origem"] == 10 and r["bronze"] + r["quarentena"] == r["origem"] and r["ok"] is True
+    assert r["status"] == "ok_com_pendencias" and f["bronze_ok"] + f["quarentena"] == r["origem"]
+    assert {"etapa": "Bronze → Prata", "motivo": "em_quarentena", "rotulo": "Chave nula na origem", "quantidade": 2} in f["descartes"]
+    assert f["quarentena_disponivel"] is True
+
+
+def test_cc9_reconciliacao_divergente(client, tokens, quar):
+    from app.core.db import SessionLocal
+    s = SessionLocal()
+    s.execute(text("UPDATE controle.checkpoints_carga SET total_origem = 11 WHERE sistema='EXQUAR'"))
+    s.commit()
+    try:
+        r = client.post("/api/explorar/funil", json={"conector": "EXQUAR"}, headers=tokens["admin"]).json()["reconciliacao"]
+        assert r["ok"] is False and r["status"] == "divergente"
+    finally:
+        s.execute(text("UPDATE controle.checkpoints_carga SET total_origem = 10 WHERE sistema='EXQUAR'"))
+        s.commit()
+        s.close()
+
+
+def test_cc9_quarentena_nas_pendencias_e_na_bronze(client, tokens, quar):
+    h = tokens["admin"]
+    tabs = client.post("/api/explorar/tabelas", json={"conector": "EXQUAR", "camada": "prata"}, headers=h).json()
+    assert tabs["vazia"]
+    p = client.post("/api/explorar/amostra", json={"conector": "EXQUAR", "camada": "prata", "tabela": "vinculos", "somente_pendencias": True},
+                    headers=h).json()
+    assert [x["motivo"] for x in p["linhas"]] == ["Em quarentena: chave nula"] * 2 and p["quarentena_disponivel"] is True
+    assert all(x["motivo_codigo"] == "quarentena:chave_nula" and x["chave"].endswith("***") for x in p["linhas"])
+    f = client.post("/api/explorar/amostra", json={"conector": "EXQUAR", "camada": "prata", "tabela": "vinculos", "somente_pendencias": True,
+                                                    "filtros": {"motivo": "em_quarentena"}}, headers=h).json()
+    assert len(f["linhas"]) == 2
+    b = client.post("/api/explorar/amostra", json={"conector": "EXQUAR", "camada": "bronze", "tabela": "Leilao"}, headers=h).json()
+    assert "quarentena" in b["colunas"] and [x["quarentena"] for x in b["linhas"]].count("chave_nula") == 2
+    _sem_pii(str(p) + str(b))
+
+
+def test_cc7_estado_etapa_x_de_3(client, tokens, quar):
+    e = client.post("/api/explorar/tabelas", json={"conector": "EXQUAR", "camada": "ouro"}, headers=tokens["admin"]).json()["estado"]
+    assert e["processando"] and e["etapa"] == "prata" and e["etapa_num"] == 2 and e["etapas_total"] == 3 and e["parcial"]
+    assert e["mensagem"] == "Processando… etapa 2 de 3 · Tratando (prata)" and e["atualizado_em"]

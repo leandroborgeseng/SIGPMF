@@ -15,7 +15,7 @@ from app.models.controle import Execucao
 
 _NOME_OK = re.compile(r"^[A-Za-z0-9_.\- ]{1,200}$")
 _COL_OK = re.compile(r"^[A-Za-z0-9_]{1,64}$")
-ETAPAS = {"leitura": 1, "bronze": 1, "prata": 2, "ouro": 3}
+ETAPAS = {"leitura": 1, "prata": 2, "ouro": 3}  # controle.execucoes.etapa (CC7)
 STATUS_OK = ("sucesso", "sem_novidades", "concluida", "ok")
 
 
@@ -66,9 +66,11 @@ def estado(db: Session, c: str) -> dict:
             sel = "etapa, atualizado_em" if tem_coluna(db, "controle", "execucoes", "atualizado_em") else "etapa, NULL"
             etapa, atualizado = db.execute(text(f"SELECT {sel} FROM controle.execucoes WHERE id=:i"), {"i": andamento.id}).one()
         num = ETAPAS.get(etapa or "")
-        out.update(etapa=etapa, etapa_num=num, etapas_total=3, atualizado_em=_json(atualizado), parcial=True)
+        from app.services.carga_completa import NOME_ETAPA
+        out.update(etapa=etapa, etapa_nome=NOME_ETAPA.get(etapa or ""), etapa_num=num, etapas_total=3,
+                   atualizado_em=_json(atualizado), parcial=True)
         if num:
-            out["mensagem"] = f"Processando… etapa {num} de 3 ({etapa})"
+            out["mensagem"] = f"Processando… etapa {num} de 3 · {NOME_ETAPA.get(etapa, etapa)}"
         else:
             out["mensagem"] = f"Processando… etapa {etapa}" if etapa else "Processando…"
     return out
@@ -381,14 +383,19 @@ def valor_original(db: Session, c: str, camada: str, tabela: str, linha_id: Any,
 
 # ---------- EX4 funil ----------
 def funil(db: Session, c: str) -> dict:
-    """Bronze → Prata → Ouro com descartes por motivo. Os números saem das mesmas contagens do painel (indicadores)."""
+    """Bronze → Prata → Ouro com descartes por motivo. A reconciliação vem da MESMA função da carga completa
+    (carga_completa.reconciliacao: bronze + quarentena == COUNT(*) da origem, exato) para os totais baterem."""
+    from app.services.carga_completa import reconciliacao  # só leitura do Postgres do SIGPMF
+
+    def distintos(quar: bool | None) -> int:
+        q = select(func.count(func.distinct(func.concat(RegistroBronze.tabela, "|", RegistroBronze.id_origem)))).where(
+            RegistroBronze.sistema_origem == c)
+        if quar is not None:
+            q = q.where(RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))
+        return int(db.scalar(q) or 0)
+
     bronze = int(db.scalar(select(func.count()).select_from(RegistroBronze).where(RegistroBronze.sistema_origem == c)) or 0)
-    unicos = int(db.scalar(select(func.count(func.distinct(func.concat(RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
-                           .where(RegistroBronze.sistema_origem == c)) or 0)
-    quar = 0
-    if tem_coluna(db, "bronze", "registros", "quarentena"):
-        quar = int(db.scalar(text("SELECT count(*) FROM bronze.registros WHERE sistema_origem=:s AND quarentena IS NOT NULL"),
-                             {"s": c}) or 0)
+    unicos, bronze_ok, quar = distintos(None), distintos(False), distintos(True)
     prata = int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == c)) or 0)
     ouro = int(db.scalar(select(func.count(func.distinct(DadoGold.cidadao_id))).where(DadoGold.sistema == c)) or 0)
     descartes = []
@@ -403,11 +410,21 @@ def funil(db: Session, c: str) -> dict:
     if cid_prata - ouro > 0:
         descartes.append({"etapa": "prata→ouro", "motivo": "cidadao_sem_dado_no_ouro", "quantidade": cid_prata - ouro})
     for d in descartes:
-        d["rotulo"] = rotulo_motivo(d["motivo"])
+        d["rotulo"] = "Chave nula na origem" if d["motivo"] == "em_quarentena" else rotulo_motivo(d["motivo"])
         d["etapa"] = d["etapa"].replace("bronze→prata", "Bronze → Prata").replace("prata→ouro", "Prata → Ouro")
-    return {"conector": c, "bronze": bronze, "bronze_unicos": unicos, "quarentena": quar, "prata": prata,
-            "prata_cidadaos": cid_prata, "ouro": ouro, "descartes": descartes, "estado": estado(db, c),
-            "quarentena_disponivel": tem_coluna(db, "bronze", "registros", "quarentena")}
+    rec = reconciliacao(db, c)
+    rec_tot = None
+    if rec:
+        origem = [r["origem"] for r in rec.values()]
+        o = sum(x for x in origem if x is not None) if all(x is not None for x in origem) else None
+        b, q = sum(r["bronze"] for r in rec.values()), sum(r["quarentena"] for r in rec.values())
+        ok = all(r["ok"] for r in rec.values())
+        rec_tot = {"origem": o, "bronze": b, "quarentena": q, "ok": ok,
+                   "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente",
+                   "tabelas": [{"tabela": t, **r} for t, r in rec.items()]}
+    return {"conector": c, "bronze": bronze, "bronze_unicos": unicos, "bronze_ok": bronze_ok, "quarentena": quar,
+            "prata": prata, "prata_cidadaos": cid_prata, "ouro": ouro, "descartes": descartes, "estado": estado(db, c),
+            "quarentena_disponivel": True, "reconciliacao": rec_tot}
 
 
 # ---------- EX5 linhagem ----------
