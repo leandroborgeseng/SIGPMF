@@ -19,6 +19,6 @@ export function Erro({ texto, onRetry }: { texto: string; onRetry: () => void })
 const ROTULO: Record<string, string> = { sucesso: 'Sucesso', sem_novidades: 'Sem novidades', falha: 'Falha', em_andamento: 'Em andamento' }
 export function SeloStatus({ status, novos, atualizados }: { status: string; novos: number; atualizados: number }) {
   if (status === 'sem_novidades')
-    return <span className="selo neutro">Sem novidades · {novos} novos, {atualizados} atualizados</span>
-  return <span className={`selo ${status}`}>{status === 'falha' ? '✕ ' : status === 'sucesso' ? '✓ ' : ''}{ROTULO[status] ?? status}</span>
+    return <span className="selo neutro"><i aria-hidden="true" />Sem novidades · {novos} novos, {atualizados} atualizados</span>
+  return <span className={`selo ${status}`}><i aria-hidden="true" />{status === 'falha' ? '✕ ' : status === 'sucesso' ? '✓ ' : ''}{ROTULO[status] ?? status}</span>
 }

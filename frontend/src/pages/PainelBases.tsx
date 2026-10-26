@@ -132,8 +132,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
       <p>
-        <span className={`selo ${st.classe}`}>{st.rotulo}</span>
-        {b.com_erro && <> <span className="selo falha">Última carga falhou</span></>}
+        <span className={`selo ${st.classe}`}><i aria-hidden="true" />{st.rotulo}</span>
+        {b.com_erro && <> <span className="selo falha"><i aria-hidden="true" />Última carga falhou</span></>}
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
       <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
@@ -173,10 +173,10 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
-            <button className="btn secundario" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
             {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
               : !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
-            <button className="btn secundario" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
           </details>
         </div>
       )}

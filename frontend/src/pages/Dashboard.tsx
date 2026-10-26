@@ -22,7 +22,11 @@ export default function Dashboard() {
 
   return (
     <section aria-labelledby="t-dash">
-      <h1 id="t-dash">Dashboard</h1>
+      <header className="page-head">
+        <p className="kicker">Visão</p>
+        <h1 id="t-dash">Dashboard</h1>
+        <p className="sutil">Indicadores gerais das cargas e do cadastro do cidadão.</p>
+      </header>
       {erro ? <Erro texto="Não foi possível carregar os indicadores. Tente novamente em instantes." onRetry={carregar} />
         : !d ? <Esqueleto linhas={4} />
         : d.sistemas === 0 ? (
@@ -55,9 +59,10 @@ export default function Dashboard() {
 
 function Cartao({ rotulo, valor }: { rotulo: string; valor: number }) {
   return (
-    <div className="cartao">
+    <div className="cartao metrica">
+      <span className="metrica-icone" aria-hidden="true" />
       <div className="cartao-rotulo">{rotulo}</div>
-      <div className="cartao-valor">{valor.toLocaleString('pt-BR')}</div>
+      <div className="cartao-valor num">{valor.toLocaleString('pt-BR')}</div>
     </div>
   )
 }
