@@ -141,3 +141,27 @@ def test_completa_exige_amostra_e_reprocessar_nao_duplica(client, tokens, carreg
     assert {n: x["contagens"] for n, x in depois.items()} == {n: x["contagens"] for n, x in antes.items()}
     assert depois["Cemiterio"]["ultima_carga"]["tipo"] == "reprocessamento"
     assert client.post(f"/api/conectores/{sid}/executar", json={"modo": "x"}, headers=h).status_code == 422
+
+
+@pytest.mark.parametrize("env", ["prod", "production", "development", "homolog", ""])
+def test_executar_404_fora_de_dev(client, tokens, monkeypatch, env):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "app_env", env)
+    h = tokens["admin"]
+    sid = _id(client, h, "Saude")
+    n0 = _q("select count(*) from controle.execucoes")[0][0]
+    for corpo in ({"modo": "amostra"}, {"modo": "completa"}, {"modo": "reprocessar"}):
+        assert client.post(f"/api/conectores/{sid}/executar", json=corpo, headers=h).status_code == 404
+    assert _q("select count(*) from controle.execucoes")[0][0] == n0
+    assert client.get("/api/conectores", headers=h).json()["carga_habilitada"] is False
+
+
+@pytest.mark.parametrize("env", ["dev", "test"])
+def test_executar_funciona_em_dev(client, tokens, monkeypatch, env):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "app_env", env)
+    h = tokens["admin"]
+    assert client.get("/api/conectores", headers=h).json()["carga_habilitada"] is True
+    r = client.post(f"/api/conectores/{_id(client, h, 'Saude')}/executar", headers=h)
+    assert r.status_code == 200, r.text
+    _limpa()

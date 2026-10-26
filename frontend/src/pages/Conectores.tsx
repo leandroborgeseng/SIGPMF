@@ -7,7 +7,7 @@ import PainelBases, { type Base } from './PainelBases'
 
 type Exec = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; novos: number; atualizados: number; ignorados: number; lotes: number }
 type Conector = { id: number; codigo: string; nome: string; status: string; ultima_execucao: Exec | null; credencial: string; amostra_limite: number; tabelas: { nome: string; chave: string; campo_incremental: string | null }[] }
-type Resp = { conectores: Conector[]; execucoes: Exec[]; bases?: Base[] }
+type Resp = { conectores: Conector[]; execucoes: Exec[]; bases?: Base[]; carga_habilitada?: boolean }
 
 export default function Conectores() {
   const { sessao } = useAuth()
@@ -51,7 +51,7 @@ export default function Conectores() {
   return (
     <section aria-labelledby="t-con">
       <h1 id="t-con">Conectores</h1>
-      <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} />
+      <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
         {podeExecutar && <button className="btn" onClick={executar} disabled={executando}>Executar carga (demo)</button>}

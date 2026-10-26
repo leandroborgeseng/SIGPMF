@@ -159,7 +159,7 @@ def conectores(db: Session = Depends(get_db)):
                       "credencial": "Configurada via variável de ambiente" if cfg.resumo_publico()["configurado"] else "Não configurada",
                       "amostra_limite": cfg.amostra_limite})
     return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]], "bases": bases,
-            "totais": totais(bases)}
+            "totais": totais(bases), "carga_habilitada": carga_habilitada()}
 
 
 @api.post("/conectores/{conector}/testar")
@@ -180,12 +180,21 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
+AMBIENTES_CARGA = ("dev", "test")  # allowlist explícita: APP_ENV ausente ("development") ou "prod" não carregam
+
+
+def carga_habilitada() -> bool:
+    return get_settings().app_env in AMBIENTES_CARGA
+
+
 @api.post("/conectores/{base_id:int}/executar")
 def executa_base(base_id: int, req: Request, dados: ExecutarBaseIn | None = None, u: Usuario = Depends(ADMIN),
                  db: Session = Depends(get_db)):
     """Puxar e processar uma base do catálogo (só admin, sempre auditado).
     amostra: limite AMOSTRA_LIMITE; completa: só depois de uma amostra bem-sucedida; reprocessar: refaz prata/ouro
     a partir do bronze, sem ler a origem. Reusa executar_demo (OrigemMock sintética nesta entrega)."""
+    if not carga_habilitada():  # carga real em preparação: rota inexistente fora de dev/test
+        _404()
     modo = dados.modo if dados else "amostra"
     b = db.get(BaseCatalogo, base_id) or _404()
     motivo = bloqueio(b)

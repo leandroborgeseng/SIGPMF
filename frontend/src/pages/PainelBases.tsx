@@ -31,8 +31,10 @@ export function perda(de: number, para: number): number | null {
   return Math.round(((de - para) / de) * 100)
 }
 
-export default function PainelBases({ bases, erro, onRecarregar, ehAdmin }: {
-  bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean
+export const CARGA_EM_PREPARACAO = 'Carga real em preparação'
+
+export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false }: {
+  bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean; cargaHabilitada?: boolean
 }) {
   const [filtro, setFiltro] = useState<string>('todas')
   const [busca, setBusca] = useState('')
@@ -103,7 +105,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin }: {
             )}
             {visiveis.length === 0 ? <p className="vazio">Nenhuma base neste filtro.</p> : (
               <ul className="lista-cartoes bases" aria-label="Bases">
-                {visiveis.map((b) => <CartaoBase key={b.id} b={b} ehAdmin={ehAdmin} rodando={rodando} onAcao={pedir} />)}
+                {visiveis.map((b) => <CartaoBase key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} />)}
               </ul>
             )}
           </>
@@ -112,13 +114,13 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin }: {
   )
 }
 
-function CartaoBase({ b, ehAdmin, rodando, onAcao }: { b: Base; ehAdmin: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void }) {
+function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void }) {
   const st = STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' }
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
   const pOuro = b.tem_conector ? perda(c.prata, c.ouro) : null
-  const ocupado = rodando !== null
+  const ocupado = rodando !== null || !habilitada
   const u = b.ultima_carga
   return (
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
@@ -147,11 +149,12 @@ function CartaoBase({ b, ehAdmin, rodando, onAcao }: { b: Base; ehAdmin: boolean
           <button className="btn" disabled={ocupado || !b.pode_carregar} aria-label={`Puxar amostra de ${b.nome}`} onClick={() => onAcao(b, 'amostra')}>
             {rodando === b.id ? 'Carregando…' : 'Puxar amostra'}
           </button>
-          {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
+          {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
+            : !b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
             <button className="btn secundario" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
-            {!b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
+            {habilitada && !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
             <button className="btn secundario" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
           </details>
         </div>

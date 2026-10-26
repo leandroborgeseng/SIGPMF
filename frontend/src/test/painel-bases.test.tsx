@@ -18,7 +18,7 @@ const BASES = [
   base({ id: 4, nome: 'Bibliotecario', status: 'triado', triagem: 'nome' }),
   base({ id: 5, nome: 'Senhas', status: 'excluido', grupo: 'descartavel', motivo_bloqueio: 'Base descartada na triagem' }),
 ]
-const RESP = { conectores: [], execucoes: [], bases: BASES, totais: {} }
+const RESP = { conectores: [], execucoes: [], bases: BASES, totais: {}, carga_habilitada: true }
 
 function mock(rota: (url: string, init?: RequestInit) => [number, unknown]) {
   const f = vi.fn(async (url: string, init?: RequestInit) => {
@@ -119,5 +119,19 @@ describe('painel de bases', () => {
     mock(() => [200, { ...RESP, bases: [] }])
     montar('leitura')
     expect(await screen.findByText('Nenhuma base cadastrada.')).toBeInTheDocument()
+  })
+
+  it('produção: botões de carga desabilitados com "Carga real em preparação"', async () => {
+    for (const flag of [false, undefined]) {
+      const f = mock(() => [200, { ...RESP, carga_habilitada: flag }])
+      const { unmount } = montar('admin')
+      const saude = await cartao('Saude')
+      for (const nome of ['Puxar amostra de Saude', 'Puxar carga completa de Saude', 'Reprocessar Saude'])
+        expect(within(saude).getByRole('button', { name: nome })).toBeDisabled()
+      expect(within(saude).getByText(/Carga real em preparação/)).toBeInTheDocument()
+      await userEvent.click(within(saude).getByRole('button', { name: 'Puxar amostra de Saude' }))
+      expect(f.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false)
+      unmount()
+    }
   })
 })
