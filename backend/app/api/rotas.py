@@ -14,6 +14,7 @@ from app.core.config import VERSION, get_settings
 from app.core.db import get_db
 from app.core.security import ADMIN, CARGA, confere_senha, cria_token, hash_senha, usuario_atual
 from app.gold import visao
+from app.gold.visao import CAMPOS_DATA
 from app.identity.cpf import mascara, normaliza
 from app.identity.documento import mascara as mascara_documento
 from app.models.camadas import (
@@ -34,6 +35,7 @@ from app.services import carga_conector as cc
 from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
 from app.services.pipeline import executar_demo
 from app.silver import processamento
+from app.util.datas import normaliza_data_iso
 
 publico = APIRouter()
 api = APIRouter(dependencies=[Depends(usuario_atual)])
@@ -427,9 +429,10 @@ def simulador(cid: str, db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()
     dados = list(db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo)))
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
-    return {"cidadao_id": cid, "nome": c.nome, "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas,
-            "dominios": c.dominios,
-            "dados": [{"dominio": d.dominio, "campo": d.campo, "valor": d.valor, "fonte": d.sistema,
+    return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
+            "dominios": c.dominios or [],
+            "dados": [{"dominio": d.dominio, "campo": d.campo,
+                       "valor": (normaliza_data_iso(d.valor) or d.valor) if d.campo in CAMPOS_DATA else d.valor, "fonte": d.sistema,
                        "atualizado_em": d.fonte_atualizado_em} for d in dados],
             "enderecos": [{"valor": e.logradouro, "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
                            "mais_recente": e.mais_recente} for e in ends]}

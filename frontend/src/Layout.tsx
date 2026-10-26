@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from './auth'
+import { ErrorBoundary } from './componentes'
 
 const GRUPOS = [
   { titulo: 'Visão', itens: [{ to: '/dashboard', rotulo: 'Dashboard', curto: 'Dashboard' }] },
@@ -70,7 +71,9 @@ export default function Layout() {
         </div>
       </aside>
       <main className="conteudo" id="conteudo">
-        <Outlet />
+        <ErrorBoundary chave={local.pathname} titulo="Não foi possível exibir esta tela.">
+          <Outlet />
+        </ErrorBoundary>
       </main>
       <nav className="nav-inferior" aria-label="Atalhos">
         {ITENS.map((i) => <NavLink key={i.to} to={i.to}>{i.curto}</NavLink>)}

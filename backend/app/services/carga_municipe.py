@@ -24,10 +24,8 @@ def ler_origem(connector) -> list[dict]:
 
 
 def _data(v) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
+    from app.util.datas import normaliza_data
+    return normaliza_data(v)
 
 
 def _datahora(v) -> datetime | None:

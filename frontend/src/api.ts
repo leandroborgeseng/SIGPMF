@@ -42,13 +42,29 @@ export async function api<T>(caminho: string, opcoes: RequestInit = {}): Promise
 }
 
 const TZ = 'America/Sao_Paulo'
+/** Converte texto de data da origem em Date sem lançar: aceita ISO, "AAAA-MM-DD HH:MM:SS" e DD/MM/AAAA. */
+export function parseData(v?: string | null): Date | null {
+  if (!v || typeof v !== 'string') return null
+  const s = v.trim()
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (m) return valida(new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00`))
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s)
+  if (m) return valida(new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00`))
+  return valida(new Date(s.replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T')))
+}
+function valida(d: Date): Date | null { return Number.isNaN(d.getTime()) ? null : d }
+
+/** Nunca lança: vazio → '—'; inválido → texto original. */
 export function dataBR(v?: string | null): string {
   if (!v) return '—'
-  return new Intl.DateTimeFormat('pt-BR', { timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(v))
+  const d = parseData(v)
+  if (!d) return String(v)
+  return new Intl.DateTimeFormat('pt-BR', { timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric' }).format(d)
 }
 export function dataHoraBR(v?: string | null): string {
   if (!v) return '—'
-  const d = new Date(v)
+  const d = parseData(v)
+  if (!d) return String(v)
   const f = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('pt-BR', { timeZone: TZ, ...o }).format(d)
   return `${f({ day: '2-digit', month: '2-digit', year: 'numeric' })} ${f({ hour: '2-digit', minute: '2-digit', hour12: false })}`
 }
