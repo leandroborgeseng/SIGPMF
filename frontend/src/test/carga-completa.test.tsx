@@ -81,19 +81,19 @@ describe('carga completa (CC1-CC6)', () => {
     expect((await axe.run(container, { runOnly: ['wcag2a', 'wcag2aa'] })).violations).toEqual([])
     await userEvent.click(within(d).getByRole('button', { name: 'Iniciar carga completa' }))
     expect(f.mock.calls.some(([u, i]) => String(u).endsWith('/conectores/saude/completa') && i?.method === 'POST')).toBe(true)
-    const st = await within(c).findByRole('status')
-    expect(st).toHaveTextContent('Carregando… 4 de 13 linhas')
+    const st = await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })
+    expect(st).toHaveTextContent('Leitura: 4 de 13')
     await userEvent.click(within(c).getByRole('button', { name: 'Cancelar carga' }))
     expect(await within(c).findByRole('button', { name: 'Cancelando…' })).toBeDisabled()
     // fim: card final com lidos, bronze, prata, pendências, reconciliação e toast
     estado = sit({ execucao: { ...EX, status: 'sucesso', lidos: 13, gravados: 13, processados: 13, finalizado_em: '2026-10-26T15:02:00Z' },
       reconciliacao: { pacientes: { origem: 7, bronze: 7, ok: true } } })
-    await act(async () => { await new Promise((r) => setTimeout(r, 2100)) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 5100)) })
     const fim = await within(c).findByLabelText('Resultado da carga completa de Saúde')
     for (const t of ['Lidos', 'Gravados', 'Bronze', 'Prata', 'Pendências']) expect(within(fim).getByText(t)).toBeInTheDocument()
     expect(within(fim).getByText('Bronze bate com a origem')).toBeInTheDocument()
     expect(await screen.findByText(/Carga completa de Saúde concluída: 13 registros lidos/)).toBeInTheDocument()
-  }, 10000)
+  }, 15000)
 
   it('erro ao iniciar mostra o motivo e "Tentar de novo"; pausa mostra motivo e "Retomar carga"', async () => {
     let posts = 0
@@ -177,6 +177,93 @@ describe('carga completa (CC1-CC6)', () => {
     const c = await cartao()
     const st = await within(c).findByText(/^Carga pausada/)
     expect(st.textContent).toBe('Carga pausada')
+  })
+})
+
+describe('indicador de progresso (CC7)', () => {
+  const AGORA = new Date().toISOString()
+  const PRATA = { ...EX, etapa: 'prata', etapa_nome: 'Tratando (prata)', processadas_etapa: 5000, total_etapa: 921378,
+    atualizado_em: AGORA, sem_progresso: false, alerta_min: 5, status_texto: 'Em andamento · Carga completa', processados: 13 }
+  const rodandoResp = (ex: object, base: object = {}) =>
+    mock((u) => [200, u.endsWith('/conectores') ? resp({ completa_em_andamento: true, contagens: { ...Z, bronze: 921378, prata: 1000, pendentes: 1000 }, ...base }) : sit({ execucao: ex })])
+
+  it('CC7.1/CC7.2: etapas visíveis, atual destacada, concluída com ✓, contador da prata e "Leitura concluída"', async () => {
+    rodandoResp(PRATA)
+    const { container } = montar('admin')
+    const c = await cartao()
+    const st = await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })
+    const passos = within(st).getAllByRole('listitem').map((li) => li.textContent)
+    expect(passos).toEqual(['✓ Lendo da origem (concluída)', 'Tratando (prata)', 'Unificando cidadãos (ouro)', 'Concluída'])
+    expect(within(st).getByText('Tratando (prata)')).toHaveAttribute('aria-current', 'step')
+    expect(st).toHaveTextContent('Prata: 5.000 de 921.378')
+    expect(st).toHaveTextContent('Leitura concluída · tratando os dados')
+    expect(st).toHaveTextContent('Em andamento · Carga completa')
+    expect(st.textContent).not.toMatch(/Carregando… 13 de 13/)
+    expect((await axe.run(container, { runOnly: ['wcag2a', 'wcag2aa'] })).violations).toEqual([])
+  })
+
+  it('CC7.4: em andamento não mostra percentual nem pendências (números parciais); nunca "−0%"', async () => {
+    rodandoResp(PRATA)
+    montar('admin')
+    const c = await cartao()
+    await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })
+    expect(within(c).getAllByText('Em processamento, números parciais').length).toBeGreaterThan(0)
+    expect(within(c).queryByText(/Pendências:/)).toBeNull()
+    expect(within(c).queryByText(/%/)).toBeNull()
+    expect(within(c).queryByRole('progressbar')).toBeNull()
+  })
+
+  it('CC7.3: sem progresso mostra aviso âmbar "Sem progresso desde HH:MM" com a última atividade', async () => {
+    rodandoResp({ ...PRATA, sem_progresso: true, atualizado_em: '2026-10-26T17:32:00Z' })
+    montar('admin')
+    const c = await cartao()
+    const al = await within(c).findByText(/Sem progresso desde/)
+    expect(al).toHaveClass('aviso-ambar')
+    expect(al).toHaveTextContent('Sem progresso desde 14:32 (mais de 5 min). Última atividade: Tratando (prata).')
+    expect(within(c).getByText(/Última atividade: 14:32/)).toBeInTheDocument()
+  })
+
+  it('CC7.5: atualiza a cada 5 s sem recarregar, mostra decorrido e o erro de atualização', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let n = 0
+    let falha = false
+    const f = mock((u) => {
+      if (u.endsWith('/conectores')) return [200, resp({ completa_em_andamento: true })]
+      n++
+      if (falha) return [500, { detail: 'erro interno' }]
+      return [200, sit({ execucao: { ...PRATA, processadas_etapa: 5000 * n } })]
+    })
+    montar('admin')
+    const c = await cartao()
+    const st = await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })
+    expect(st).toHaveTextContent(/Decorrido: .+ · Última atividade: \d\d:\d\d/)
+    const antes = n
+    await act(async () => { await vi.advanceTimersByTimeAsync(4900) })
+    expect(n).toBe(antes)
+    await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+    expect(n).toBe(antes + 1)
+    await waitFor(() => expect(st).toHaveTextContent(`Prata: ${new Intl.NumberFormat('pt-BR').format(5000 * n)} de 921.378`))
+    falha = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(await within(c).findByText(/Não foi possível atualizar o andamento da carga/)).toHaveAttribute('role', 'alert')
+    expect(f).toHaveBeenCalled()
+  })
+
+  it('carga interrompida: mostra o aviso e "Retomar prata e ouro" chama só a retomada', async () => {
+    let estado: object = sit({ execucao: { ...PRATA, status: 'interrompida', status_texto: 'Carga interrompida', finalizado_em: AGORA,
+      mensagem: 'Carga interrompida: o servidor parou durante a carga.', pode_retomar_camadas: true } })
+    const f = mock((u, init) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/retomar-camadas') && init?.method === 'POST') { estado = sit({ execucao: PRATA }); return [202, estado] }
+      return [200, estado]
+    })
+    montar('admin')
+    const c = await cartao()
+    expect(await within(c).findByText('Carga interrompida')).toBeInTheDocument()
+    await userEvent.click(within(c).getByRole('button', { name: 'Retomar prata e ouro' }))
+    expect(await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })).toHaveTextContent('Prata: 5.000 de 921.378')
+    const posts = f.mock.calls.filter(([, i]) => i?.method === 'POST').map(([u]) => String(u))
+    expect(posts).toEqual([expect.stringMatching(/\/conectores\/saude\/completa\/retomar-camadas$/)])
   })
 })
 

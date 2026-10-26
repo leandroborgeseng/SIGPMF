@@ -9,7 +9,17 @@ export type ExecCompleta = {
   lidos: number; novos: number; atualizados: number; ignorados: number; lotes: number; gravados: number
   total_origem: number | null; processados: number; tabela_atual: string | null; pausa_motivo: string | null
   cancelamento_pedido: boolean; mensagem: string | null; erro: { motivo: string } | null
+  status_texto?: string; etapa?: Etapa | null; etapa_nome?: string | null; processadas_etapa?: number | null
+  total_etapa?: number | null; atualizado_em?: string | null; sem_progresso?: boolean; alerta_min?: number
+  pode_retomar_camadas?: boolean
 }
+export type Etapa = 'leitura' | 'prata' | 'ouro' | 'concluida'
+export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
+  { id: 'leitura', nome: 'Lendo da origem', contador: 'Leitura' },
+  { id: 'prata', nome: 'Tratando (prata)', contador: 'Prata' },
+  { id: 'ouro', nome: 'Unificando cidadãos (ouro)', contador: 'Ouro' },
+  { id: 'concluida', nome: 'Concluída', contador: '' },
+]
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
   camadas: { bronze: number; prata: number; pendencias: number }
@@ -17,12 +27,21 @@ export type Situacao = {
 }
 type Estimativa = { tabelas: Record<string, number>; total: number }
 
-export const INTERVALO_MS = 2000
+export const INTERVALO_MS = 5000
+export const ERRO_ATUALIZAR = 'Não foi possível atualizar o andamento da carga. Tentando de novo…'
+const hora = (v?: string | null) => (v ? dataHoraBR(v).split(' ')[1] ?? '—' : '—')
+function duracao(de?: string | null): string {
+  if (!de) return '—'
+  const ms = Date.now() - new Date(de).getTime()
+  if (!(ms >= 0)) return '—'
+  const m = Math.floor(ms / 60000)
+  return m < 1 ? 'menos de 1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
 export const ESTIMATIVA_FALHOU = 'Não foi possível estimar as linhas da origem. Feche e tente de novo.'
 
 /** Carga completa REAL por conector (CC1-CC6): confirmação com estimativa, progresso, cancelar, card final. */
-export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
-  conector: string; liberada: boolean; motivo: string | null; onFim: () => void
+export default function CargaCompleta({ conector, liberada, motivo, onFim, onRodando }: {
+  conector: string; liberada: boolean; motivo: string | null; onFim: () => void; onRodando?: (r: boolean) => void
 }) {
   const nome = NOMES[conector] ?? conector
   const [sit, setSit] = useState<Situacao | null>(null)
@@ -32,6 +51,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
   const [erro, setErro] = useState('')
   const [toast, setToast] = useState('')
   const [enviando, setEnviando] = useState(false)
+  const [erroPoll, setErroPoll] = useState('')
   const anterior = useRef<string | null>(null)
   const cancelarModal = useRef<HTMLButtonElement>(null)
 
@@ -39,8 +59,10 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
     try {
       const s = await api<Situacao>(`/conectores/${conector}/completa`)
       setSit(s)
+      setErroPoll('')
       return s
-    } catch {
+    } catch (e) {
+      setErroPoll(e instanceof ApiErro && e.message ? `${ERRO_ATUALIZAR} (${e.message})` : ERRO_ATUALIZAR)
       return null
     }
   }, [conector])
@@ -48,6 +70,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
 
   const status = sit?.execucao?.status ?? null
   const rodando = status === 'em_andamento'
+  useEffect(() => { onRodando?.(rodando) }, [rodando, onRodando])
   useEffect(() => {
     if (anterior.current === 'em_andamento' && status && status !== 'em_andamento') {
       if (status === 'sucesso') setToast(`Carga completa de ${nome} concluída: ${milhar(sit?.execucao?.lidos)} registros lidos.`)
@@ -92,6 +115,17 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
       setEnviando(false)
     }
   }
+  const retomarCamadas = async () => {
+    setErro(''); setEnviando(true)
+    try {
+      setSit(await api<Situacao>(`/conectores/${conector}/completa/retomar-camadas`, { method: 'POST' }))
+      anterior.current = 'em_andamento'
+    } catch (e) {
+      setErro(e instanceof ApiErro ? e.message : 'Não foi possível retomar a prata e o ouro.')
+    } finally {
+      setEnviando(false)
+    }
+  }
   const cancelar = async () => {
     try {
       setSit(await api<Situacao>(`/conectores/${conector}/completa/cancelar`, { method: 'POST' }))
@@ -104,7 +138,6 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
   const porque = sit ? sit.motivo : motivo
   const ex = sit?.execucao
   const idMotivo = `motivo-completa-${conector}`
-  const pct = ex?.total_origem ? Math.min(100, Math.round((ex.processados / ex.total_origem) * 100)) : null
 
   return (
     <div className="carga-completa">
@@ -134,17 +167,8 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
         </div>
       )}
 
-      {rodando && ex && (
-        <div className="progresso-carga" role="status" aria-live="polite">
-          <p><strong>Carregando…</strong> <span className="num">{milhar(ex.processados)}</span>
-            {ex.total_origem != null && <> de <span className="num">{milhar(ex.total_origem)}</span></>} linhas
-            {ex.tabela_atual && <span className="sutil"> · {ex.tabela_atual}</span>}</p>
-          {pct != null && <progress max={100} value={pct} aria-label={`Progresso da carga completa de ${nome}`}>{pct}%</progress>}
-          <button className="btn secundario" onClick={cancelar} disabled={ex.cancelamento_pedido}>
-            {ex.cancelamento_pedido ? 'Cancelando…' : 'Cancelar carga'}
-          </button>
-        </div>
-      )}
+      {rodando && ex && <Andamento ex={ex} nome={nome} onCancelar={cancelar} />}
+      {erroPoll && rodando && <p role="alert" className="aviso erro">{erroPoll}</p>}
 
       {erro && (
         <div role="alert" className="aviso erro">
@@ -157,6 +181,15 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
         <div role="alert" className="aviso erro">
           <p>{ex.mensagem}</p>
           <button className="btn" onClick={abrir} disabled={!ok}>Tentar de novo</button>
+        </div>
+      )}
+      {ex && !rodando && ex.status === 'interrompida' && (
+        <div className="aviso-ambar" role="status">
+          <p><strong>Carga interrompida</strong>{ex.etapa_nome ? ` durante: ${ex.etapa_nome}` : ''}. {ex.mensagem}</p>
+          {ex.pode_retomar_camadas && (
+            <button className="btn" onClick={retomarCamadas} disabled={enviando}>Retomar prata e ouro</button>
+          )}
+          <button className="btn outlined" onClick={abrir} disabled={!ok}>Iniciar carga de novo</button>
         </div>
       )}
       {ex && !rodando && (ex.status === 'pausada' || ex.status === 'cancelada') && (
@@ -186,6 +219,43 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
       )}
 
       <div aria-live="polite">{toast && <p className="aviso toast">{toast}</p>}</div>
+    </div>
+  )
+}
+
+/** CC7: etapas visíveis, etapa atual destacada, concluídas com ✓, contador da etapa, tempo e última atividade. */
+function Andamento({ ex, nome, onCancelar }: { ex: ExecCompleta; nome: string; onCancelar: () => void }) {
+  const atual = ex.etapa ?? 'leitura'
+  const i = ETAPAS.findIndex((e) => e.id === atual)
+  const def = ETAPAS[i] ?? ETAPAS[0]
+  const proc = ex.processadas_etapa ?? (atual === 'leitura' ? ex.processados : null)
+  const tot = ex.total_etapa ?? (atual === 'leitura' ? ex.total_origem : null)
+  return (
+    <div className="progresso-carga" role="status" aria-live="polite" aria-label={`Andamento da carga completa de ${nome}`}>
+      <p><strong>{ex.status_texto ?? 'Em andamento · Carga completa'}</strong></p>
+      <ol className="etapas-carga">
+        {ETAPAS.map((e, k) => (
+          <li key={e.id} className={k < i ? 'feita' : k === i ? 'atual' : 'futura'} aria-current={k === i ? 'step' : undefined}>
+            {k < i && <span aria-hidden="true">✓ </span>}{e.nome}{k < i && <span className="sr-only"> (concluída)</span>}
+          </li>
+        ))}
+      </ol>
+      {atual === 'leitura'
+        ? <p>Lendo da origem…{ex.tabela_atual && <span className="sutil"> · {ex.tabela_atual}</span>}</p>
+        : <p>Leitura concluída · tratando os dados</p>}
+      {def.contador && proc != null && (
+        <p className="num">{def.contador}: {milhar(proc)}{tot != null && <> de {milhar(tot)}</>}</p>
+      )}
+      <p className="sutil">Em processamento, números parciais</p>
+      <p className="sutil">Decorrido: {duracao(ex.iniciado_em)} · Última atividade: {hora(ex.atualizado_em ?? ex.iniciado_em)}</p>
+      {ex.sem_progresso && (
+        <p className="aviso-ambar" role="alert">Sem progresso desde {hora(ex.atualizado_em ?? ex.iniciado_em)}
+          {' '}(mais de {ex.alerta_min ?? 5} min). Última atividade: {def.nome}.</p>
+      )}
+      <button className="btn secundario" onClick={onCancelar} disabled={ex.cancelamento_pedido || atual !== 'leitura'}
+        title={atual !== 'leitura' ? 'O cancelamento vale durante a leitura da origem' : undefined}>
+        {ex.cancelamento_pedido ? 'Cancelando…' : 'Cancelar carga'}
+      </button>
     </div>
   )
 }

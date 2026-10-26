@@ -12,15 +12,20 @@ Aceite TL/Tester/Analista (CC1-CC5):
 - Sem leitura do disco (srvdisk) a carga não inicia nem continua (fail-closed, RS3/RS4/RS5).
 - Cancelar para no próximo lote sem apagar o que já entrou; disco > RECURSOS_LIMITE_DISCO recusa o início (409) e disco
   sozinha acima de RECURSOS_LIMITE_PAUSA (retomável). Nada é apagado; o checkpoint só volta a 0 quando um ciclo completo termina.
+- CC7: etapas Lendo da origem -> Tratando (prata) -> Unificando cidadãos (ouro) -> Concluída, com contador da etapa e
+  sinal de vida (atualizado_em). Na prata/ouro o sinal de vida é gravado numa conexão separada (a transação da
+  reconstrução fica aberta até o fim). Execução em_andamento sem processo vivo (trava livre) vira "interrompida" e
+  pode retomar só prata e ouro a partir da bronze, sem reler a origem.
 - Card final: lidos, gravados, bronze, prata, pendências e reconciliação bronze x COUNT(*) da origem.
 """
+import logging
 import threading
 import time
 import zlib
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
@@ -29,7 +34,7 @@ from app.connectors.sqlserver.politicas import politica
 from app.core import recursos
 from app.core.audit import audita
 from app.core.config import get_settings
-from app.core.db import SessionLocal
+from app.core.db import SessionLocal, get_engine
 from app.gold import visao
 from app.ingestion.mapeamentos import MAPEAMENTOS
 from app.models.camadas import CorrelacaoPendente, RegistroBronze, Vinculo
@@ -44,6 +49,23 @@ NOMES = {"saude": "Saúde", "cemiterio": "Cemitério"}
 
 
 SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
+ETAPAS = ("leitura", "prata", "ouro", "concluida")
+NOME_ETAPA = {"leitura": "Lendo da origem", "prata": "Tratando (prata)", "ouro": "Unificando cidadãos (ouro)",
+              "concluida": "Concluída"}
+STATUS_TEXTO = {"em_andamento": "Em andamento · Carga completa", "sucesso": "Concluída · Carga completa",
+                "falha": "Falhou · Carga completa", "pausada": "Pausada · Carga completa",
+                "cancelada": "Cancelada · Carga completa", "interrompida": "Carga interrompida"}
+INTERROMPIDA = ("Carga interrompida: o servidor parou durante a carga. A bronze foi mantida; "
+                "retome a prata e o ouro (sem reler a origem) ou inicie a carga de novo.")
+log = logging.getLogger("sigpmf.carga_completa")
+
+
+def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | None) -> None:
+    """Grava etapa/contador/atualizado_em numa conexão SEPARADA (commit próprio): visível durante a reconstrução,
+    cuja transação só confirma no fim."""
+    with get_engine().begin() as c:
+        c.execute(update(Execucao).where(Execucao.id == ex_id).values(
+            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC)))
 
 
 class ChaveInvalida(RuntimeError):
@@ -134,16 +156,58 @@ def ativa(db: Session, sistema: str) -> Execucao | None:
                                             Execucao.status == "em_andamento").order_by(Execucao.id.desc()).limit(1))
 
 
-def disparar(ex_id: int, conector: str, trava) -> None:
+def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False) -> None:
     """Background (thread daemon). Os testes substituem por execução síncrona com origem sintética."""
-    threading.Thread(target=rodar, args=(ex_id, conector, trava), daemon=True, name=f"carga-completa-{conector}").start()
+    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs={"somente_camadas": somente_camadas},
+                     daemon=True, name=f"carga-completa-{conector}").start()
 
 
-def iniciar(db: Session, usuario: str, conector: str) -> Execucao:
+def pode_retomar_camadas(db: Session, sistema: str) -> bool:
+    """Última carga interrompida com a leitura da origem já concluída (todos os checkpoints): só falta prata/ouro."""
+    ex = db.scalar(select(Execucao).where(Execucao.tipo == TIPO, Execucao.sistema == sistema)
+                   .order_by(Execucao.id.desc()).limit(1))
+    if ex is None or ex.status != "interrompida":
+        return False
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
+    tabs = set(cc.tabelas_do_conector(sistema))
+    return bool(cps) and tabs <= {c.tabela for c in cps if c.concluida}
+
+
+def _trava_livre(db: Session, sistema: str) -> bool:
+    """True se ninguém segura a trava do conector (nenhum processo vivo rodando a carga)."""
+    with db.get_bind().connect() as c:
+        livre = bool(c.execute(text("select pg_try_advisory_lock(:k)"), {"k": _chave_lock(sistema)}).scalar())
+        if livre:
+            c.execute(text("select pg_advisory_unlock(:k)"), {"k": _chave_lock(sistema)})
+        c.commit()
+    return livre
+
+
+def _marca_interrompida(db: Session, ex: Execucao) -> None:
+    ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", INTERROMPIDA, datetime.now(UTC), None
+    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"{INTERROMPIDA} (etapa: {ex.etapa or 'leitura'})"))
+
+
+def interromper_orfas(db: Session) -> int:
+    """Startup: toda carga completa em_andamento sem processo vivo (trava livre) vira 'interrompida'."""
+    n = 0
+    for ex in list(db.scalars(select(Execucao).where(Execucao.tipo == TIPO, Execucao.status == "em_andamento"))):
+        if _trava_livre(db, ex.sistema):
+            _marca_interrompida(db, ex)
+            n += 1
+    db.commit()
+    if n:
+        log.warning("%d carga(s) completa(s) em andamento sem processo vivo marcadas como interrompidas", n)
+    return n
+
+
+def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = False) -> Execucao:
     sistema = _sistema(conector)
     motivo = motivo_bloqueio(db, conector)
     if motivo:
         raise Bloqueado(motivo)
+    if somente_camadas and not pode_retomar_camadas(db, sistema):
+        raise Bloqueado("Só dá para retomar prata e ouro de uma carga interrompida com a leitura da origem concluída.")
     disco = recursos.motivo_disco_cheio(exige_leitura=True)
     if disco:
         raise Bloqueado(disco)
@@ -157,13 +221,20 @@ def iniciar(db: Session, usuario: str, conector: str) -> Execucao:
         if velha is not None:  # temos a trava: ninguém roda; registro ficou de um reinício do servidor
             velha.status, velha.pausa_motivo = "pausada", "Carga interrompida (reinício do servidor). Retome a carga."
             velha.finalizado_em = datetime.now(UTC)
-        ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False)
+        ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
+                      etapa="prata" if somente_camadas else "leitura", atualizado_em=datetime.now(UTC))
+        if somente_camadas:  # leitura já concluída: total/contagens vêm da bronze, a origem não é lida
+            ex.total_origem = sum(c.total_origem or 0 for c in db.scalars(
+                select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
         db.add(ex)
         db.commit()
     except Exception:
         _solta(trava, sistema)
         raise
-    disparar(ex.id, conector, trava)
+    if somente_camadas:
+        disparar(ex.id, conector, trava, somente_camadas=True)
+    else:
+        disparar(ex.id, conector, trava)
     return ex
 
 
@@ -207,14 +278,20 @@ def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str) -> None:
             "total_origem": ex.total_origem})
 
 
-def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None) -> None:
+def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
     sistema = _sistema(conector)
     proprio = db is None
     db = db or SessionLocal()
     try:
         ex = db.get(Execucao, ex_id)
         try:
-            _executa(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
+            if somente_camadas:  # retomada: nenhum conector é criado nem lido
+                db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Retomando prata e ouro de {conector} a partir "
+                                                                      "da bronze (sem reler a origem)"))
+                db.commit()
+                _camadas(db, ex, conector, sistema)
+            else:
+                _executa(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
         except Exception as exc:  # noqa: BLE001 - lotes já confirmados ficam; o checkpoint permite retomar
             db.rollback()
             ex = db.get(Execucao, ex_id)
@@ -248,6 +325,9 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
             f"Carga completa de {conector}: {ex.total_origem} linhas na origem, lote={s.carga_lote}, "
             f"pausa={s.carga_pausa_ms}ms" + (f", retomando do checkpoint ({retoma} já gravadas)" if retoma else ""))))
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA['leitura']}: início ({ex.total_origem} linhas)"))
+        ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.atualizado_em = "leitura", retoma, ex.total_origem, datetime.now(UTC)
+        t_leitura = time.monotonic()
         db.commit()
         for t, cp in cps.items():
             if cp.concluida:
@@ -279,16 +359,47 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 cp.execucao_id = ex.id
                 cp.atualizado_em = datetime.now(UTC)
                 cp.concluida = len(linhas) < s.carga_lote
+                ex.etapa, ex.total_etapa, ex.atualizado_em = "leitura", ex.total_origem, datetime.now(UTC)
+                ex.processadas_etapa = sum(c.posicao for c in cps.values())
                 db.commit()  # bronze do lote + checkpoint + progresso: tudo ou nada
                 if cp.concluida:
                     break
                 if s.carga_pausa_ms:
                     time.sleep(s.carga_pausa_ms / 1000)
+        _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos})
     finally:
         conn.close()
+    _camadas(db, ex, conector, sistema)
+
+
+def _inicio_etapa(db: Session, ex: Execucao, etapa: str, total: int | None) -> float:
+    ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.atualizado_em = etapa, 0, total, datetime.now(UTC)
     ex.tabela_atual = None
-    sres = processamento.reconstruir(db)
+    db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA[etapa]}: início"
+                                                          + (f" ({total} registros)" if total is not None else "")))
+    db.commit()  # nada de ex pendente na transação da reconstrução: o sinal de vida (outra conexão) não espera trava
+    log.info("carga completa %s: etapa %s início", ex.id, etapa)
+    return time.monotonic()
+
+
+def _fim_etapa(db: Session, ex: Execucao, etapa: str, t0: float, res: dict) -> None:
+    seg = time.monotonic() - t0
+    db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA[etapa]}: fim em {seg:.1f}s {res}"))
+    log.info("carga completa %s: etapa %s fim em %.1fs", ex.id, etapa, seg)
+
+
+def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
+    """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada."""
+    total = int(db.scalar(select(func.count(func.distinct(func.concat(
+        RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))) or 0)
+    t0 = _inicio_etapa(db, ex, "prata", total)
+    sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
+    _fim_etapa(db, ex, "prata", t0, sres)
+    db.commit()  # prata confirmada antes do ouro (já com o resultado novo visível)
+    t1 = _inicio_etapa(db, ex, "ouro", sres["vinculos"])
     gres = visao.reconstruir(db)
+    _fim_etapa(db, ex, "ouro", t1, gres)
+    ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
     rec = reconciliacao(db, sistema)
     ok = all(r["ok"] for r in rec.values())
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
@@ -354,7 +465,16 @@ def situacao(db: Session, conector: str) -> dict:
     motivo = motivo_bloqueio(db, conector) if conector in cc.CONECTORES else None
     if motivo is None and (ex is None or ex.status != "em_andamento"):
         motivo = recursos.motivo_disco_cheio(exige_leitura=True)
-    execucao = None
+    execucao, sem_progresso = None, False
+    if ex is not None and ex.status == "em_andamento":
+        visto = ex.atualizado_em or ex.iniciado_em
+        if visto is not None and visto.tzinfo is None:
+            visto = visto.replace(tzinfo=UTC)
+        sem_progresso = visto is not None and (datetime.now(UTC) - visto).total_seconds() > 60 * get_settings().carga_alerta_min
+        if sem_progresso and _trava_livre(db, sistema):  # nenhum processo segura a trava: a thread morreu
+            _marca_interrompida(db, ex)
+            db.commit()
+            sem_progresso = False
     if ex is not None:
         execucao = {
             "id": ex.id, "status": ex.status, "usuario": ex.usuario, "iniciado_em": ex.iniciado_em,
@@ -362,7 +482,10 @@ def situacao(db: Session, conector: str) -> dict:
             "ignorados": ex.ignorados, "lotes": ex.lotes, "gravados": ex.novos + ex.atualizados,
             "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps), "tabela_atual": ex.tabela_atual,
             "pausa_motivo": ex.pausa_motivo, "cancelamento_pedido": bool(ex.cancelar), "mensagem": ex.mensagem,
-            "erro": ex.erro_publico()}
+            "erro": ex.erro_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
+            "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
+            "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
+            "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
     return {
         "conector": conector, "liberada": motivo is None, "motivo": motivo, "execucao": execucao,
         "camadas": {

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
     carga_lote: int = Field(1000, alias="CARGA_COMPLETA_LOTE", ge=1, le=5000)
+    carga_alerta_min: int = Field(5, alias="SIGPMF_CARGA_ALERTA_MIN", ge=1, le=1440)
     carga_pausa_ms: int = Field(200, alias="CARGA_COMPLETA_PAUSA_MS", ge=0, le=60000)
 
     @property

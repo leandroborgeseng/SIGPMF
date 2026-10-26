@@ -386,6 +386,24 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     return ccomp.situacao(db, conector)
 
 
+@api.post("/conectores/{conector}/completa/retomar-camadas", status_code=202)
+def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(admin_auditado),
+                             db: Session = Depends(get_db)):
+    """CC7: carga interrompida com a leitura concluída retoma só prata e ouro a partir da bronze (sem reler a origem)."""
+    conector = _conector_completa(db, conector)
+    audita(db, u.email, "carga_completa_retomar_camadas_solicitada", f"conector:{conector}", ip=_ip(req))
+    try:
+        ex = ccomp.iniciar(db, u.email, conector, somente_camadas=True)
+    except ccomp.Bloqueado as exc:
+        audita(db, u.email, "carga_completa_negada", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except cc.Conflito as exc:
+        audita(db, u.email, "carga_completa_conflito", f"conector:{conector}", ip=_ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "carga_completa_retomada_camadas", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    return ccomp.situacao(db, conector)
+
+
 @api.post("/conectores/{conector}/completa/cancelar")
 def completa_cancelar(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Para no próximo lote; nada do que já entrou é apagado (o checkpoint permite retomar)."""

@@ -107,8 +107,8 @@ def origem(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr(ccomp, "leitor_padrao", lambda conector, db: o[cc.CONECTORES[conector][0]])
 
-    def sincrono(ex_id, conector, trava):
-        ccomp.rodar(ex_id, conector, trava, leitor=o[cc.CONECTORES[conector][0]])
+    def sincrono(ex_id, conector, trava, somente_camadas=False):
+        ccomp.rodar(ex_id, conector, trava, leitor=o[cc.CONECTORES[conector][0]], somente_camadas=somente_camadas)
     monkeypatch.setattr(ccomp, "disparar", sincrono)
     yield o
     get_settings.cache_clear()
