@@ -5,8 +5,10 @@ _NAO_DIGITO = re.compile(r"\D")
 
 
 def normaliza(cpf: str | None) -> str | None:
-    if not cpf:
+    if cpf is None or cpf == "" or cpf is False:
         return None
+    if isinstance(cpf, int) and not isinstance(cpf, bool):  # numérico na origem perde zeros à esquerda
+        return str(cpf).zfill(11) if cpf > 0 else None
     d = _NAO_DIGITO.sub("", str(cpf))
     return d or None
 

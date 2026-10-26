@@ -29,9 +29,11 @@ def cidadao_id_por_origem(sistema: str, tabela: str, id_origem: str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"origem:{sistema}:{tabela}:{id_origem}"))
 
 
-def normaliza_nome(nome: str | None) -> str:
-    if not nome:
+def normaliza_nome(nome) -> str:
+    if nome is None or nome == "":
         return ""
+    if not isinstance(nome, str):  # a origem pode devolver número/bytes em coluna de nome
+        nome = nome.decode("cp1252", "replace") if isinstance(nome, (bytes, bytearray)) else str(nome)
     s = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode()
     return " ".join(s.upper().split())
 

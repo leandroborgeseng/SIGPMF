@@ -5,6 +5,7 @@ SQL Server, a tabela sendo lida, o nome do objeto inexistente (207/208) e o últ
 (arquivo:linha em função).
 """
 import datetime as dt
+import hashlib
 import os
 import re
 import traceback
@@ -24,13 +25,36 @@ def valor_json(v):
     if isinstance(v, Decimal):
         return int(v) if v == v.to_integral_value() else str(v)
     if isinstance(v, (bytes, bytearray, memoryview)):
-        return "0x" + bytes(v).hex()
+        return bytes_json(bytes(v))
     if isinstance(v, uuid.UUID):
         return str(v)
     return v
 
 
-def linha_json(r: dict) -> dict:
+BINARIO_MAX = 1024  # bytes > 1 KB na bronze: só tamanho + sha256 (nota do Tester)
+
+
+def bytes_json(b: bytes):
+    """varchar que o driver devolve como bytes vira texto (utf-8, senão cp1252); binário curto vira '0x..';
+    binário grande vira {bytes, sha256}."""
+    if len(b) > BINARIO_MAX:
+        return {"bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+    for enc in ("utf-8", "cp1252"):
+        try:
+            t = b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        if t and all(ch.isprintable() or ch in "\t\r\n" for ch in t):
+            return t
+    return "0x" + b.hex()
+
+
+def linha_json(r, colunas=None) -> dict:
+    """Aceita dict (as_dict=True) ou tupla (as_dict=False, na ordem das colunas da política)."""
+    if not isinstance(r, dict):
+        if colunas is None or len(colunas) != len(r):
+            raise ValueError("Linha da origem em tupla sem a lista de colunas correspondente.")
+        r = dict(zip(colunas, r, strict=True))
     return {k: valor_json(v) for k, v in r.items()}
 
 
