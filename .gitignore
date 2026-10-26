@@ -1,0 +1,25 @@
+# segredos e ambientes
+.env
+.env.*
+!.env.example
+# mapeamentos reais e dumps NUNCA entram no repo
+mapeamentos/
+*.bak
+*.mdf
+*.ldf
+*.dump
+*.sql.gz
+*.csv
+*.xlsx
+backups/
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+# node
+node_modules/
+dist/
+coverage/
