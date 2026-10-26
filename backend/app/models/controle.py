@@ -64,6 +64,11 @@ class Execucao(Base):
     tabela_atual: Mapped[str | None] = mapped_column(String(200))
     pausa_motivo: Mapped[str | None] = mapped_column(Text)
     cancelar: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # etapas da carga completa (0009): leitura -> prata -> ouro -> concluida, contador e sinal de vida
+    etapa: Mapped[str | None] = mapped_column(String(20))
+    processadas_etapa: Mapped[int | None] = mapped_column(Integer)
+    total_etapa: Mapped[int | None] = mapped_column(Integer)
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def registra_erro(self, exc: BaseException) -> None:
         from app.services.diagnostico import categoria

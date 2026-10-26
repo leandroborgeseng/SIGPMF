@@ -84,7 +84,9 @@ def _completa(db: Session, b: BaseCatalogo) -> dict:
     if (b.conjunto or "") not in ccomp.CONECTORES_COMPLETA or b.status != "implementado":
         return {"completa_disponivel": False, "completa_liberada": False, "completa_motivo": None}
     motivo = ccomp.motivo_bloqueio(db, b.conjunto)
-    return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo}
+    rodando = ccomp.ativa(db, ccomp._sistema(b.conjunto)) is not None  # CC7.4: card esconde números parciais
+    return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo,
+            "completa_em_andamento": rodando}
 
 
 def totais(bases: list[dict]) -> dict[str, int]:

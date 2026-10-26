@@ -10,6 +10,7 @@ export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
   completa_disponivel?: boolean; completa_liberada?: boolean; completa_motivo?: string | null
+  completa_em_andamento?: boolean
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
 type Modo = 'amostra' | 'completa' | 'reprocessar'
@@ -33,7 +34,8 @@ export const plural = (n: number, um: string, varios: string) => `${new Intl.Num
 export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
 export function perda(de: number, para: number): number | null {
   if (de <= 0 || para >= de) return null
-  return Math.round(((de - para) / de) * 100)
+  const p = Math.round(((de - para) / de) * 100)
+  return p > 0 ? p : null  // nunca "−0%"
 }
 
 export const CARGA_EM_PREPARACAO = 'Carga real em preparação'
@@ -132,6 +134,7 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
   const rodandoAlgo = rodando !== null
   const ocupado = rodandoAlgo || !habilitada
   const u = b.ultima_carga
+  const [ccRodando, setCcRodando] = useState(b.completa_em_andamento === true)
   return (
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
@@ -161,13 +164,14 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
         <div><dt>Prata</dt><dd>{n(c.prata)}</dd></div>
         <div><dt>Ouro <span className="sutil">(cidadãos únicos)</span></dt><dd>{n(c.ouro)}</dd></div>
       </dl>
-      {pPrata !== null && (
+      {ccRodando && <p className="sutil parciais">Em processamento, números parciais</p>}
+      {pPrata !== null && !ccRodando && (
         <p className="perda" title="Diferença bronze → prata: descartes, duplicatas e pendências de correspondência">
           −{pPrata}% na prata
           <span className="sr-only"> (descartes, duplicatas e pendências de correspondência)</span>
         </p>
       )}
-      <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>
+      {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
       {ehAdmin && b.tem_conector && (
         <div className="acoes">
@@ -176,7 +180,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
           </button>
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
           {b.completa_disponivel && b.conector_id && (
-            <CargaCompleta conector={b.conector_id} liberada={b.completa_liberada === true} motivo={b.completa_motivo ?? null} onFim={onFim} />
+            <CargaCompleta conector={b.conector_id} liberada={b.completa_liberada === true} motivo={b.completa_motivo ?? null} onFim={onFim}
+              onRodando={setCcRodando} />
           )}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
