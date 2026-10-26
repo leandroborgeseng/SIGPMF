@@ -50,7 +50,10 @@ export function parseData(v?: string | null): Date | null {
   if (m) return valida(new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00`))
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s)
   if (m) return valida(new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00`))
-  return valida(new Date(s.replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T')))
+  // Data-hora sem fuso (origem SQL Server) = horário de Brasília; com Z/offset, respeita o fuso informado.
+  m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/.exec(s)
+  if (m) return valida(new Date(`${m[1]}T${m[2]}-03:00`))
+  return valida(new Date(s))
 }
 function valida(d: Date): Date | null { return Number.isNaN(d.getTime()) ? null : d }
 
