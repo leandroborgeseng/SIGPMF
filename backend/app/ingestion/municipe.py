@@ -6,6 +6,8 @@ O ISS não tem PK e o `CPF` é varchar(18) com formatação livre. Regras:
   As demais linhas do mesmo documento contam como duplicadas; as que divergem da vencedora ficam como versões.
 - M3: `Tipo_Pessoa = 'J'` vira empresa, nunca cidadão.
 - M4: `Tipo_Pessoa` 'R', nulo ou desconhecido -> pendência (até o DBA definir o significado).
+- M2: `Documento_SoNumeros` (só dígitos, do ISS) confere a normalização: se diferir, vale o normalizado e a
+  linha conta em `divergencia_documento` (sem expor o documento).
 - M2: documento nulo ou com dígito verificador inválido -> pendência, sem `cidadao_id`.
 - M5: 'F' com CPF válido -> cidadão por CPF (A13 v2: score 1,0, cidadao_id = uuid5 do CPF).
 - M6: cada linha lida cai em exatamente uma categoria: nova, atualizada, inalterada, duplicada ou pendente.
@@ -19,7 +21,7 @@ from datetime import date, datetime
 from app.identity import correlacao as corr
 from app.identity import documento as docmod
 
-CAMPOS = ("Tipo_Pessoa", "CPF", "Nome", "Nome_Mae", "Data_Nascimento", "Pis_Pasep", "Data_Alteracao")
+CAMPOS = ("Tipo_Pessoa", "CPF", "Nome", "Nome_Mae", "Data_Nascimento", "Pis_Pasep", "Data_Alteracao", "Documento_SoNumeros")
 CONFIANCA_CPF = 1.0
 
 
@@ -51,6 +53,13 @@ def canonico(linha: dict) -> dict:
             "data_alteracao": _txt(linha.get("Data_Alteracao"))}
 
 
+def diverge_documento(linha: dict) -> bool:
+    """True se o ISS trouxe Documento_SoNumeros e ele difere do CPF normalizado (ausente = sem conferência)."""
+    if "Documento_SoNumeros" not in linha:
+        return False
+    return docmod.normaliza(_txt(linha.get("Documento_SoNumeros"))) != docmod.normaliza(_txt(linha.get("CPF")))
+
+
 def hash_conteudo(c: dict) -> str:
     """Hash dos campos de negócio (sem a data de alteração): versões iguais não são divergentes."""
     base = {k: v for k, v in c.items() if k != "data_alteracao"}
@@ -78,7 +87,7 @@ class Resultado:
     versoes: list[dict] = field(default_factory=list)                  # versões divergentes preservadas (M1)
     pendencias: list[dict] = field(default_factory=list)               # chave, motivo, nome
     contagem: dict = field(default_factory=lambda: dict.fromkeys(
-        ("lidas", "novas", "atualizadas", "inalteradas", "duplicadas", "pendentes", "empresas", "cidadaos"), 0))
+        ("lidas", "novas", "atualizadas", "inalteradas", "duplicadas", "pendentes", "empresas", "cidadaos", "divergencia_documento"), 0))
 
     def fecha(self) -> bool:
         c = self.contagem
@@ -93,6 +102,8 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
     for pos, linha in enumerate(linhas):
         r.contagem["lidas"] += 1
         c = canonico(linha)
+        if diverge_documento(linha):
+            r.contagem["divergencia_documento"] += 1   # informativo: não muda a categoria da linha (M6)
         if c["documento"] is None:
             r.contagem["pendentes"] += 1
             r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "documento_nulo", "nome": c["nome"],

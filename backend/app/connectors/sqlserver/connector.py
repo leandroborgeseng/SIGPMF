@@ -50,7 +50,7 @@ class SqlServerConnector:
         self.nome = nome
 
     def montar_select(self, tabela: str, colunas: list[str] | None = None, campo_incremental: str | None = None,
-                      limite: int | None = None) -> str:
+                      limite: int | None = None, ordem: list[str] | tuple[str, ...] | None = None) -> str:
         maximo = int(self.config.amostra_limite)
         n = maximo if limite is None else limite
         if isinstance(n, bool) or not isinstance(n, int) or n < 1:
@@ -62,6 +62,8 @@ class SqlServerConnector:
         sql = f"SELECT TOP ({int(n)}) {cols} FROM {_ident(tabela)}"
         if campo_incremental:
             sql += f" WHERE {_ident(campo_incremental)} > %s ORDER BY {_ident(campo_incremental)}"
+        elif ordem:
+            sql += " ORDER BY " + ", ".join(_ident(c) for c in ordem)
         return garante_somente_leitura(sql)
 
     def _conectar(self):
@@ -97,8 +99,9 @@ class SqlServerConnector:
         cols = list(politica.colunas_select(tabela))
         if campo_incremental and campo_incremental not in cols:
             raise ValueError(f"Campo incremental {campo_incremental!r} fora das colunas da política.")
+        ordem = politica.ordem_amostra(tabela) if hasattr(politica, "ordem_amostra") else ()
         return self.montar_select(f"dbo.{tabela.split('.')[-1]}", cols, campo_incremental=campo_incremental,
-                                  limite=limite)
+                                  limite=limite, ordem=ordem)
 
     def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,
                     desde: datetime | None = None) -> list[dict[str, Any]]:

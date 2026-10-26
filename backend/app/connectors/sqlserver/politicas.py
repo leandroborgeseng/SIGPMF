@@ -19,6 +19,15 @@ class Politica:
     apoio: frozenset[str] = field(default_factory=frozenset)  # lookups: autorizados, mas sem colunas definidas -> recusados no SELECT
     recusar: tuple[str, ...] = ()                 # padrões sempre recusados (regex, sem distinção de caixa)
     proibidas: frozenset[str] = field(default_factory=frozenset)
+    ordem: dict[str, tuple[str, ...]] = field(default_factory=dict)  # tabela -> ORDER BY estável da amostra
+
+    def ordem_amostra(self, tabela: str) -> tuple[str, ...]:
+        nome = tabela.split(".")[-1]
+        cols = self.ordem.get(nome, ())
+        fora = [c for c in cols if c not in self.colunas.get(nome, ())]
+        if fora:
+            raise TabelaRecusada(f"Ordenação fora das colunas da política: {fora}")
+        return cols
 
     def autoriza(self, tabela: str) -> None:
         nome = tabela.split(".")[-1]
@@ -103,11 +112,16 @@ CEMITERIO = Politica(
 
 # Munícipe (aceite M1-M8): fonte única ISS.dbo.Municipes (a Geral é espelho contido no ISS e não é lida).
 # Colunas confirmadas na triagem (mapeamentos/triagem-bancos.md); CTPS, Título, Reservista, CNH e senhas nunca entram.
-COLUNAS_MUNICIPES = ("Tipo_Pessoa", "CPF", "Nome", "Nome_Mae", "Data_Nascimento", "Pis_Pasep", "Data_Alteracao")
+# Documento_SoNumeros varchar(14): só dígitos, mantido pelo ISS; serve para conferir a normalização (M2)
+# e, com Tipo_Pessoa, ordena a amostra pelo índice (Tipo_Pessoa, Documento_SoNumeros) - decisão do TL no #6.
+COLUNAS_MUNICIPES = ("Tipo_Pessoa", "CPF", "Nome", "Nome_Mae", "Data_Nascimento", "Pis_Pasep", "Data_Alteracao",
+                     "Documento_SoNumeros")
+ORDEM_MUNICIPES = ("Tipo_Pessoa", "Documento_SoNumeros")
 
 ISS = Politica(
     sistema="ISS", base="ISS",
     colunas={"Municipes": COLUNAS_MUNICIPES},
+    ordem={"Municipes": ORDEM_MUNICIPES},
     recusar=(r"Senha", r"Antigo") + _RECUSA_COMUM,
     proibidas=frozenset({"Senha", "CTPS", "Titulo_Eleitor", "Reservista", "CNH"}),
 )

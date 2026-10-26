@@ -69,7 +69,8 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         # Só contagens na mensagem/log: nenhum documento em claro (M7).
         ex.mensagem = (f"lidas={c['lidas']} novas={c['novas']} atualizadas={c['atualizadas']} "
                        f"inalteradas={c['inalteradas']} duplicadas={c['duplicadas']} pendentes={c['pendentes']} "
-                       f"cidadaos={c['cidadaos']} empresas={c['empresas']} versoes={len(r.versoes)}")
+                       f"cidadaos={c['cidadaos']} empresas={c['empresas']} versoes={len(r.versoes)} "
+                       f"divergencia_documento={c['divergencia_documento']}")
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=ex.mensagem))
     except Exception as exc:  # noqa: BLE001
         db.rollback()

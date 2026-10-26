@@ -208,3 +208,40 @@ def test_m7_api_mascara_documento(carga, client, tokens):
 def test_execucao_municipe_sem_origem_configurada(client, tokens, monkeypatch):
     r = client.post("/api/conectores/iss/municipes/executar", headers=tokens["operador"])
     assert r.status_code == 400
+
+
+# ---------- Ajustes do TL no #6: Documento_SoNumeros e ordenação da amostra ----------
+def test_documento_sonumeros_na_politica_e_ordem_da_amostra():
+    from app.connectors.sqlserver.politicas import ORDEM_MUNICIPES
+    from app.core.sql_guard import garante_somente_leitura
+    assert "Documento_SoNumeros" in ISS.colunas_select("Municipes")
+    assert ORDEM_MUNICIPES == ("Tipo_Pessoa", "Documento_SoNumeros")
+    con = SqlServerConnector(ConfigSqlServer("h", 1433, "ISS", "u", "p", 5, 1000), nome="ISS")
+    sql = con.montar_select_politica(ISS, "Municipes")
+    assert sql.startswith("SELECT TOP (1000) ") and "[Documento_SoNumeros]" in sql and "*" not in sql
+    assert sql.endswith("FROM [dbo].[Municipes] ORDER BY [Tipo_Pessoa], [Documento_SoNumeros]")
+    assert "Data_Alteracao] DESC" not in sql
+    assert garante_somente_leitura(sql) == sql  # ORDER BY continua aceito pelo guard
+    assert con.montar_select_politica(ISS, "Municipes", limite=5000).startswith("SELECT TOP (1000)")
+
+
+def test_ordem_fora_da_politica_recusada():
+    from dataclasses import replace
+
+    from app.connectors.sqlserver.politicas import TabelaRecusada
+    ruim = replace(ISS, ordem={"Municipes": ("Senha_Qualquer",)})
+    con = SqlServerConnector(ConfigSqlServer("h", 1433, "ISS", "u", "p", 5, 1000), nome="ISS")
+    with pytest.raises(TabelaRecusada):
+        con.montar_select_politica(ruim, "Municipes")
+
+
+def test_documento_sonumeros_confere_normalizacao():
+    ok = {**linha(f"{A[:3]}.{A[3:6]}.{A[6:9]}-{A[9:]}"), "Documento_SoNumeros": A}
+    diverge = {**linha(B), "Documento_SoNumeros": "00000000000"}
+    sem = linha(J, tipo="J")  # sem a coluna: não confere nem conta divergência
+    r = mun.classificar([ok, diverge, sem])
+    assert r.contagem["divergencia_documento"] == 1
+    assert r.fecha()
+    docs = {reg.documento for reg in r.registros}
+    assert A in docs and B in docs  # vale o normalizado do CPF mesmo com divergência
+    assert not mun.diverge_documento(ok) and mun.diverge_documento(diverge) and not mun.diverge_documento(sem)
