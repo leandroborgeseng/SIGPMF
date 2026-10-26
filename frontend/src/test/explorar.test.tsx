@@ -110,6 +110,8 @@ describe('Explorar dados', () => {
     await abaAmostra(u)
     expect(await screen.findByRole('columnheader', { name: 'Quarentena' })).toBeInTheDocument()
     expect(screen.queryByRole('columnheader', { name: 'quarentena' })).toBeNull()
+    expect(screen.getByRole('cell', { name: 'Chave nula na origem' })).toBeInTheDocument()
+    expect(screen.queryByText('chave_nula')).toBeNull()
   })
 
   it('UX-E9: abas de camada navegam com as setas', async () => {
@@ -154,7 +156,9 @@ describe('Explorar dados', () => {
     expect(cpf).toHaveAttribute('aria-disabled', 'true')
     expect(cpf).toHaveAttribute('readonly')
     expect(cpf).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
-    expect(within(form).getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(4) // bronze: id_origem, cpf, nome, email
+    expect(screen.getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(1) // aviso único acima dos filtros
+    expect(within(form).queryByText('Filtro disponível só para o perfil LGPD')).toBeNull()  // nos campos, só o cadeado
+    for (const c of [/^id_origem/, /^nome/, /^email/]) expect(within(form).getByLabelText(c)).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
     await userEvent.setup().type(cpf, '123')
     expect(cpf).toHaveValue('')
     expect(within(form).getByLabelText(/^id_origem/)).toHaveAttribute('aria-disabled', 'true')  // P1: bronze, além de id
@@ -228,7 +232,10 @@ describe('Explorar dados', () => {
     const uuid = await screen.findByText('400d13f0…')
     expect(uuid).toHaveAttribute('title', CID)
     expect(screen.getByRole('button', { name: 'Copiar identificador' })).toBeInTheDocument()
-    expect(screen.getByText('••• (oculto)')).toBeInTheDocument()
+    const m = document.querySelector('.mascara')!
+    expect(m).toHaveTextContent('••• oculto')  // visível só "•••"; "oculto" é sr-only
+    expect(m.querySelector('.sr-only')).toHaveTextContent('oculto')
+    expect(screen.queryByText('••• (oculto)')).toBeNull()
     await u.click(screen.getByRole('button', { name: 'origem' }))
     const ver = await screen.findByRole('button', { name: 'Ver linha na Bronze' })
     expect(screen.getByRole('table', { name: 'Veio de' })).toBeInTheDocument()

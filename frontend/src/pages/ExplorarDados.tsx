@@ -86,7 +86,10 @@ function Uuid({ v }: { v: string }) {
   )
 }
 
+const OCULTO = '••• (oculto)'
+const ROTULO_QUARENTENA: Record<string, string> = { chave_nula: 'Chave nula na origem' }
 function Valor({ v }: { v: unknown }) {
+  if (v === OCULTO) return <span className="mascara">•••<span className="sr-only"> oculto</span></span>
   if (typeof v === 'string' && UUID.test(v)) return <Uuid v={v} />
   return <>{fmt(v)}</>
 }
@@ -344,6 +347,8 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
 
   return (
     <div>
+      {!lgpd && !pendencias && colsFiltro.some((c) => restrito(c)) && (
+        <p id="f-lgpd-aviso" className="dica-lgpd aviso-filtros"><span aria-hidden="true">🔒 </span>{MSG_FILTRO_LGPD}</p>)}
       <form onSubmit={aplicar} className="ex-filtros" aria-label="Filtros">
         {colsFiltro.map((c) => {
           const bloqueado = restrito(c) && !lgpd && !pendencias
@@ -363,9 +368,8 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
               {/* campo bloqueado: readOnly + aria-disabled para continuar focável e anunciar o motivo (aria-describedby) */}
               <input id={`f-${c}`} value={rascunho[c] ?? ''} readOnly={bloqueado} aria-disabled={bloqueado || undefined}
                 className={bloqueado ? 'bloqueado' : undefined} title={bloqueado ? MSG_FILTRO_LGPD : 'Busca por valor exato'}
-                aria-describedby={bloqueado ? `f-${c}-lgpd` : undefined}
+                aria-describedby={bloqueado ? 'f-lgpd-aviso' : undefined}
                 onChange={(e) => { if (!bloqueado) setRascunho({ ...rascunho, [c]: e.target.value }) }} placeholder="valor exato" autoComplete="off" />
-              {bloqueado && <small id={`f-${c}-lgpd`} className="dica-lgpd">{MSG_FILTRO_LGPD}</small>}
             </div>)
         })}
         {lgpd && temSensivel && (
@@ -392,7 +396,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
                     <tr key={String(id ?? i) + i}>{am.colunas.map((c) => {
                       const k = chave(id, c)
                       const rv = revelados[k]
-                      const v = rv ? rv.v : l[c]
+                      const v = rv ? rv.v : (c === 'quarentena' && !pendencias && typeof l[c] === 'string' ? (ROTULO_QUARENTENA[l[c] as string] ?? l[c]) : l[c])
                       return (
                         <td key={c} className={typeof v === 'number' ? 'num' : undefined}>
                           {c === 'motivo' && pendencias ? <span title={String(l.motivo_codigo ?? '')}>{String(v)}</span>

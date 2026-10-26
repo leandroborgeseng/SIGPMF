@@ -41,3 +41,6 @@
 .explorar .reconc.ok strong { color: #1a7f37; }
 .explorar .reconc.divergente strong { color: var(--danger-ink, #b42318); }
 .explorar .paginacao .btn[disabled] { background: var(--muted-bg, #f1f3f5); color: var(--muted, #6b7280); border-color: var(--line, #d0d7de); cursor: not-allowed; }
+
+.explorar .mascara { white-space: nowrap; }
+.explorar .aviso-filtros { max-width: none; margin: 0 0 .5rem; }
