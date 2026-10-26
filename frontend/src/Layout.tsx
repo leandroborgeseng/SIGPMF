@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from './auth'
 import { ErrorBoundary } from './componentes'
+import { PERFIS_EXPLORADOR } from './explorar'
 
-const GRUPOS = [
+const GRUPOS: { titulo: string; itens: Item[] }[] = [
   { titulo: 'Visão', itens: [{ to: '/dashboard', rotulo: 'Dashboard', curto: 'Dashboard' }] },
   { titulo: 'Dados', itens: [
     { to: '/conectores', rotulo: 'Conectores', curto: 'Conectores' },
     { to: '/simulador', rotulo: 'Simulador do Cidadão', curto: 'Simulador' },
+    { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
   ] },
 ]
-const ITENS = GRUPOS.flatMap((g) => g.itens)
+type Item = { to: string; rotulo: string; curto: string; perfis?: string[] }
+const visivel = (i: Item, perfil?: string) => !i.perfis || (!!perfil && i.perfis.includes(perfil))
 
 function Marca() {
   return (
@@ -26,6 +29,8 @@ export default function Layout() {
   const [aberto, setAberto] = useState(false)
   const botao = useRef<HTMLButtonElement>(null)
   const local = useLocation()
+  const grupos = GRUPOS.map((g) => ({ ...g, itens: g.itens.filter((i) => visivel(i, sessao?.perfil)) }))
+  const ITENS = grupos.flatMap((g) => g.itens)
 
   const fechar = (devolveFoco = true) => {
     setAberto(false)
@@ -51,7 +56,7 @@ export default function Layout() {
       <aside id="menu-lateral" className={`lateral${aberto ? ' aberto' : ''}`}>
         <div className="lateral-marca"><Marca /></div>
         <nav aria-label="Navegação principal">
-          {GRUPOS.map((g) => (
+          {grupos.map((g) => (
             <div key={g.titulo} className="grupo-nav">
               <div className="grupo-titulo" aria-hidden="true">{g.titulo}</div>
               <ul>
