@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.explorador import catalogo as cat
-from app.explorador.mascara import mascara_campo, mascara_dict, mascara_linha, mascara_valor, tipo_sensivel
+from app.explorador.mascara import mascara_campo, mascara_dict, mascara_linha, mascara_restrita, mascara_valor, tipo_sensivel
 from app.models.camadas import CorrelacaoPendente, DadoGold, Identificador, MunicipePendencia, RegistroBronze, Vinculo
 from app.models.controle import Execucao
 
@@ -138,14 +138,14 @@ def chaves_bronze(db: Session, c: str, tabela: str) -> list[str]:
     return [k for k in ks if _COL_OK.match(k)]
 
 
-def _amostras(valores, coluna: str) -> list:
+def _amostras(valores, coluna: str, livres=None) -> list:
     vistos, out = set(), []
     for v in valores:
         r = json.dumps(_json(v), sort_keys=True, default=str)
         if v is None or v == "" or r in vistos:
             continue
         vistos.add(r)
-        out.append(mascara_campo(coluna, _json(v)))
+        out.append(mascara_campo(coluna, _json(v)) if livres is None else mascara_restrita(coluna, _json(v), livres))
         if len(out) == 3:
             break
     return out
@@ -164,11 +164,12 @@ def tipo_amigavel(tecnico: str) -> str:
     return "Texto"
 
 
-def _perfil_item(col: str, tipo: str, base: int, preenchidos: int, distintos: int, exemplos: list, aprox: bool) -> dict:
+def _perfil_item(col: str, tipo: str, base: int, preenchidos: int, distintos: int, exemplos: list, aprox: bool,
+                 sensivel: bool | None = None) -> dict:
     pct = round(100.0 * preenchidos / base, 1) if base else 0.0
     return {"coluna": col, "tipo": tipo_amigavel(tipo), "tipo_tecnico": tipo, "preenchido_pct": pct,
             "nulo_pct": round(100.0 - pct, 1) if base else 0.0, "distintos": int(distintos), "aprox": aprox,
-            "exemplos": exemplos, "sensivel": tipo_sensivel(col) is not None}
+            "exemplos": exemplos, "sensivel": tipo_sensivel(col) is not None if sensivel is None else sensivel}
 
 
 def perfil(db: Session, c: str, camada: str, tabela: str) -> dict:
@@ -182,14 +183,15 @@ def perfil(db: Session, c: str, camada: str, tabela: str) -> dict:
         total = int(db.scalar(text("SELECT count(*) FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t"), p))
         base, aprox = min(total, n), total > n
         amostra_sql = "(SELECT dados::jsonb AS d FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t ORDER BY id LIMIT :n) x"
-        cols = []
+        cols, livres = [], cat.bronze_livres(c, tabela)
         for k in chaves_bronze(db, c, tabela):
             q = {**p, "k": k}
             pre, dist, tp = db.execute(text(
                 "SELECT count(*) FILTER (WHERE NULLIF(d->>:k,'') IS NOT NULL), count(DISTINCT d->>:k), "
                 f"mode() WITHIN GROUP (ORDER BY jsonb_typeof(d->:k)) FROM {amostra_sql}"), q).one()
             vals = db.scalars(text(f"SELECT d->:k FROM {amostra_sql} WHERE NULLIF(d->>:k,'') IS NOT NULL LIMIT 50"), q)
-            cols.append(_perfil_item(k, f"json:{tp or 'null'}", base, pre or 0, dist or 0, _amostras(vals, k), aprox))
+            cols.append(_perfil_item(k, f"json:{tp or 'null'}", base, pre or 0, dist or 0, _amostras(vals, k, livres), aprox,
+                                     sensivel=k not in livres or tipo_sensivel(k) is not None))
         return {"camada": camada, "tabela": tabela, "linhas": total, "aprox": aprox, "amostra_perfil": base, "colunas": cols}
     s = spec(camada, c, tabela)
     t, w = s.tabela, _where_conector(s, c)
@@ -216,13 +218,15 @@ def _filtro_valor(v: Any) -> str:
     return str(v).strip()
 
 
-def colunas_sensiveis_filtradas(filtros: dict[str, Any], spec_: "cat.Spec | None" = None) -> list[str]:
-    """Colunas pessoais (ou o `valor` de tabela chave/valor) usadas no filtro: exigem admin_lgpd + motivo."""
+def colunas_sensiveis_filtradas(filtros: dict[str, Any], spec_: "cat.Spec | None" = None,
+                                bronze: bool = False) -> list[str]:
+    """Colunas pessoais (ou o `valor` de tabela chave/valor) usadas no filtro: exigem admin_lgpd + motivo.
+    Bronze (P1, sem catálogo): QUALQUER filtro que não seja `id` exige admin_lgpd + motivo."""
     out = []
     for k, v in (filtros or {}).items():
         if v in (None, ""):
             continue
-        if tipo_sensivel(k) or (spec_ is not None and k == spec_.valor_col):
+        if (bronze and k != "id") or tipo_sensivel(k) or (spec_ is not None and k == spec_.valor_col):
             out.append(k)
     return sorted(out)
 
@@ -260,16 +264,16 @@ def amostra(db: Session, c: str, camada: str, tabela: str, pagina: int, filtros:
         rows = db.execute(text(f"SELECT id, id_origem, extraido_em, atualizado_origem_em, dados{extra} "
                                f"FROM bronze.registros WHERE {where} ORDER BY id LIMIT :lim OFFSET :off"),
                           {**params, "lim": pp + 1, "off": off}).mappings().all()
-        linhas = []
+        linhas, livres = [], cat.bronze_livres(c, tabela)
         for r in rows[:pp]:
             d = r["dados"] if isinstance(r["dados"], dict) else json.loads(r["dados"])
-            linha = {"id": r["id"], "id_origem": r["id_origem"], "extraido_em": _json(r["extraido_em"]),
-                     **{k: _json(d.get(k)) for k in chaves}}
+            linha = mascara_dict({"id": r["id"], "id_origem": r["id_origem"], "extraido_em": _json(r["extraido_em"])})
+            linha.update({k: mascara_restrita(k, _json(d.get(k)), livres) for k in chaves if k not in linha})
             if quar:
                 linha["quarentena"] = r["quarentena"]
-            linhas.append(mascara_dict(linha))
+            linhas.append(linha)
         colunas = ["id", "id_origem", "extraido_em", *chaves] + (["quarentena"] if quar else [])
-        sens = [k for k in chaves if tipo_sensivel(k)]
+        sens = [k for k in chaves if k not in livres or tipo_sensivel(k)]
         return _pagina(camada, tabela, colunas, "id", None, linhas, pagina, len(rows) > pp, sens)
     s = spec(camada, c, tabela)
     t = s.tabela
@@ -299,7 +303,7 @@ MOTIVOS = {
     "terceiro_cpf_invalido": "CPF de terceiro inválido",
     "versoes_duplicadas": "Duplicata",
     "duplicata": "Duplicata",
-    "em_quarentena": "Em quarentena: chave nula",
+    "em_quarentena": "Chave nula na origem",
     "cidadao_sem_dado_no_ouro": "Cidadão sem dado no ouro",
     "ambiguo": "Mais de um candidato",
 }
@@ -309,7 +313,7 @@ def rotulo_motivo(m: str | None) -> str:
     if not m:
         return "—"
     if m.startswith("quarentena"):
-        return "Em quarentena: chave nula"
+        return "Chave nula na origem"
     return MOTIVOS.get(m, m.replace("_", " ").capitalize())
 
 
@@ -437,7 +441,9 @@ def linhagem(db: Session, cidadao_id: str) -> dict:
     if ids:
         for r in db.scalars(select(RegistroBronze).where(RegistroBronze.id.in_(ids))):
             bronze[r.id] = {"bronze_id": r.id, "origem": r.sistema_origem, "tabela": r.tabela, "chave": r.id_origem,
-                            "extraido_em": _json(r.extraido_em), "dados": mascara_dict(r.dados or {})}
+                            "extraido_em": _json(r.extraido_em),
+                            "dados": {k: mascara_restrita(k, _json(v), cat.bronze_livres(r.sistema_origem, r.tabela))
+                                      for k, v in (r.dados or {}).items()}}
     idents = [mascara_linha({"tipo": i.tipo, "valor": i.valor}, "tipo", "valor")
               for i in db.scalars(select(Identificador).where(Identificador.cidadao_id == cidadao_id))]
     ouro = [{"dominio": d, "campo": f, "sistema": s, "quantidade": int(n)} for d, f, s, n in db.execute(

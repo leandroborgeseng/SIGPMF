@@ -185,12 +185,13 @@ def _n(client, h, filtros, **extra):
 
 
 def test_ex2_filtro_por_post_igualdade_exata(client, tokens, dados):
-    h = tokens["admin"]
-    assert _n(client, h, {"grupo": "A"}) == 60
-    assert _n(client, h, {"grupo": "a"}) == 0  # exato, nunca LIKE/ILIKE
-    assert _n(client, h, {"grupo": "%"}) == 0
-    assert _n(client, h, {"obs": "nada"}) == 119
-    assert _n(client, h, {"obs": "nad"}) == 0
+    h, m = tokens["admin_lgpd"], {"motivo_filtro": MOT}  # P1: na bronze, filtro além de id é só do admin_lgpd
+    assert _n(client, h, {"grupo": "A"}, **m) == 60
+    assert _n(client, h, {"grupo": "a"}, **m) == 0  # exato, nunca LIKE/ILIKE
+    assert _n(client, h, {"grupo": "%"}, **m) == 0
+    assert _n(client, h, {"obs": "nada"}, **m) == 119
+    assert _n(client, h, {"obs": "nad"}, **m) == 0
+    assert _n(client, tokens["admin"], {"id": str(dados[3])}) == 1  # id continua livre para o admin comum
 
 
 def test_ex2_filtro_coluna_pessoal_so_lgpd_com_motivo_auditado(client, tokens, dados, db):
@@ -416,7 +417,7 @@ def test_cc9_quarentena_nas_pendencias_e_na_bronze(client, tokens, quar):
     assert tabs["vazia"]
     p = client.post("/api/explorar/amostra", json={"conector": "EXQUAR", "camada": "prata", "tabela": "vinculos", "somente_pendencias": True},
                     headers=h).json()
-    assert [x["motivo"] for x in p["linhas"]] == ["Em quarentena: chave nula"] * 2 and p["quarentena_disponivel"] is True
+    assert [x["motivo"] for x in p["linhas"]] == ["Chave nula na origem"] * 2 and p["quarentena_disponivel"] is True
     assert all(x["motivo_codigo"] == "quarentena:chave_nula" and x["chave"].endswith("***") for x in p["linhas"])
     f = client.post("/api/explorar/amostra", json={"conector": "EXQUAR", "camada": "prata", "tabela": "vinculos", "somente_pendencias": True,
                                                     "filtros": {"motivo": "em_quarentena"}}, headers=h).json()
@@ -430,3 +431,113 @@ def test_cc7_estado_etapa_x_de_3(client, tokens, quar):
     e = client.post("/api/explorar/tabelas", json={"conector": "EXQUAR", "camada": "ouro"}, headers=tokens["admin"]).json()["estado"]
     assert e["processando"] and e["etapa"] == "prata" and e["etapa_num"] == 2 and e["etapas_total"] == 3 and e["parcial"]
     assert e["mensagem"] == "Processando… etapa 2 de 3 · Tratando (prata)" and e["atualizado_em"]
+
+
+# ---------- P1: bronze sem catálogo (ressalvas 1 e 3 do Tester no #16) ----------
+ZZ = "ZZTESTE"
+
+
+@pytest.fixture(scope="module")
+def zz(client):
+    """Conector sintético ZZTESTE com colunas de nome fora do padrão (NU_INSCR, Ident) carregando CPF/CNPJ/e-mail/CNS."""
+    import json as _j
+
+    from app.core.db import SessionLocal
+    from app.explorador import catalogo as cat
+    cat.BRONZE_COLUNAS_LIVRES[ZZ] = {"Cadastro": frozenset({"Situacao"})}
+    db = SessionLocal()
+    eid = db.execute(text("INSERT INTO controle.execucoes (tipo, sistema, status, finalizado_em) VALUES "
+                          "('carga_demo_amostra', :s, 'sucesso', now()) RETURNING id"), {"s": ZZ}).scalar()
+    cid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "zzteste-1"))
+    ids = []
+    for i in range(3):
+        d = {"NU_INSCR": CPF, "Ident": CNPJ, "Contato": EMAIL, "Cartao": CNS, "Situacao": "ATIVO", "Cod_Interno": 700 + i}
+        ids.append(db.execute(text("INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id) "
+                                   "VALUES (:s, 'Cadastro', :io, CAST(:d AS jsonb), :h, :e) RETURNING id"),
+                              {"s": ZZ, "io": f"Z{i}", "d": _j.dumps(d), "h": f"zz{i}", "e": eid}).scalar())
+    db.execute(text("INSERT INTO silver.cidadaos (cidadao_id, nome) VALUES (:c, 'ZZTESTE Sintetico')"), {"c": cid})
+    db.execute(text("INSERT INTO silver.vinculos (cidadao_id, sistema, tabela, chave_origem, bronze_id, metodo, confianca, atributos) "
+                    "VALUES (:c, :s, 'Cadastro', 'Z0', :b, 'cpf', 1.0, '[]')"), {"c": cid, "s": ZZ, "b": ids[0]})
+    db.commit()
+    db.close()
+    yield {"ids": ids, "cid": cid}
+    cat.BRONZE_COLUNAS_LIVRES.pop(ZZ, None)
+
+
+ZB = {"conector": ZZ, "camada": "bronze", "tabela": "Cadastro"}
+ZPII = (CPF, CNPJ, EMAIL, CNS, "fulano.sintetico", "700", "701")
+
+
+def _zsem(txt):
+    for p in ZPII:
+        assert p not in txt, f"vazou {p[:4]}…"
+
+
+@pytest.mark.parametrize("col", ["NU_INSCR", "Ident", "Contato", "Cartao", "Cod_Interno", "Situacao", "id_origem"])
+def test_p1_bronze_filtro_alem_de_id_admin_comum_403_auditado(client, tokens, zz, db, col):
+    antes = db.execute(text("SELECT count(*) FROM controle.auditoria WHERE acao='explorar_filtro_pessoal_negado'")).scalar()
+    r = client.post("/api/explorar/amostra", json={**ZB, "filtros": {col: "1"}, "motivo_filtro": MOT}, headers=tokens["admin"])
+    assert r.status_code == 403
+    db.expire_all()
+    n = db.execute(text("SELECT count(*) FROM controle.auditoria WHERE acao='explorar_filtro_pessoal_negado'")).scalar()
+    det = db.execute(text("SELECT detalhe::text FROM controle.auditoria WHERE acao='explorar_filtro_pessoal_negado' "
+                          "ORDER BY id DESC LIMIT 1")).scalar()
+    assert n == antes + 1 and col in det and "1" not in det.replace(col, "")
+    # somente_pendencias na bronze não libera o filtro
+    r = client.post("/api/explorar/amostra", json={**ZB, "filtros": {col: "1"}, "somente_pendencias": True}, headers=tokens["admin"])
+    assert r.status_code == 403
+
+
+def test_p1_bronze_filtro_lgpd_exige_motivo_e_audita_sem_valor(client, tokens, zz, db):
+    lg = tokens["admin_lgpd"]
+    assert client.post("/api/explorar/amostra", json={**ZB, "filtros": {"NU_INSCR": CPF}}, headers=lg).status_code == 400
+    r = client.post("/api/explorar/amostra", json={**ZB, "filtros": {"NU_INSCR": CPF}, "motivo_filtro": MOT}, headers=lg)
+    assert r.status_code == 200 and len(r.json()["linhas"]) == 3
+    _zsem(r.text)
+    db.expire_all()
+    det = db.execute(text("SELECT detalhe::text FROM controle.auditoria WHERE acao='explorar_filtro_pessoal' ORDER BY id DESC LIMIT 1")).scalar()
+    assert "NU_INSCR" in det and "chamado 123" in det and CPF not in det
+    r = client.post("/api/explorar/amostra", json={**ZB, "filtros": {"id": str(zz["ids"][0])}}, headers=tokens["admin"])
+    assert r.status_code == 200 and len(r.json()["linhas"]) == 1
+
+
+@pytest.mark.parametrize("perfil", ["admin", "admin_lgpd"])
+def test_p1_bronze_colunas_fora_da_allowlist_mascaradas(client, tokens, zz, perfil):
+    r = client.post("/api/explorar/amostra", json=ZB, headers=tokens[perfil])
+    j = r.json()
+    l0 = j["linhas"][0]
+    assert l0["Situacao"] == "ATIVO"  # na allowlist do conector: em claro
+    assert l0["NU_INSCR"] == l0["Ident"] == l0["Contato"] == l0["Cartao"] == l0["Cod_Interno"] == "••• (oculto)"
+    assert set(j["colunas_sensiveis"]) == {"NU_INSCR", "Ident", "Contato", "Cartao", "Cod_Interno"}
+    _zsem(r.text)
+    p = client.post("/api/explorar/perfil", json=ZB, headers=tokens[perfil])
+    sens = {c["coluna"]: c["sensivel"] for c in p.json()["colunas"]}
+    assert sens["NU_INSCR"] and sens["Ident"] and not sens["Situacao"]
+    _zsem(p.text)
+
+
+def test_p1_bronze_revelar_coluna_fora_do_padrao_so_lgpd(client, tokens, zz):
+    corpo = {**ZB, "linha_id": zz["ids"][0], "coluna": "NU_INSCR", "motivo": MOT}
+    assert client.post("/api/explorar/revelar", json=corpo, headers=tokens["admin"]).status_code == 403
+    r = client.post("/api/explorar/revelar", json=corpo, headers=tokens["admin_lgpd"])
+    assert r.status_code == 200 and r.json()["valor"] == CPF
+
+
+def test_p1_linhagem_admin_comum_mascarada(client, tokens, zz):
+    r = client.post("/api/explorar/linhagem", json={"cidadao_id": zz["cid"]}, headers=tokens["admin"])
+    assert r.status_code == 200
+    b = r.json()["prata"][0]["bronze"]["dados"]
+    assert b["Situacao"] == "ATIVO" and b["NU_INSCR"] == "••• (oculto)" and b["Contato"] == "••• (oculto)"
+    _zsem(r.text)
+
+
+def test_p1_allowlist_bronze_e_subconjunto_nao_pessoal_da_politica():
+    from app.connectors.sqlserver.politicas import POLITICAS, coluna_proibida
+    from app.explorador.catalogo import BRONZE_COLUNAS_LIVRES
+    for sist, tabs in BRONZE_COLUNAS_LIVRES.items():
+        if sist == ZZ:
+            continue
+        pol = POLITICAS[sist]
+        for tab, cols in tabs.items():
+            assert cols <= set(pol.colunas[tab]), (sist, tab)
+            assert not any(tipo_sensivel(c) or coluna_proibida(c, pol.proibidas) for c in cols), (sist, tab)

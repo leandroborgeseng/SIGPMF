@@ -15,6 +15,7 @@ const MSG_ERRO = 'Não foi possível carregar os dados.'
 const MSG_FILTRO_LGPD = 'Filtro disponível só para o perfil LGPD'
 type Aba = 'perfil' | 'amostra' | 'pendencias' | 'origem'
 const ROTULO_PEND: Record<string, string> = { motivo: 'Motivo', tabela: 'Tabela', chave: 'Chave', data_carga: 'Data da carga' }
+const ROTULO_AMOSTRA: Record<string, string> = { quarentena: 'Quarentena' }
 const fmt = (v: unknown) => formata(v, dataBR, dataHoraBR)
 
 /** Hook de carga com estado de erro e "Tentar de novo" que refaz a MESMA chamada (UX-E7). */
@@ -258,7 +259,7 @@ function CamadaEscolha({ conectores, conector, setConector, camada, setCamada, t
       {atual.carregando && <Esqueleto linhas={5} texto="Carregando tabelas…" />}
       {atual.dados && (
         <>
-          <FaixaProcessando e={atual.dados.estado} />
+          {/* UX: o aviso "Processando… etapa N de 3" fica só no funil, não repetido na camada */}
           {(atual.dados.vazia || !info || info.linhas === 0) && <p className="vazio">Esta camada ainda não foi processada para esta tabela.</p>}
           {camada === 'prata' && escolhida && (atual.dados.vazia || !info || info.linhas === 0) && (
             <div className="detalhe">{children(escolhida)}</div>  /* Pendências (ex.: quarentena CC9) existem antes da prata */
@@ -380,7 +381,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
           <div className="tabela-rolagem">
             <table>
               <caption>{pendencias ? 'Pendências' : 'Amostra'} · Página {am.pagina}</caption>
-              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{pendencias ? (ROTULO_PEND[c] ?? c) : c}</th>)}</tr></thead>
+              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{pendencias ? (ROTULO_PEND[c] ?? c) : (ROTULO_AMOSTRA[c] ?? c)}</th>)}</tr></thead>
               <tbody>
                 {am.linhas.length === 0 && <tr><td colSpan={am.colunas.length}>Nenhuma linha encontrada.</td></tr>}
                 {am.linhas.map((l, i) => {

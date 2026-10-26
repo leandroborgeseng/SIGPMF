@@ -481,3 +481,11 @@ def test_isola_bronze_confere_o_banco_conectado(db, monkeypatch):
             return type("R", (), {"scalar": lambda self: "sigpmf"})()
     with pytest.raises(RuntimeError):
         _isola_bronze(Falso(), "CEMITERIO")
+
+
+def test_cc9_tabela_toda_nula_bloqueia_mesmo_abaixo_do_minimo():
+    # ZZTESTE: 5 linhas, todas com chave nula (5 <= mínimo 10), ainda assim a carga para
+    msg = ccomp.problema_chave("ZZTESTE_Tab", ("a",), {"total": 5, "nulos": 5, "distintas": 0})
+    assert msg and "todas as 5 linha(s)" in msg and "100%" in msg and "a carga completa para" in msg
+    assert ccomp.problema_chave("ZZTESTE_Tab", ("a",), {"total": 5, "nulos": 4, "distintas": 1}) is None
+    assert ccomp.problema_chave("ZZTESTE_Tab", ("a",), {"total": 0, "nulos": 0, "distintas": 0}) is None

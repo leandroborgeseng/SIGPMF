@@ -102,6 +102,16 @@ describe('Explorar dados', () => {
     expect(screen.queryByText(/csv|exportar/i)).toBeNull()
   })
 
+  it('UX: cabeçalho da coluna quarentena da Amostra é "Quarentena"', async () => {
+    mock({ amostra: () => [200, { tabela: 'Leilao', colunas: ['id', 'id_origem', 'quarentena'], id_coluna: 'id', cidadao_coluna: null, colunas_sensiveis: [],
+      linhas: [{ id: 1, id_origem: 'Z1', quarentena: 'chave_nula' }], pagina: 1, por_pagina: 50, tem_anterior: false, tem_proxima: false }] })
+    montar('admin')
+    const u = userEvent.setup()
+    await abaAmostra(u)
+    expect(await screen.findByRole('columnheader', { name: 'Quarentena' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'quarentena' })).toBeNull()
+  })
+
   it('UX-E9: abas de camada navegam com as setas', async () => {
     mock()
     montar('admin')
@@ -225,15 +235,19 @@ describe('Explorar dados', () => {
     await waitFor(() => expect(ch.some((c) => c.corpo.conector === 'EXSINT' && c.corpo.camada === 'bronze' && (c.corpo.filtros as Record<string, string>)?.id === '7')).toBe(true))
   })
 
-  it('UX-E7: camada vazia e faixa "Processando… etapa X de 3 · parciais"', async () => {
+  it('UX-E7: camada vazia; faixa "Processando… etapa X de 3 · parciais" só no funil, não repetida na camada', async () => {
+    const PROC = { ...EST, processando: true, etapa: 'prata', etapa_num: 2, etapas_total: 3, atualizado_em: new Date(Date.now() - 5000).toISOString() }
     mock({ tabelas: (c) => c.camada === 'ouro'
-      ? [200, { ...TAB('ouro', 'cidadao_dados', 0), estado: { ...EST, processando: true, etapa: 'prata', etapa_num: 2, etapas_total: 3, atualizado_em: new Date(Date.now() - 5000).toISOString() } }]
-      : [200, TAB(String(c.camada))] })
+      ? [200, { ...TAB('ouro', 'cidadao_dados', 0), estado: PROC }]
+      : [200, { ...TAB(String(c.camada)), estado: PROC }],
+    funil: () => [200, { bronze: 120, bronze_unicos: 120, quarentena: 0, prata: 1, prata_cidadaos: 1, ouro: 1, estado: PROC, quarentena_disponivel: false,
+      reconciliacao: null, descartes: [] }] })
     montar('admin')
     const u = userEvent.setup()
     await u.click(await screen.findByRole('tab', { name: /Ouro/ }))
     expect(await screen.findByText('Esta camada ainda não foi processada para esta tabela.')).toBeInTheDocument()
-    expect(screen.getByText(/Processando… etapa 2 de 3 · atualizado há \d+s · números parciais/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByText(/Processando… etapa 2 de 3 · atualizado há \d+s · números parciais/)).toHaveLength(1))
+    expect(within(screen.getByLabelText('Funil de qualidade')).getByText(/Processando… etapa 2 de 3/)).toBeInTheDocument()
   })
 
   it('formatação: datas dd/mm/aaaa [HH:mm], Sim/Não e plural', () => {
