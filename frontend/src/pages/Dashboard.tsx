@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { useAuth } from '../auth'
+import Recursos from '../Recursos'
 import { Erro, Esqueleto, SeloStatus } from '../componentes'
 
 type Exec = { tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; novos: number; atualizados: number; ignorados: number }
@@ -27,6 +28,7 @@ export default function Dashboard() {
         <h1 id="t-dash">Dashboard</h1>
         <p className="sutil">Indicadores gerais das cargas e do cadastro do cidadão.</p>
       </header>
+      {sessao?.perfil === 'admin' && <Recursos />}
       {erro ? <Erro texto="Não foi possível carregar os indicadores. Tente novamente em instantes." onRetry={carregar} />
         : !d ? <Esqueleto linhas={4} />
         : d.sistemas === 0 ? (

@@ -30,6 +30,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
 from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
 from app.services.pipeline import executar_demo
@@ -333,18 +334,72 @@ def diagnostico_todos(req: Request, u: Usuario = Depends(admin_auditado), db: Se
     return {"ok": all(v["ok"] for v in out.values()), "conectores": out}
 
 
-@api.post("/conectores/{conector}/completa")
-def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
-    """Carga completa só depois de uma amostra com contagens reconciliadas (PB/UX-C: travada até existir amostra)."""
+def _conector_completa(db: Session, conector: str) -> str:
     conector = _id_conector(db, conector)
     if conector not in cc.CONECTORES:
         _404()
-    sistema = cc.CONECTORES[conector][0]
-    if cc.amostra_reconciliada(db, sistema) is None:
-        audita(db, u.email, "carga_completa_negada", f"conector:{conector}", {"motivo": "sem_amostra"}, _ip(req))
-        raise HTTPException(409, "Carga completa bloqueada: faça antes uma amostra com contagens reconciliadas")
+    return conector
+
+
+@api.get("/conectores/{conector}/completa")
+def completa_situacao(conector: str, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Liberação (CC1), progresso da carga em andamento e card final (lidos/bronze/prata/pendências/reconciliação)."""
+    return ccomp.situacao(db, _conector_completa(db, conector))
+
+
+@api.get("/conectores/{conector}/completa/estimativa")
+def completa_estimativa(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """CC2: COUNT(*) da origem por tabela (pelo guard) para a confirmação."""
+    conector = _conector_completa(db, conector)
+    motivo = ccomp.motivo_bloqueio(db, conector)
+    if motivo:
+        raise HTTPException(409, motivo)
+    try:
+        return ccomp.estimativa(db, conector)
+    except ccomp.ChaveInvalida as exc:
+        audita(db, u.email, "carga_completa_chave_invalida", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - nunca devolve host/usuário; só o motivo seguro
+        from app.services.diagnostico import categoria, motivo
+        c = categoria(exc)
+        audita(db, u.email, "carga_completa_estimativa_falhou", f"conector:{conector}", {"classe": c["classe"]}, _ip(req))
+        raise HTTPException(502, "Não foi possível contar as linhas da origem: "
+                                 f"{motivo(c['classe'], c['numero'], c['tabela'], c['objeto'])}") from None
+
+
+@api.post("/conectores/{conector}/completa", status_code=202)
+def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Carga completa real (CC3): background, lotes com checkpoint, cancelável. Só admin (CC5), auditada (CC4)."""
+    conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_solicitada", f"conector:{conector}", ip=_ip(req))
-    raise HTTPException(501, "Carga completa por conector entra em PR próprio (amostra já reconciliada)")
+    try:
+        ex = ccomp.iniciar(db, u.email, conector)
+    except ccomp.Bloqueado as exc:
+        audita(db, u.email, "carga_completa_negada", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except cc.Conflito as exc:
+        audita(db, u.email, "carga_completa_conflito", f"conector:{conector}", ip=_ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "carga_completa_iniciada", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    return ccomp.situacao(db, conector)
+
+
+@api.post("/conectores/{conector}/completa/cancelar")
+def completa_cancelar(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Para no próximo lote; nada do que já entrou é apagado (o checkpoint permite retomar)."""
+    conector = _conector_completa(db, conector)
+    ex = ccomp.cancelar(db, conector)
+    if ex is None:
+        raise HTTPException(409, "Não há carga completa em andamento.")
+    audita(db, u.email, "carga_completa_cancelamento_pedido", f"execucao:{ex.id}", ip=_ip(req))
+    return ccomp.situacao(db, conector)
+
+
+@api.get("/sistema/recursos")
+def sistema_recursos(u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """RS1/RS5: disco (volume srvdisk), memória do container e tamanho do banco por camada. Só admin."""
+    from app.core import recursos
+    return recursos.publico(db)
 
 
 @api.post("/conectores/iss/municipes/executar")

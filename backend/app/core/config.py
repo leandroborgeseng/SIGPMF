@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     amostra_limite: int = Field(1000, alias="AMOSTRA_LIMITE", ge=1, le=10000)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
+    # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
+    carga_lote: int = Field(1000, alias="CARGA_COMPLETA_LOTE", ge=1, le=5000)
+    carga_pausa_ms: int = Field(200, alias="CARGA_COMPLETA_PAUSA_MS", ge=0, le=60000)
 
     @property
     def perfis_reveal(self) -> set[str]:

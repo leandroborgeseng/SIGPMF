@@ -166,6 +166,80 @@ class SqlServerConnector:
         return self.montar_select(f"dbo.{tabela.split('.')[-1]}", cols, campo_incremental=campo_incremental,
                                   limite=limite, ordem=ordem)
 
+    @staticmethod
+    def filtro_keyset(ordem: tuple[str, ...], ultima: tuple | None) -> tuple[str, tuple]:
+        """Keyset lexicográfico: (a > :a) OR (a = :a AND b > :b) OR ... — sempre parametrizado.
+        NULL ordena primeiro no SQL Server: depois de um NULL, "maior" é IS NOT NULL e "igual" é IS NULL."""
+        if ultima is None:
+            return "", ()
+        if len(ultima) != len(ordem):
+            raise ValueError("Checkpoint com número de colunas diferente da chave.")
+        termos, params = [], []
+        for i, col in enumerate(ordem):
+            partes = []
+            for c, v in zip(ordem[:i], ultima[:i], strict=True):
+                if v is None:
+                    partes.append(f"{_ident(c)} IS NULL")
+                else:
+                    partes.append(f"{_ident(c)} = %s")
+                    params.append(v)
+            v = ultima[i]
+            if v is None:
+                partes.append(f"{_ident(col)} IS NOT NULL")
+            else:
+                partes.append(f"{_ident(col)} > %s")
+                params.append(v)
+            termos.append("(" + " AND ".join(partes) + ")")
+        return " WHERE (" + " OR ".join(termos) + ")", tuple(params)
+
+    def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,
+                      ultima: tuple | None = None) -> tuple[str, tuple]:
+        """Página da carga completa por keyset: colunas da política, WHERE chave > última, ORDER BY chave, TOP (lote)."""
+        cols = list(politica.colunas_select(tabela))
+        fora = [c for c in ordem if c not in cols]
+        if not ordem or fora:
+            raise TabelaRecusada(f"Ordenação da carga completa fora das colunas da política: {fora or 'vazia'}")
+        if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
+            raise ValueError(f"Lote inválido: {limite!r}")
+        where, params = self.filtro_keyset(ordem, ultima)
+        sql = (f"SELECT TOP ({int(limite)}) {', '.join(_ident(c) for c in cols)} "
+               f"FROM {_ident('dbo.' + tabela.split('.')[-1])}{where} ORDER BY {', '.join(_ident(c) for c in ordem)}")
+        return garante_somente_leitura(sql), params
+
+    def montar_contagem(self, politica, tabela: str) -> str:
+        politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
+        return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}")
+
+    def montar_verificacao_chave(self, politica, tabela: str, ordem: tuple[str, ...]) -> tuple[str, str]:
+        """Keyset exige chave única e sem NULL: (total + linhas com NULL na chave, combinações distintas da chave)."""
+        cols = politica.colunas_select(tabela)
+        if not ordem or any(c not in cols for c in ordem):
+            raise TabelaRecusada("Chave da carga completa fora das colunas da política.")
+        t = _ident("dbo." + tabela.split(".")[-1])
+        nulos = " OR ".join(f"{_ident(c)} IS NULL" for c in ordem)
+        q1 = f"SELECT COUNT(*), SUM(CASE WHEN {nulos} THEN 1 ELSE 0 END) FROM {t}"
+        q2 = f"SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(_ident(c) for c in ordem)} FROM {t}) AS chaves"
+        return garante_somente_leitura(q1), garante_somente_leitura(q2)
+
+    def verificar_chave(self, conn, tabela: str, politica, ordem: tuple[str, ...]) -> dict:
+        q1, q2 = self.montar_verificacao_chave(politica, tabela, ordem)
+        total, nulos = executa_somente_leitura(conn, q1, limite=1, como_dict=False)[0]
+        distintas = executa_somente_leitura(conn, q2, limite=1, como_dict=False)[0][0]
+        return {"total": int(total or 0), "nulos": int(nulos or 0), "distintas": int(distintas or 0)}
+
+    def abrir(self):
+        """Conexão única da carga completa (autocommit desligado; o guard faz ROLLBACK após cada consulta)."""
+        return self._conectar()
+
+    def contar(self, conn, tabela: str, politica) -> int:
+        r = executa_somente_leitura(conn, self.montar_contagem(politica, tabela), limite=1, como_dict=False)
+        return int(r[0][0]) if r else 0
+
+    def ler_pagina(self, conn, tabela: str, politica, ordem: tuple[str, ...], ultima: tuple | None,
+                   limite: int) -> list[dict]:
+        sql, params = self.montar_pagina(politica, tabela, ordem, limite, ultima)
+        return executa_somente_leitura(conn, sql, params or None, limite=limite)
+
     def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,
                     desde: datetime | None = None) -> list[dict[str, Any]]:
         """Lê no máximo AMOSTRA_LIMITE linhas, sempre com a política do sistema (lista de colunas explícita)."""

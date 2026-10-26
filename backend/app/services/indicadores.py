@@ -64,6 +64,7 @@ def indicadores(db: Session) -> list[dict]:
             "status": b.status, "prioridade": b.prioridade, "conector_id": b.conjunto, "tem_conector": b.status == "implementado",
             "pode_carregar": motivo is None, "motivo_bloqueio": motivo,
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
+            **_completa(db, b),
             "com_erro": ult is not None and ult.status == "falha",
             "origem_vazia": ult is not None and ult.status == "origem_vazia",
             "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
@@ -75,6 +76,15 @@ def indicadores(db: Session) -> list[dict]:
                 "erro": ult.erro_publico()},
         })
     return out
+
+
+def _completa(db: Session, b: BaseCatalogo) -> dict:
+    """CC1: liberação da carga completa real por conector (Saúde/Cemitério) e o motivo quando bloqueada."""
+    from app.services import carga_completa as ccomp
+    if (b.conjunto or "") not in ccomp.CONECTORES_COMPLETA or b.status != "implementado":
+        return {"completa_disponivel": False, "completa_liberada": False, "completa_motivo": None}
+    motivo = ccomp.motivo_bloqueio(db, b.conjunto)
+    return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo}
 
 
 def totais(bases: list[dict]) -> dict[str, int]:

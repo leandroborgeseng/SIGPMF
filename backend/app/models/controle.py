@@ -59,6 +59,11 @@ class Execucao(Base):
     erro_tabela: Mapped[str | None] = mapped_column(String(200))
     erro_objeto: Mapped[str | None] = mapped_column(String(200))
     erro_local: Mapped[str | None] = mapped_column(String(200))
+    # carga completa (0008): progresso, pausa e pedido de cancelamento
+    total_origem: Mapped[int | None] = mapped_column(Integer)
+    tabela_atual: Mapped[str | None] = mapped_column(String(200))
+    pausa_motivo: Mapped[str | None] = mapped_column(Text)
+    cancelar: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     def registra_erro(self, exc: BaseException) -> None:
         from app.services.diagnostico import categoria
@@ -73,6 +78,21 @@ class Execucao(Base):
         return {"classe": self.erro_classe, "numero": self.erro_numero, "tabela": self.erro_tabela,
                 "objeto": self.erro_objeto, "local": self.erro_local,
                 "motivo": motivo(self.erro_classe, self.erro_numero, self.erro_tabela, self.erro_objeto)}
+
+
+class CheckpointCarga(Base):
+    """Posição já gravada na bronze por (sistema, tabela): a carga completa retoma daqui sem duplicar."""
+    __tablename__ = "checkpoints_carga"
+    __table_args__ = (UniqueConstraint("sistema", "tabela", name="uq_checkpoint_sistema_tabela"), S)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sistema: Mapped[str] = mapped_column(String(50))
+    tabela: Mapped[str] = mapped_column(String(200))
+    posicao: Mapped[int] = mapped_column(Integer, default=0)  # linhas já gravadas (progresso)
+    ultima_chave: Mapped[list | None] = mapped_column(JSONType)  # keyset: último valor da chave gravado
+    total_origem: Mapped[int | None] = mapped_column(Integer)
+    concluida: Mapped[bool] = mapped_column(Boolean, default=False)
+    execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Log(Base):
