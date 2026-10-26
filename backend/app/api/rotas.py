@@ -298,10 +298,39 @@ def diagnostico_conector(conector: str, req: Request, u: Usuario = Depends(admin
     if conector not in cc.CONECTORES:
         _404()
     cfg, fallback = cc.config_do_conector(conector, db)
-    r = SqlServerConnector(cfg, nome=conector).diagnostico()
-    r.update({"banco_configurado": cfg.database, "banco_fallback": fallback})
+    r = _diagnostica(conector, cfg, fallback)
     audita(db, u.email, "diagnostico_conector", f"conector:{conector}", {"ok": r["ok"]}, _ip(req))
     return r
+
+
+def _diagnostica(conector: str, cfg, fallback: bool) -> dict:
+    """Conexão (SELECT 1 + DB_NAME()) e estrutura (política x INFORMATION_SCHEMA), tudo pelo guard."""
+    from app.connectors.sqlserver.politicas import politica as pol_de
+    from app.services.diagnostico import categoria, motivo
+    con = SqlServerConnector(cfg, nome=conector)
+    r = con.diagnostico()
+    r.update({"conector": conector, "banco_configurado": cfg.database, "banco_fallback": fallback, "estrutura": None})
+    if r["ok"]:
+        try:
+            r["estrutura"] = con.verificar_estrutura(pol_de(cc.CONECTORES[conector][0]))
+            r["ok"] = r["estrutura"]["ok"]
+        except Exception as exc:  # noqa: BLE001
+            c = categoria(exc)
+            r["ok"] = False
+            r["estrutura"] = {"ok": False, "erro": {"classe": c["classe"], "numero": c["numero"],
+                                                    "motivo": motivo(c["classe"], c["numero"], None, c["objeto"])}}
+    return r
+
+
+@api.post("/conectores/diagnostico")
+def diagnostico_todos(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Todos os conectores numa resposta: tabelas e colunas da política que faltam na origem."""
+    out = {}
+    for cid in cc.CONECTORES:
+        cfg, fallback = cc.config_do_conector(cid, db)
+        out[cid] = _diagnostica(cid, cfg, fallback)
+    audita(db, u.email, "diagnostico_conectores", "conectores", {k: v["ok"] for k, v in out.items()}, _ip(req))
+    return {"ok": all(v["ok"] for v in out.values()), "conectores": out}
 
 
 @api.post("/conectores/{conector}/completa")

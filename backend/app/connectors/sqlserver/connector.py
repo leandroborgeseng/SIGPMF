@@ -104,6 +104,35 @@ class SqlServerConnector:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "erro": self._erro_limpo(exc)}
 
+    def verificar_estrutura(self, politica, limite: int = 20000) -> dict[str, Any]:
+        """Compara a política (tabelas + colunas) com INFORMATION_SCHEMA (schema dbo) pelo guard.
+        Só nomes de objetos voltam; nenhum dado de linha. Comparação sem distinção de caixa (collation CI)."""
+        tabelas = list(politica.colunas)
+        for t in tabelas:
+            _ident(t)  # nomes da política já são identificadores válidos
+        conn = self._conectar()
+        try:
+            existentes = executa_somente_leitura(
+                conn, f"SELECT TOP ({int(limite)}) TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s",
+                ("dbo",), limite=limite, como_dict=False)
+            marc = ", ".join(["%s"] * len(tabelas))
+            cols = executa_somente_leitura(
+                conn, f"SELECT TOP ({int(limite)}) TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                      f"WHERE TABLE_SCHEMA = %s AND TABLE_NAME IN ({marc})",
+                ("dbo", *tabelas), limite=limite, como_dict=False) if tabelas else []
+        finally:
+            conn.close()
+        tem_tab = {str(r[0]).lower() for r in existentes}
+        por_tab: dict[str, set[str]] = {}
+        for t, c in cols:
+            por_tab.setdefault(str(t).lower(), set()).add(str(c).lower())
+        faltando_tabelas = [t for t in tabelas if t.lower() not in tem_tab]
+        faltando_colunas = {t: [c for c in politica.colunas[t] if c.lower() not in por_tab.get(t.lower(), set())]
+                            for t in tabelas if t.lower() in tem_tab}
+        faltando_colunas = {t: v for t, v in faltando_colunas.items() if v}
+        return {"ok": not faltando_tabelas and not faltando_colunas, "tabelas_verificadas": len(tabelas),
+                "tabelas_faltando": faltando_tabelas, "colunas_faltando": faltando_colunas}
+
     def diagnostico(self) -> dict[str, Any]:
         """SELECT 1 + DB_NAME() pelo guard (ROLLBACK, timeout). Devolve só o nome do banco conectado."""
         from app.services.diagnostico import categoria, motivo

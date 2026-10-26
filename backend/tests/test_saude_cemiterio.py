@@ -113,8 +113,10 @@ def test_cm6_obito_nunca_associa_e_nao_preseleciona(carga):
     assert len(amb) == 1 and len(amb[0][0]) == 2 and amb[0][1]["pre_selecionado"] is None
 
 
-def test_cm8_dedupe_historico_vale_obitos(carga):
-    assert _q("select count(*) from silver.inconsistencias where tipo='obito_divergente_historico'")[0][0] == 1
+def test_cm8_historicas_fora_da_politica(carga):
+    # Decisão do TL no #10: AAA_NAO_UTILIZADO_* não entram (recusadas e auditadas); sem dedupe histórico
+    assert _q("select count(*) from bronze.registros where tabela like 'AAA_NAO_UTILIZADO%'")[0][0] == 0
+    assert _q("select count(*) from silver.inconsistencias where tipo='obito_divergente_historico'")[0][0] == 0
 
 
 def test_cns_e_cpf_mascarados_na_api(carga, client, tokens):
