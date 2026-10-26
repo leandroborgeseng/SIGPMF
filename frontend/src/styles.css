@@ -63,3 +63,21 @@ nav a[aria-current="page"] { background: #dce9f5; border-left-color: var(--azul)
   .tabela td { display: flex; justify-content: space-between; border: 0; }
   .tabela td::before { content: attr(data-rotulo); font-weight: 600; }
 }
+
+/* Painel de bases (UX-C1..C10) */
+.painel-bases .subtitulo, .sutil { color: var(--sutil); }
+.totais { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+.filtros { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: .5rem 0; }
+.chip { min-height: 44px; padding: 0 .9rem; border-radius: 999px; border: 2px solid var(--azul); background: #fff; color: var(--azul-esc); cursor: pointer; }
+.chip.ativo { background: var(--azul); color: #fff; }
+.filtros input { min-height: 44px; padding: 0 .5rem; }
+.base h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
+.camadas { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin: .5rem 0; }
+.camadas dt { color: var(--sutil); font-size: .85rem; } .camadas dd { margin: 0; font-size: 1.3rem; font-weight: 700; }
+.perda { color: #8a4b00; background: #fff4e0; border-left: 4px solid #b26a00; padding: .25rem .5rem; font-weight: 600; }
+.selo.pronto { color: var(--ok); } .selo.mapeado { color: var(--azul-esc); } .selo.triado { color: var(--sutil); }
+.selo.descartado { color: var(--sutil); text-decoration: line-through; }
+.menu-acoes summary { min-height: 44px; display: inline-flex; align-items: center; cursor: pointer; }
+.menu-acoes[open] { display: grid; gap: .5rem; }
+.confirmar { border-color: var(--azul); margin: .5rem 0; }
+@media (min-width: 900px) { .lista-cartoes.bases { grid-template-columns: repeat(2, 1fr); } }
