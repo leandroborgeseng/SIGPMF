@@ -471,7 +471,10 @@ def test_rs5_sem_leitura_do_disco_bloqueia_a_carga(client, tokens, origem, db, m
 
 
 # ---------- Keyset: chave única e sem NULL; fronteira do lote ----------
-def test_keyset_recusa_chave_com_null(client, tokens, origem, db):
+def test_keyset_recusa_chave_com_null(client, tokens, origem, db, monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", "0")  # sem mínimo absoluto: 1 nula já bloqueia
+    get_settings.cache_clear()
     _amostra(db, "cemiterio")
     o = origem["CEMITERIO"]
     base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
@@ -488,6 +491,7 @@ def test_keyset_recusa_chave_com_null(client, tokens, origem, db):
         assert q and "[GAVETA] IS NULL" in q[0] and all(garante_somente_leitura(x) for x, _ in o.sqls)
     finally:
         o.extras.clear()
+        get_settings.cache_clear()
 
 
 def test_keyset_recusa_chave_repetida(client, tokens, origem, db):
