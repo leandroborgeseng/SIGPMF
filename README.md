@@ -13,7 +13,7 @@ docker compose up -d --build  # postgres, backend (roda alembic upgrade head) e 
 docker compose ps             # os 3 serviços ficam "healthy"
 ```
 Abra `http://localhost:${HTTP_PORT}` (padrão 8080) e entre com `ADMIN_EMAIL`/`ADMIN_PASSWORD` (o primeiro admin é
-criado na primeira subida). O Postgres **não** publica porta no host; só o frontend publica `HTTP_PORT`, e o
+criado na primeira subida). O Postgres **não** publica porta no host; só o frontend publica `HTTP_PORT`, e apenas no uso local, via `docker-compose.override.yml` (em produção o Coolify usa só `docker-compose.yml`, sem porta publicada), e o
 nginx encaminha `/api` ao backend.
 
 ### Demo sintética
