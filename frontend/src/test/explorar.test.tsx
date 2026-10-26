@@ -136,12 +136,12 @@ describe('Explorar dados', () => {
     await screen.findByText('P100')
     expect(screen.getByRole('button', { name: 'Próxima' })).toBeDisabled()
     const form = screen.getByRole('form', { name: 'Filtros' })
-    const campo = within(form).getByLabelText('id_origem')
+    const campo = within(form).getByLabelText('id')  // na bronze, id é o único filtro livre do admin comum (P1)
     expect(campo).toHaveAttribute('placeholder', 'valor exato')
-    await u.type(campo, 'P7')
+    await u.type(campo, '77')
     await u.click(within(form).getByRole('button', { name: 'Filtrar' }))
-    await waitFor(() => expect(ch.some((c) => (c.corpo.filtros as Record<string, string>)?.id_origem === 'P7')).toBe(true))
-    expect(ch.every((c) => !c.url.includes('?') && !c.url.includes('P7'))).toBe(true)
+    await waitFor(() => expect(ch.some((c) => (c.corpo.filtros as Record<string, string>)?.id === '77')).toBe(true))
+    expect(ch.every((c) => !c.url.includes('?') && !c.url.includes('77'))).toBe(true)
   })
 
   it('filtro em coluna pessoal: admin vê campo desabilitado com cadeado e tooltip LGPD', async () => {
@@ -154,10 +154,11 @@ describe('Explorar dados', () => {
     expect(cpf).toHaveAttribute('aria-disabled', 'true')
     expect(cpf).toHaveAttribute('readonly')
     expect(cpf).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
-    expect(within(form).getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(3) // visível: cpf, nome, email
+    expect(within(form).getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(4) // bronze: id_origem, cpf, nome, email
     await userEvent.setup().type(cpf, '123')
     expect(cpf).toHaveValue('')
-    expect(within(form).getByLabelText('id_origem')).not.toHaveAttribute('aria-disabled')
+    expect(within(form).getByLabelText(/^id_origem/)).toHaveAttribute('aria-disabled', 'true')  // P1: bronze, além de id
+    expect(within(form).getByLabelText('id')).not.toHaveAttribute('aria-disabled')
     expect(screen.queryByRole('button', { name: /Revelar/ })).toBeNull()
   })
 

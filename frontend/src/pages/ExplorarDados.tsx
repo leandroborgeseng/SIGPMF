@@ -330,8 +330,10 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
   }, [revelados])
 
   const sens = new Set(am?.colunas_sensiveis ?? [])
+  // P1: na bronze (sem catálogo) qualquer filtro além de id é só do perfil LGPD, com motivo
+  const restrito = (c: string) => sens.has(c) || (camada === 'bronze' && !pendencias && c !== 'id')
   const colsFiltro = pendencias ? ['motivo'] : (am?.colunas ?? []).filter((c) => !['extraido_em', 'quarentena'].includes(c)).slice(0, 6)
-  const temSensivel = Object.entries(rascunho).some(([k, v]) => v && sens.has(k))
+  const temSensivel = Object.entries(rascunho).some(([k, v]) => v && restrito(k))
   const aplicar = (e: React.FormEvent) => {
     e.preventDefault()
     if (temSensivel && motivoFiltro.trim().length < MOTIVO_MIN) return
@@ -344,7 +346,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
     <div>
       <form onSubmit={aplicar} className="ex-filtros" aria-label="Filtros">
         {colsFiltro.map((c) => {
-          const bloqueado = sens.has(c) && !lgpd && !pendencias
+          const bloqueado = restrito(c) && !lgpd && !pendencias
           if (pendencias && c === 'motivo') {
             return (
               <div key={c} className="pmf-campo">
