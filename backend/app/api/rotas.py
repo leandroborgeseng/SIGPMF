@@ -171,20 +171,22 @@ def testar(conector: str, req: Request, u: Usuario = Depends(CARGA), db: Session
     return r
 
 
+AMBIENTES_CARGA = ("dev", "test")  # allowlist explícita: APP_ENV ausente (padrão "prod") ou qualquer outro valor não carregam
+
+
+def carga_habilitada() -> bool:
+    return get_settings().app_env in AMBIENTES_CARGA
+
+
 @api.post("/conectores/demo/executar")
 def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
+    if not carga_habilitada():  # mesma trava da carga por base: 404 fora de dev/test
+        _404()
     completa = bool(dados and dados.completa)
     if completa and u.perfil != "admin":
         audita(db, u.email, "carga_completa_negada", "conector:demo", ip=_ip(req))
         raise HTTPException(403, "Carga acima do limite de amostra exige perfil admin")
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
-
-
-AMBIENTES_CARGA = ("dev", "test")  # allowlist explícita: APP_ENV ausente ("development") ou "prod" não carregam
-
-
-def carga_habilitada() -> bool:
-    return get_settings().app_env in AMBIENTES_CARGA
 
 
 @api.post("/conectores/{base_id:int}/executar")

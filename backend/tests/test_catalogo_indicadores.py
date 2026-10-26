@@ -186,3 +186,24 @@ def test_403_de_perfil_auditado(client, tokens):
         assert rows[-1][0] == f"base_id:{sid}" and rows[-1][1]["motivo"] == "perfil" and rows[-1][1]["perfil"] == p
     assert _q("select count(*) from controle.execucoes")[0][0] == n0
 
+
+
+@pytest.mark.parametrize("env", ["prod", "development", ""])
+def test_demo_executar_404_fora_de_dev(client, tokens, monkeypatch, env):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "app_env", env)
+    n0 = _q("select count(*) from controle.execucoes")[0][0]
+    for p in ("admin", "operador"):
+        for corpo in ({}, {"completa": True}, {"conjunto": "saude"}):
+            assert client.post("/api/conectores/demo/executar", json=corpo, headers=tokens[p]).status_code == 404
+    assert _q("select count(*) from controle.execucoes")[0][0] == n0
+
+
+def test_app_env_ausente_e_producao(monkeypatch):
+    from app.api.rotas import carga_habilitada
+    from app.core.config import Settings, get_settings
+    monkeypatch.delenv("APP_ENV", raising=False)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.app_env == "prod"
+    monkeypatch.setattr(get_settings(), "app_env", s.app_env)
+    assert carga_habilitada() is False

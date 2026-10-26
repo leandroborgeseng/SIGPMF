@@ -10,7 +10,7 @@ VERSION = "0.1.0"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_env: str = Field("development", alias="APP_ENV")
+    app_env: str = Field("prod", alias="APP_ENV")  # ausente = produção
     database_url: str = Field(..., alias="DATABASE_URL")
     jwt_secret: str = Field(..., alias="JWT_SECRET", min_length=16)
     jwt_expira_minutos: int = Field(60, alias="JWT_EXPIRA_MINUTOS")

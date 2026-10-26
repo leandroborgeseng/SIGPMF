@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { useAuth } from '../auth'
 import { Esqueleto, SeloStatus } from '../componentes'
-import PainelBases, { type Base } from './PainelBases'
+import PainelBases, { CARGA_EM_PREPARACAO, type Base } from './PainelBases'
 
 type Exec = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; novos: number; atualizados: number; ignorados: number; lotes: number }
 type Conector = { id: number; codigo: string; nome: string; status: string; ultima_execucao: Exec | null; credencial: string; amostra_limite: number; tabelas: { nome: string; chave: string; campo_incremental: string | null }[] }
@@ -54,7 +54,8 @@ export default function Conectores() {
       <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
-        {podeExecutar && <button className="btn" onClick={executar} disabled={executando}>Executar carga (demo)</button>}
+        {podeExecutar && <button className="btn" onClick={executar} disabled={executando || d?.carga_habilitada !== true}>Executar carga (demo)</button>}
+        {podeExecutar && d && d.carga_habilitada !== true && <span className="sutil">{CARGA_EM_PREPARACAO}</span>}
         {ehAdmin && <button className="btn secundario" onClick={() => setForm(!form)}>Cadastrar conector</button>}
       </div>
       {executando && <div role="progressbar" aria-label="Executando carga" aria-busy="true" className="progresso">Executando carga…</div>}

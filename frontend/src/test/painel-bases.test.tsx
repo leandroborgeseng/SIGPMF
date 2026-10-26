@@ -138,4 +138,11 @@ describe('painel de bases', () => {
       unmount()
     }
   })
+
+  it('produção: botão de carga demo também desabilitado', async () => {
+    mock(() => [200, { ...RESP, carga_habilitada: false }])
+    montar('operador')
+    await cartao('Saude')
+    expect(screen.getByRole('button', { name: 'Executar carga (demo)' })).toBeDisabled()
+  })
 })
