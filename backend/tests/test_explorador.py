@@ -541,3 +541,51 @@ def test_p1_allowlist_bronze_e_subconjunto_nao_pessoal_da_politica():
         for tab, cols in tabs.items():
             assert cols <= set(pol.colunas[tab]), (sist, tab)
             assert not any(tipo_sensivel(c) or coluna_proibida(c, pol.proibidas) for c in cols), (sist, tab)
+
+
+@pytest.fixture(scope="module")
+def saude_ids(client):
+    """SAUDE sintético (ZZTESTE): Matricula, UUID e Codigo_Cadastro ficam fora da allowlist (decisão do TL)."""
+    import json as _j
+
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    eid = db.execute(text("INSERT INTO controle.execucoes (tipo, sistema, status, finalizado_em) VALUES "
+                          "('carga_demo_amostra', 'SAUDE', 'sucesso', now()) RETURNING id")).scalar()
+    ins = ("INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id) "
+           "VALUES ('SAUDE', :t, :io, CAST(:d AS jsonb), :h, :e) RETURNING id")
+    pid = db.execute(text(ins), {"t": "pacientes", "io": "ZZM1", "e": eid, "h": "zzm1",
+                                 "d": _j.dumps({"Matricula": "ZZT777001", "Sexo": "F"})}).scalar()
+    did = db.execute(text(ins), {"t": "ESUS_Cadastro_Domiciliar", "io": "ZZD1", "e": eid, "h": "zzd1",
+                                 "d": _j.dumps({"Codigo_Cadastro": "ZZT888002", "UUID": "ZZT-UUID-0003", "Nu_INE": "42"})}).scalar()
+    cid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "zzteste-saude"))
+    db.execute(text("INSERT INTO silver.cidadaos (cidadao_id, nome) VALUES (:c, 'ZZTESTE Saude')"), {"c": cid})
+    db.execute(text("INSERT INTO silver.vinculos (cidadao_id, sistema, tabela, chave_origem, bronze_id, metodo, confianca, atributos) "
+                    "VALUES (:c, 'SAUDE', 'pacientes', 'ZZM1', :b, 'cpf', 1.0, '[]')"), {"c": cid, "b": pid})
+    db.commit()
+    db.close()
+    return {"pid": pid, "did": did, "cid": cid}
+
+
+def test_tl_matricula_uuid_codigo_cadastro_mascarados_admin_e_lgpd_revela(client, tokens, saude_ids):
+    vals = ("ZZT777001", "ZZT888002", "ZZT-UUID-0003")
+    h = tokens["admin"]
+    a = client.post("/api/explorar/amostra", json={"conector": "SAUDE", "camada": "bronze", "tabela": "pacientes",
+                                                    "filtros": {"id": str(saude_ids["pid"])}}, headers=h)
+    l0 = a.json()["linhas"][0]
+    assert l0["Matricula"] == "••• (oculto)" and l0["Sexo"] == "F" and "Matricula" in a.json()["colunas_sensiveis"]
+    d = client.post("/api/explorar/amostra", json={"conector": "SAUDE", "camada": "bronze", "tabela": "ESUS_Cadastro_Domiciliar",
+                                                    "filtros": {"id": str(saude_ids["did"])}}, headers=h).json()["linhas"][0]
+    assert d["Codigo_Cadastro"] == d["UUID"] == "••• (oculto)" and d["Nu_INE"] == "42"
+    lin = client.post("/api/explorar/linhagem", json={"cidadao_id": saude_ids["cid"]}, headers=h)
+    assert lin.json()["prata"][0]["bronze"]["dados"]["Matricula"] == "••• (oculto)"
+    for t in (a.text, lin.text):
+        assert not any(v in t for v in vals)
+    lg = tokens["admin_lgpd"]
+    for tab, lid, col, val in (("pacientes", saude_ids["pid"], "Matricula", vals[0]),
+                               ("ESUS_Cadastro_Domiciliar", saude_ids["did"], "Codigo_Cadastro", vals[1]),
+                               ("ESUS_Cadastro_Domiciliar", saude_ids["did"], "UUID", vals[2])):
+        corpo = {"conector": "SAUDE", "camada": "bronze", "tabela": tab, "linha_id": lid, "coluna": col, "motivo": MOT}
+        assert client.post("/api/explorar/revelar", json=corpo, headers=h).status_code == 403
+        r = client.post("/api/explorar/revelar", json=corpo, headers=lg)
+        assert r.status_code == 200 and r.json()["valor"] == val
