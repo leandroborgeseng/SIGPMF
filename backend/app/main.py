@@ -30,6 +30,16 @@ def bootstrap_admin() -> None:
         db.close()
 
 
+def interromper_cargas_orfas() -> int:
+    """Startup: carga completa em_andamento sem processo vivo (trava livre) vira 'interrompida' (CC7)."""
+    from app.services.carga_completa import interromper_orfas
+    db = SessionLocal()
+    try:
+        return interromper_orfas(db)
+    finally:
+        db.close()
+
+
 def create_app() -> FastAPI:
     s = get_settings()
     docs = s.app_env == "dev" and s.docs_habilitado
@@ -39,6 +49,10 @@ def create_app() -> FastAPI:
             bootstrap_admin()
         except Exception as exc:  # noqa: BLE001
             log.warning("bootstrap_admin falhou: %s", type(exc).__name__)
+        try:
+            interromper_cargas_orfas()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("interromper_cargas_orfas falhou: %s", type(exc).__name__)
         yield
 
     app = FastAPI(title="SIGPMF", lifespan=lifespan, version=VERSION, docs_url="/api/docs" if docs else None,

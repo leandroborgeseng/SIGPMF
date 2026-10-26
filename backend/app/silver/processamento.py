@@ -14,6 +14,7 @@ Ordem dos passes:
 """
 from collections import defaultdict
 from datetime import date
+from itertools import combinations
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -48,7 +49,7 @@ def parametros(db: Session) -> corr.Parametros:
 
 
 def _ultimas_versoes(db: Session) -> list[RegistroBronze]:
-    sub = select(func.max(RegistroBronze.id)).group_by(
+    sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None)).group_by(  # CC9
         RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
     return list(db.scalars(select(RegistroBronze).where(RegistroBronze.id.in_(sub)).order_by(RegistroBronze.id)))
 
@@ -63,7 +64,81 @@ def _sexo(v) -> str | None:
     return s[:1] if s else None
 
 
-def reconstruir(db: Session) -> dict[str, int]:
+class _Indice:
+    """Cidadãos por atributo exato (nome normalizado, nascimento, mãe normalizada), cada balde na ordem de inserção.
+
+    corr.score soma o peso de cada atributo igual (nome, data_nascimento, nome_mae), com teto 0,99. Com pesos
+    positivos, o score de um cidadão é o valor do conjunto exato de atributos que ele compartilha; logo o melhor score
+    é o maior valor entre os subconjuntos S dos atributos do registro que têm alguém em comum (interseção dos baldes
+    de S), e o vencedor do algoritmo antigo (primeiro na ordem de inserção com o score máximo, comparação estrita) é o
+    menor primeiro-da-interseção entre os S com esse valor. Até 7 subconjuntos por registro, cada interseção começa
+    pelo menor balde: sem o O(n²) e com exatamente o mesmo resultado (teste de regressão contra o linear)."""
+
+    def __init__(self):
+        self.pos: dict[str, int] = {}
+        self.chaves: dict[str, list[tuple]] = {}
+        self.baldes: dict[tuple, dict[str, None]] = defaultdict(dict)
+
+    @staticmethod
+    def _chaves(c: dict) -> list[tuple]:
+        ks = []
+        n, mae = corr.normaliza_nome(c.get("nome")), corr.normaliza_nome(c.get("nome_mae"))
+        if n:
+            ks.append(("nome", n))
+        if c.get("data_nascimento"):
+            ks.append(("data_nascimento", c.get("data_nascimento")))
+        if mae:
+            ks.append(("nome_mae", mae))
+        if n and mae:
+            ks.append(("nm", n, mae))  # óbitos: nome + mãe
+        return ks
+
+    def poe(self, cid: str, c: dict) -> None:
+        reatribuido = cid in self.chaves
+        for k in self.chaves.pop(cid, []):  # cid reatribuído: mantém a posição, troca os atributos (como o dict)
+            self.baldes[k].pop(cid, None)
+        self.pos.setdefault(cid, len(self.pos))
+        self.chaves[cid] = ks = self._chaves(c)
+        for k in ks:
+            b = self.baldes[k]
+            b[cid] = None
+            if reatribuido:  # raro: reordena o balde pela posição original
+                self.baldes[k] = dict.fromkeys(sorted(b, key=self.pos.__getitem__))
+
+    def _primeiro(self, ks: list[tuple]) -> str | None:
+        bs = sorted((self.baldes.get(k) or {} for k in ks), key=len)
+        if not bs[0]:
+            return None
+        for cid in bs[0]:  # balde em ordem de inserção: o primeiro que está em todos é o de menor posição
+            if all(cid in b for b in bs[1:]):
+                return cid
+        return None
+
+    def melhor(self, c: dict, p: corr.Parametros) -> tuple[float, str | None]:
+        pesos = {"nome": p.peso_nome, "data_nascimento": p.peso_nascimento, "nome_mae": p.peso_mae}
+        ks = [k for k in self._chaves(c) if k[0] != "nm"]
+        achados = []
+        for r in range(1, len(ks) + 1):
+            for sub in combinations(ks, r):
+                cid = self._primeiro(list(sub))
+                if cid is not None:
+                    achados.append((min(round(sum(pesos[k[0]] for k in sub), 4), 0.99), self.pos[cid], cid))
+        if not achados:
+            return 0.0, None
+        top = max(v for v, _, _ in achados)
+        return top, min((pos, cid) for v, pos, cid in achados if v == top)[1]
+
+    def candidatos(self, c: dict, so: str | None = None) -> list[str]:
+        ks = [k for k in self._chaves(c) if (k[0] == so if so else k[0] != "nm")]
+        out = set()
+        for k in ks:
+            out.update(self.baldes.get(k, ()))
+        return sorted(out, key=self.pos.__getitem__)
+
+
+def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str, int]:
+    """progresso(processados, total): sinal de vida (chamado a cada bloco). indexado=False mantém o algoritmo
+    linear antigo só para o teste de regressão (mesmo resultado)."""
     p, peso_prov = _params(db)
     for m in (Endereco, Vinculo, Identificador, CorrelacaoPendente, Inconsistencia, Cidadao, SistemaSilver):
         db.execute(delete(m))
@@ -71,6 +146,8 @@ def reconstruir(db: Session) -> dict[str, int]:
         db.add(SistemaSilver(codigo=s.codigo, nome=s.nome, dominio=s.dominio))
 
     cid_dados: dict[str, dict] = {}
+    idx = _Indice()
+    pesos_positivos = min(p.peso_nome, p.peso_nascimento, p.peso_mae) > 0
     cidadaos: dict[str, Cidadao] = {}
     ids: dict[tuple[str, str], Identificador] = {}
     vinculos: list[tuple[RegistroBronze, dict, str, str, float, list[str]]] = []
@@ -81,6 +158,7 @@ def reconstruir(db: Session) -> dict[str, int]:
         cidadaos[cid] = Cidadao(cidadao_id=cid, nome=c.get("nome") or "", data_nascimento=_data(c.get("data_nascimento")),
                                 atualizado_em=r.atualizado_origem_em)
         cid_dados[cid] = c
+        idx.poe(cid, c)
 
     def ident(cid, tipo, valor):
         if (tipo, valor) not in ids:
@@ -103,6 +181,12 @@ def reconstruir(db: Session) -> dict[str, int]:
     por_papel = defaultdict(list)
     for x in regs:
         por_papel[x[2]].append(x)
+    total, feitos = len(regs), [0]
+
+    def passo():
+        feitos[0] += 1
+        if progresso and feitos[0] % 5000 == 0:
+            progresso(feitos[0], total)
 
     # CNS por pessoa (sistema, matrícula) e donos de cada CNS
     cns_pessoa: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -127,6 +211,7 @@ def reconstruir(db: Session) -> dict[str, int]:
     # 1) CPF
     sem_cpf = []
     for r, c, papel, _ in por_papel["pessoa"] + por_papel["terceiro"]:
+        passo()
         cpf = normaliza(c.get("cpf"))
         if cpf and valido(cpf):
             cid = corr.cidadao_id_por_cpf(cpf)
@@ -180,11 +265,18 @@ def reconstruir(db: Session) -> dict[str, int]:
 
     # 3) atributos
     for r, c in sem_ident:
+        passo()
         melhor, mcid, mattrs = 0.0, None, []
-        for cid, ref in cid_dados.items():
-            sc, attrs = corr.score(c, ref, p)
-            if sc > melhor:
-                melhor, mcid, mattrs = sc, cid, attrs
+        if indexado and pesos_positivos:
+            top, cid = idx.melhor(c, p)
+            if cid is not None and top > melhor:
+                melhor, mcid = top, cid
+                mattrs = corr.score(c, cid_dados[cid], p)[1]
+        else:  # algoritmo linear (referência do teste; pesos não positivos em controle.parametros)
+            for cid in cid_dados:
+                sc, attrs = corr.score(c, cid_dados[cid], p)
+                if sc > melhor:
+                    melhor, mcid, mattrs = sc, cid, attrs
         if mcid and melhor >= p.limiar_revisao:
             pendente(r, c, "revisao", [mcid], {"score": melhor, "atributos": mattrs})
             continue
@@ -206,6 +298,7 @@ def reconstruir(db: Session) -> dict[str, int]:
     for r, c, _, m in por_papel["obito"]:
         grupos[(r.sistema_origem, r.id_origem)].append((m.get("prioridade", 9), r.tabela, r, c))
     for (sis, chave), itens in sorted(grupos.items()):
+        passo()
         itens.sort(key=lambda t: (t[0], t[1]))
         _, _, r, c = itens[0]
         for _, tab, r2, c2 in itens[1:]:
@@ -215,7 +308,10 @@ def reconstruir(db: Session) -> dict[str, int]:
                           f"Divergência com {r.tabela} na chave do sepultamento; prevalece {r.tabela}")
         cand = []
         if c.get("nome") and c.get("nome_mae"):
-            for cid, ref in cid_dados.items():
+            # nome/mãe só com espaços normalizam para "" e casam com quem também está vazio: aí vale o linear
+            indexavel = corr.normaliza_nome(c.get("nome")) and corr.normaliza_nome(c.get("nome_mae"))
+            for cid in (idx.candidatos(c, "nm") if indexado and indexavel else cid_dados):
+                ref = cid_dados[cid]
                 if corr.normaliza_nome(ref.get("nome")) == corr.normaliza_nome(c.get("nome")) and \
                         corr.normaliza_nome(ref.get("nome_mae")) == corr.normaliza_nome(c.get("nome_mae")):
                     s1, s2 = _sexo(ref.get("sexo")), _sexo(c.get("sexo"))
@@ -255,4 +351,6 @@ def reconstruir(db: Session) -> dict[str, int]:
         e.mais_recente = True
     db.add_all(enderecos)
     db.flush()
+    if progresso:
+        progresso(total, total)
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend)}
