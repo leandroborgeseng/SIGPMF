@@ -176,3 +176,32 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
   .kicker-claro { margin: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .lateral { transition: none; } }
+
+/* Carga completa (CC1-CC6) */
+.carga-completa { display: grid; gap: .5rem; flex-basis: 100%; }
+.motivo-desabilitado { font-size: 12.5px; }
+.progresso-carga { display: grid; gap: .4rem; background: var(--brand-soft); border: 1px solid #C7DCF5; border-radius: var(--r-md); padding: .6rem .8rem; }
+.progresso-carga p { margin: 0; }
+.progresso-carga progress { width: 100%; height: 10px; accent-color: var(--brand); }
+.final-carga { box-shadow: none; padding: 10px 12px; }
+.final-carga .camadas { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.dialogo h3 { font-size: 17px; margin: 0 0 .5rem; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 20; max-width: min(92vw, 520px); }
+@media (max-width: 1023px) { .final-carga .camadas { grid-template-columns: repeat(2, minmax(0, 1fr)); } .toast { bottom: 80px; } }
+
+/* Recursos do servidor (RS1/RS2/RS5): cor sempre acompanhada de texto */
+.recursos { margin-bottom: 16px; }
+.recursos-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.recursos-cab h2 { margin: 0 0 .5rem; }
+.recursos-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.recurso-topo { display: flex; justify-content: space-between; gap: .5rem; font-weight: 600; font-size: 13px; flex-wrap: wrap; }
+.recurso-status { font-weight: 600; }
+.recurso.ok .recurso-status { color: var(--ok-ink); } .recurso.atencao .recurso-status { color: var(--warn-ink); }
+.recurso.critico .recurso-status { color: var(--danger-ink); } .sem-leitura, .recurso.sem-leitura .recurso-status { color: var(--muted); }
+.barra { height: 10px; background: var(--line-2); border-radius: var(--r-pill); overflow: hidden; margin: .35rem 0; }
+.barra > span { display: block; height: 100%; border-radius: inherit; background: var(--ok); }
+.recurso.atencao .barra > span { background: var(--warn); } .recurso.critico .barra > span { background: var(--danger); }
+.recurso.sem-leitura .barra > span { background: var(--off); opacity: .35; }
+.recurso-meta { margin: 0; color: var(--ink-2); font-size: 12px; }
+.banco-camadas { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .75rem; margin: .35rem 0 0; }
+.banco-camadas dt { color: var(--ink-3); font-size: 11.5px; } .banco-camadas dd { margin: 0; font-weight: 600; }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
+import CargaCompleta from '../CargaCompleta'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
@@ -8,6 +9,7 @@ export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_e
 export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
+  completa_disponivel?: boolean; completa_liberada?: boolean; completa_motivo?: string | null
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
 type Modo = 'amostra' | 'completa' | 'reprocessar'
@@ -113,7 +115,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
             )}
             {visiveis.length === 0 ? <p className="vazio">Nenhuma base neste filtro.</p> : (
               <ul className="lista-cartoes bases" aria-label="Bases">
-                {visiveis.map((b) => <CartaoBase key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} />)}
+                {visiveis.map((b) => <CartaoBase key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} onFim={onRecarregar} />)}
               </ul>
             )}
           </>
@@ -122,7 +124,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
   )
 }
 
-function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void }) {
+function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void }) {
   const st = STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' }
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
@@ -173,11 +175,16 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
             {rodando === b.id ? 'Carregando…' : 'Puxar amostra'}
           </button>
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
+          {b.completa_disponivel && b.conector_id && (
+            <CargaCompleta conector={b.conector_id} liberada={b.completa_liberada === true} motivo={b.completa_motivo ?? null} onFim={onFim} />
+          )}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
-            <button className="btn outlined" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
-            {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
-              : !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
+            {b.completa_disponivel && b.conector_id ? null : <>
+              <button className="btn outlined" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
+              {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
+                : !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
+            </>}
             <button className="btn outlined" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
           </details>
         </div>

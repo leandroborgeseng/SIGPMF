@@ -166,6 +166,34 @@ class SqlServerConnector:
         return self.montar_select(f"dbo.{tabela.split('.')[-1]}", cols, campo_incremental=campo_incremental,
                                   limite=limite, ordem=ordem)
 
+    def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int) -> str:
+        """Página da carga completa: colunas da política, ORDER BY estável pela chave, OFFSET/FETCH parametrizados."""
+        cols = list(politica.colunas_select(tabela))
+        fora = [c for c in ordem if c not in cols]
+        if not ordem or fora:
+            raise TabelaRecusada(f"Ordenação da carga completa fora das colunas da política: {fora or 'vazia'}")
+        if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
+            raise ValueError(f"Lote inválido: {limite!r}")
+        sql = (f"SELECT {', '.join(_ident(c) for c in cols)} FROM {_ident('dbo.' + tabela.split('.')[-1])} "
+               f"ORDER BY {', '.join(_ident(c) for c in ordem)} OFFSET %s ROWS FETCH NEXT %s ROWS ONLY")
+        return garante_somente_leitura(sql)
+
+    def montar_contagem(self, politica, tabela: str) -> str:
+        politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
+        return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}")
+
+    def abrir(self):
+        """Conexão única da carga completa (autocommit desligado; o guard faz ROLLBACK após cada consulta)."""
+        return self._conectar()
+
+    def contar(self, conn, tabela: str, politica) -> int:
+        r = executa_somente_leitura(conn, self.montar_contagem(politica, tabela), limite=1, como_dict=False)
+        return int(r[0][0]) if r else 0
+
+    def ler_pagina(self, conn, tabela: str, politica, ordem: tuple[str, ...], posicao: int, limite: int) -> list[dict]:
+        sql = self.montar_pagina(politica, tabela, ordem, limite)
+        return executa_somente_leitura(conn, sql, (int(posicao), int(limite)), limite=limite)
+
     def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,
                     desde: datetime | None = None) -> list[dict[str, Any]]:
         """Lê no máximo AMOSTRA_LIMITE linhas, sempre com a política do sistema (lista de colunas explícita)."""

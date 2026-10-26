@@ -171,12 +171,24 @@ def test_amostra_concorrente_409_por_lock(client, tokens, leitor, db):
 
 
 def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
+    """O 501 deu lugar à carga completa real (tests/test_zzz_carga_completa.py); aqui só a liberação."""
+    from app.services import carga_completa as ccomp
     assert client.post("/api/conectores/iss/completa", headers=tokens["operador"]).status_code == 403
-    with pytest.MonkeyPatch.context() as mp:  # sem amostra reconciliada -> 409
-        mp.setattr(cc, "amostra_reconciliada", lambda db, sistema: None)
-        assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 409
+    with pytest.MonkeyPatch.context() as mp:  # sem amostra com sucesso -> 409 com motivo
+        mp.setattr(ccomp, "motivo_bloqueio", lambda db, c: ccomp.SEM_AMOSTRA)
+        r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
+        assert r.status_code == 409 and r.json()["detail"] == ccomp.SEM_AMOSTRA
     assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
-    assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 501
+    with pytest.MonkeyPatch.context() as mp:  # não dispara a carga real (sem origem neste teste)
+        def nao_roda(ex_id, conector, trava):
+            s = ccomp.SessionLocal()
+            ex = s.get(ccomp.Execucao, ex_id)
+            ex.status = "cancelada"
+            s.commit()
+            s.close()
+            ccomp._solta(trava, "SAUDE")
+        mp.setattr(ccomp, "disparar", nao_roda)
+        assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
 
 
 @pytest.mark.parametrize("ambiente", ["development", "", None, "prod", "production", "DEV", " test"])
@@ -254,7 +266,8 @@ def test_iss_amostra_usa_politica_do_municipe(client, tokens, leitor, db):
     r2 = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
     db.expire_all()
     assert db.scalar(select(func.count()).select_from(Municipe)) == n and r2.json()["novos"] == 0
-    assert client.post("/api/conectores/iss/completa", headers=tokens["admin"]).status_code == 501
+    r3 = client.post("/api/conectores/iss/completa", headers=tokens["admin"])  # ISS fora da carga completa nesta entrega
+    assert r3.status_code == 409 and "não disponível" in r3.json()["detail"]
     logs = " ".join(x.mensagem for x in db.scalars(select(Log).where(Log.execucao_id == ex.id)))
     assert "catálogo" in logs and HOST not in logs and USER not in logs and PWD not in logs
 
