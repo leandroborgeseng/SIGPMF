@@ -15,6 +15,7 @@ from app.core.db import get_db
 from app.core.security import ADMIN, CARGA, confere_senha, cria_token, hash_senha, usuario_atual
 from app.gold import visao
 from app.identity.cpf import mascara, normaliza
+from app.identity.documento import mascara as mascara_documento
 from app.models.camadas import (
     Cidadao,
     CidadaoSistemas,
@@ -23,10 +24,13 @@ from app.models.camadas import (
     Endereco,
     Identificador,
     Inconsistencia,
+    Municipe,
+    MunicipePendencia,
     RegistroBronze,
     Vinculo,
 )
 from app.models.controle import Auditoria, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services.carga_municipe import executar_carga_municipe
 from app.services.pipeline import executar_demo
 from app.silver import processamento
 
@@ -81,7 +85,8 @@ def dashboard(db: Session = Depends(get_db)):
 def _exec(e: Execucao) -> dict:
     return {"id": e.id, "tipo": e.tipo, "status": e.status, "usuario": e.usuario, "iniciado_em": e.iniciado_em,
             "finalizado_em": e.finalizado_em, "lidos": e.lidos, "novos": e.novos, "atualizados": e.atualizados,
-            "ignorados": e.ignorados, "lotes": e.lotes, "mensagem": e.mensagem}
+            "ignorados": e.ignorados, "lotes": e.lotes, "duplicados": e.duplicados, "pendentes": e.pendentes,
+            "mensagem": e.mensagem}
 
 
 # ---------- Catálogo ----------
@@ -177,6 +182,16 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
+@api.post("/conectores/iss/municipes/executar")
+def executa_municipe(req: Request, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
+    """Amostra controlada (AMOSTRA_LIMITE) de ISS.dbo.Municipes; credencial só pelo ambiente."""
+    cfg = ConfigSqlServer.do_ambiente(get_settings())
+    if not cfg.resumo_publico()["configurado"]:
+        raise HTTPException(400, "Origem ISS não configurada no ambiente.")
+    ex = executar_carga_municipe(db, u.email, connector=SqlServerConnector(cfg, nome="ISS"))
+    return _exec(ex)
+
+
 @api.get("/execucoes/{eid}/logs")
 def logs(eid: int, db: Session = Depends(get_db)):
     return [{"nivel": x.nivel, "mensagem": x.mensagem, "criado_em": x.criado_em}
@@ -216,6 +231,28 @@ def pendencias(db: Session = Depends(get_db)):
     return [{"id": p.id, "sistema": p.sistema, "tabela": p.tabela, "chave_origem": p.chave_origem, "motivo": p.motivo,
              "nome": p.nome, "candidatos": p.candidatos, "detalhe": p.detalhe, "status": p.status}
             for p in db.scalars(select(CorrelacaoPendente).order_by(CorrelacaoPendente.id))]
+
+
+@api.get("/silver/municipes")
+def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    """M7: documento sempre mascarado; empresas (J) não têm cidadao_id (M3)."""
+    q = select(Municipe).order_by(Municipe.nome, Municipe.documento)
+    if tipo:
+        q = q.where(Municipe.tipo == tipo)
+    return [{"documento": mascara_documento(m.documento), "tipo": m.tipo, "tipo_pessoa": m.tipo_pessoa, "nome": m.nome,
+             "data_nascimento": m.data_nascimento, "data_alteracao": m.data_alteracao, "cidadao_id": m.cidadao_id,
+             "confianca": m.confianca} for m in db.scalars(q.limit(min(limite, 200)).offset(offset))]
+
+
+@api.get("/silver/municipes/pendencias")
+def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """M10: perfil leitura recebe 403; operador/admin veem o documento só mascarado (a pendência guarda apenas
+    a máscara; a chave é um hash)."""
+    if u.perfil == "leitura":
+        raise HTTPException(403, "Perfil leitura não acessa pendências de Munícipe")
+    return [{"chave": p.chave, "motivo": p.motivo, "tipo_pessoa": p.tipo_pessoa, "nome": p.nome,
+             "documento": p.documento_mascarado, "status": p.status}
+            for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 
 @api.get("/silver/inconsistencias")
