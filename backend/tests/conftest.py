@@ -9,6 +9,7 @@ if not TEST_URL:
 os.environ["DATABASE_URL"] = TEST_URL
 os.environ.setdefault("JWT_SECRET", "segredo-de-teste-somente-pytest")
 os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("AMOSTRA_LIMITE", "100")  # fixtures FX calibradas para amostra de 100
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402

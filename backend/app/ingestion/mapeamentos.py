@@ -1,6 +1,19 @@
 """Mapeamento de colunas da origem para os campos canônicos usados na silver.
-Hoje só os sistemas sintéticos; cada Markdown de mapeamento real acrescenta uma entrada."""
+
+Cada entrada: domínio, chave (coluna ou tupla de colunas), campo incremental, papel e campos canônicos.
+Papéis: pessoa (cadastro), cns_extra (CNS adicionais de uma pessoa), revisao (sempre vai à fila),
+terceiro (titular/autorizado/comprador: só CPF válido associa), obito (nunca associa sozinho).
+Um campo canônico pode juntar várias colunas (tupla) como texto livre.
+"""
+from app.connectors.sqlserver.politicas import HISTORICAS_OBITO
+
 CANONICOS = ("nome", "data_nascimento", "cpf", "nome_mae", "endereco", "atualizado_em")
+CHAVE_SEPULTAMENTO = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
+
+_OBITO = {"dominio": "cemiterio", "chave": CHAVE_SEPULTAMENTO, "campo_incremental": "Data_Ultima_Alteracao",
+          "papel": "obito",
+          "campos": {"nome": "FALECIDO", "nome_mae": "MAE", "nome_pai": "PAI", "sexo": "SEXO", "data_obito": "DT_MORTE",
+                     "atualizado_em": "Data_Ultima_Alteracao"}}
 
 MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("DEMO_SAUDE", "prontuario"): {
@@ -11,18 +24,63 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
         "dominio": "cemiterio", "chave": "cod", "campo_incremental": "dt_alteracao",
         "campos": {"nome": "nome", "data_nascimento": "dt_nasc", "cpf": "cpf_cnpj", "nome_mae": "mae",
                    "endereco": "logradouro", "atualizado_em": "dt_alteracao"}},
+    # ---- Saúde (aceite S1-S8) ----
+    ("SAUDE", "pacientes"): {
+        "dominio": "saude", "chave": "Matricula", "campo_incremental": "dt_ultimaatual", "papel": "pessoa",
+        "rowversion": None,  # S2: usar a coluna rowversion no lugar do hash quando existir na origem
+        "campos": {"nome": "Nome", "data_nascimento": "Dt_Nasc", "cpf": "Cpf", "cns": "Cartao_Sus", "nome_mae": "Mae",
+                   "nome_pai": "Pai", "sexo": "Sexo", "endereco": ("Complemento", "Nr", "Cep"),
+                   "atualizado_em": "dt_ultimaatual", "pista_normalizado": "Normalizado",
+                   "pista_matricula_correta": "Matricula_Correta"}},
+    ("SAUDE", "Pacientes_CNS"): {
+        "dominio": "saude", "chave": ("Matricula", "Cartao_Sus"), "campo_incremental": "Data_Atribuicao",
+        "papel": "cns_extra", "campos": {"chave_pessoa": "Matricula", "cns": "Cartao_Sus",
+                                         "atualizado_em": "Data_Atribuicao"}},
+    ("SAUDE", "ESUS_Paciente_Inconsistencia"): {
+        "dominio": "saude", "chave": "Id", "campo_incremental": "Data_Origem", "papel": "revisao",
+        "campos": {"nome": "Nome_Paciente", "data_nascimento": "Data_Nascimento", "nome_mae": "Nome_Mae",
+                   "cns": "Cartao_Sus", "atualizado_em": "Data_Origem"}},
+    # ---- Cemitério (aceite CM1-CM11) ----
+    ("CEMITERIO", "Obitos"): {**_OBITO, "prioridade": 0},
+    **{("CEMITERIO", h): {**_OBITO, "prioridade": 1} for h in HISTORICAS_OBITO},
+    ("CEMITERIO", "Titulares"): {
+        "dominio": "cemiterio", "chave": ("Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia"),
+        "campo_incremental": "Inclusao", "papel": "terceiro",
+        "campos": {"nome": "Titular", "cpf": "CPF", "endereco": "Endereco", "atualizado_em": "Inclusao"}},
+    ("CEMITERIO", "Pessoas_Autorizadas"): {
+        "dominio": "cemiterio", "chave": ("Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia"),
+        "campo_incremental": "Inclusao", "papel": "terceiro",
+        "campos": {"nome": "Nome", "cpf": "CPF", "atualizado_em": "Inclusao"}},
+    ("CEMITERIO", "Leilao"): {
+        "dominio": "cemiterio", "chave": ("Cod_Cemiterio", "Quadra", "Sepultura", "DataVenda"),
+        "campo_incremental": "DataVenda", "papel": "terceiro",
+        "campos": {"nome": "Nome", "cpf": "CPF", "atualizado_em": "DataVenda"}},
 }
 
-NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos"}
+NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
+                  "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)"}
+
+
+def chave_origem(m: dict, dados: dict) -> str:
+    ch = m["chave"]
+    if isinstance(ch, tuple):
+        return "|".join("" if dados.get(c) is None else str(dados.get(c)) for c in ch)
+    return str(dados[ch])
 
 
 def canonico(sistema: str, tabela: str, dados: dict) -> dict:
     m = MAPEAMENTOS.get((sistema, tabela))
     if not m:
         return {k: dados.get(k) for k in CANONICOS}
-    return {k: dados.get(orig) for k, orig in m["campos"].items()}
+    out = {}
+    for k, orig in m["campos"].items():
+        if isinstance(orig, tuple):
+            partes = [str(dados[c]) for c in orig if dados.get(c) not in (None, "")]
+            out[k] = ", ".join(partes) or None
+        else:
+            out[k] = dados.get(orig)
+    return out
 
 
-def campos_origem_mapeados(sistema: str, tabela: str) -> set[str]:
-    m = MAPEAMENTOS.get((sistema, tabela))
-    return set(m["campos"].values()) | {m["chave"]} if m else set()
+def papel(sistema: str, tabela: str) -> str:
+    return MAPEAMENTOS.get((sistema, tabela), {}).get("papel", "pessoa")

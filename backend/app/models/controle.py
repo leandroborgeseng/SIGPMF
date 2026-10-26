@@ -93,3 +93,17 @@ class Parametro(Base):
     chave: Mapped[str] = mapped_column(String(100), primary_key=True)
     valor: Mapped[str] = mapped_column(String(200))
     descricao: Mapped[str | None] = mapped_column(Text)
+
+
+class ConfirmacaoObito(Base):
+    """Confirmação humana (admin_lgpd) de que um óbito pertence a um cidadão. Sobrevive à reconstrução da silver."""
+    __tablename__ = "confirmacoes_obito"
+    __table_args__ = (UniqueConstraint("sistema", "tabela", "chave_origem"), S)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sistema: Mapped[str] = mapped_column(String(50))
+    tabela: Mapped[str] = mapped_column(String(200))
+    chave_origem: Mapped[str] = mapped_column(String(200))
+    cidadao_id: Mapped[str] = mapped_column(String(36))
+    usuario: Mapped[str] = mapped_column(String(200))
+    motivo: Mapped[str] = mapped_column(Text)
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
