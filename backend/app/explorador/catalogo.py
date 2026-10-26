@@ -78,3 +78,5 @@ POR_CAMADA = {"prata": PRATA, "ouro": OURO}
 BRONZE_META = ("id", "id_origem", "extraido_em", "atualizado_origem_em")
 BRONZE_AMOSTRA_CHAVES = 2000  # linhas lidas para descobrir as chaves do JSON
 MAX_LINHAS = 50
+# UX/perf: acima disso o perfil (preenchido %, distintos) é calculado numa amostra limitada e marcado como estimativa
+PERFIL_AMOSTRA = 10000

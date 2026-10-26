@@ -50,6 +50,7 @@ class AmostraIn(TabelaIn):
     pagina: int = Field(1, ge=1, le=100000)
     filtros: dict[str, Any] = Field(default_factory=dict, max_length=10)
     somente_pendencias: bool = False
+    motivo_filtro: str | None = Field(None, max_length=500)
 
 
 class RevelarIn(TabelaIn):
@@ -93,6 +94,18 @@ def perfil(d: TabelaIn, req: Request, u: Usuario = Depends(acesso_explorador), d
 @explorador.post("/amostra")
 def amostra(d: AmostraIn, req: Request, u: Usuario = Depends(acesso_explorador), db: Session = Depends(get_db)):
     c = sv.valida_conector(db, d.conector)
+    spec_ = sv.cat.POR_CAMADA.get(d.camada, {}).get(d.tabela) if d.camada != "bronze" else None
+    sens = [] if d.somente_pendencias else sv.colunas_sensiveis_filtradas(d.filtros, spec_)
+    if sens:  # filtro em coluna pessoal: só admin_lgpd, com motivo, auditado (decisão TL)
+        alvo = f"{d.camada}:{d.tabela}:{','.join(sens)}"
+        if u.perfil != PERFIL_REVELA:
+            audita(db, u.email, "explorar_filtro_pessoal_negado", alvo, {"colunas": sens}, _ip(req))
+            raise HTTPException(403, "Filtro em coluna pessoal disponível só para o perfil LGPD")
+        motivo = (d.motivo_filtro or "").strip()
+        if len(motivo) < get_settings().revelar_motivo_min:
+            raise HTTPException(400, f"Informe o motivo do filtro (mínimo {get_settings().revelar_motivo_min} caracteres).")
+        audita(db, u.email, "explorar_filtro_pessoal", alvo,
+               {"conector": c, "tabela": d.tabela, "colunas": sens, "motivo": motivo}, _ip(req), commit=False)
     r = sv.amostra(db, c, d.camada, d.tabela, d.pagina, d.filtros, d.somente_pendencias)
     _aud(db, u, "amostra", req, conector=c, camada=d.camada, tabela=d.tabela, pagina=d.pagina,
          filtro_colunas=sorted(k for k, v in d.filtros.items() if v not in (None, "")),

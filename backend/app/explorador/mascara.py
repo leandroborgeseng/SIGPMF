@@ -16,8 +16,10 @@ _NOME = re.compile(r"(nome|^mae$|_mae$|^mae_|^pai$|_pai$|responsavel|falecido_no
 _END = re.compile(r"(endereco|logradouro|^end$|_end$|^end_|bairro|^cep$|_cep$|complemento|numero_casa|^rua$)", re.I)
 _TEL = re.compile(r"(telefone|^fone|_fone$|celular|^tel$|_tel$|^tel_|whats)", re.I)
 _EMAIL = re.compile(r"(e_?mail)", re.I)
+_OBITO = re.compile(r"(obito|falecido)", re.I)
+_NASC = re.compile(r"(nascimento|nasc$|^dt_nasc|^data_nasc|_nasc_|nascto)", re.I)
 # campos de linhas "chave/valor" (silver.identificadores.valor, gold.cidadao_dados.valor) dependem do rótulo
-_ROTULO_SENSIVEL = re.compile(r"(cpf|cnpj|cns|documento|nome|mae|endereco|logradouro|bairro|cep|telefone|celular|email)", re.I)
+_ROTULO_SENSIVEL = re.compile(r"(cpf|cnpj|cns|documento|nome|mae|endereco|logradouro|bairro|cep|telefone|celular|email|nascimento|obito|falecido)", re.I)
 
 _CPF_TXT = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
 _CNPJ_TXT = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b")
@@ -37,6 +39,10 @@ def tipo_sensivel(coluna: str) -> str | None:
         return "nome"
     if _END.search(c):
         return "endereco"
+    if _OBITO.search(c):
+        return "obito"
+    if _NASC.search(c):
+        return "nascimento"
     if _EMAIL.search(c):
         return "email"
     if _TEL.search(c):
@@ -49,13 +55,18 @@ def rotulo_sensivel(rotulo: str | None) -> bool:
 
 
 def _nome(v: str) -> str:
+    """UX-E1: "MAR*** S***" (3 letras do primeiro nome, inicial dos demais)."""
     partes = [p for p in v.split() if p]
-    return " ".join(f"{p[0]}***" for p in partes) or OCULTO
+    if not partes:
+        return OCULTO
+    return " ".join([f"{partes[0][:3]}***", *(f"{p[0]}***" for p in partes[1:])])
 
 
 def _tel(v: str) -> str:
     d = re.sub(r"\D", "", v)
-    return f"(**) ****-**{d[-2:]}" if len(d) >= 4 else OCULTO
+    if len(d) >= 10:
+        return f"({d[-11:-9] if len(d) >= 11 else d[:2]}) ****-**{d[-2:]}"
+    return f"****-**{d[-2:]}" if len(d) >= 4 else OCULTO
 
 
 def _texto_livre(v: str) -> str:
@@ -81,6 +92,10 @@ def mascara_valor(tipo: str | None, v: Any) -> Any:
         return cnsmod.mascara(s) or OCULTO
     if tipo == "nome":
         return _nome(s)
+    if tipo == "obito":
+        return "••• (oculto)"
+    if tipo == "nascimento":
+        return "**/**/****"
     if tipo == "email":
         u, _, d = s.partition("@")
         return f"{u[:1]}***@{d}" if d else OCULTO
