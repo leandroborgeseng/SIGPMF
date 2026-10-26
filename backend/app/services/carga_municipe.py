@@ -13,6 +13,7 @@ from app.core.audit import audita
 from app.ingestion import municipe as mun
 from app.models.camadas import Municipe, MunicipePendencia, MunicipeVersao
 from app.models.controle import Execucao, Log
+from app.services.diagnostico import MSG_ORIGEM_VAZIA, ORIGEM_VAZIA, FalhaLeitura, linha_json
 
 TABELA = "Municipes"
 
@@ -36,13 +37,31 @@ def _datahora(v) -> datetime | None:
         return None
 
 
-def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=None) -> Execucao:
+def _bronze_iss(db: Session, linhas: list[dict], execucao_id: int) -> None:
+    """Linhas brutas do ISS na bronze (indicador por camada). Sem PK na origem: id = hash estável da linha."""
+    from app.bronze.ingestao import ingere
+    regs = [{**r, "_chave_sigpmf": mun.chave_linha(mun.canonico(r))} for r in linhas]
+    ingere(db, "ISS", TABELA, "_chave_sigpmf", "Data_Alteracao", regs, execucao_id, confirmar=False)
+
+
+def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=None, bronze: bool = False) -> Execucao:
     ex = Execucao(tipo="carga_municipe_amostra", sistema="ISS", status="em_andamento", usuario=usuario)
     db.add(ex)
     db.commit()
     try:
         if linhas is None:
-            linhas = ler_origem(connector)
+            try:
+                linhas = [linha_json(r) for r in ler_origem(connector)]
+            except Exception as exc:  # noqa: BLE001
+                raise FalhaLeitura(TABELA, exc) from exc
+        if not linhas:  # 0 linhas lidas: nunca "sem_novidades"
+            ex.status, ex.mensagem = ORIGEM_VAZIA, MSG_ORIGEM_VAZIA
+            ex.finalizado_em = datetime.now(UTC)
+            db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=MSG_ORIGEM_VAZIA))
+            db.commit()
+            return ex
+        if bronze:
+            _bronze_iss(db, linhas, ex.id)
         existentes = dict(db.execute(select(Municipe.documento, Municipe.hash)).all())
         r = mun.classificar(linhas, existentes)
         if not r.fecha():  # M6: as somas têm de fechar com as lidas
@@ -77,6 +96,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         db.rollback()
         ex = db.get(Execucao, ex.id)
         ex.status = "falha"
+        ex.registra_erro(exc)
         ex.mensagem = f"Falha: {type(exc).__name__}"
     ex.finalizado_em = datetime.now(UTC)
     audita(db, usuario, "carga_executada", f"execucao:{ex.id}",

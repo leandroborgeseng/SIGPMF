@@ -81,3 +81,6 @@ nav a[aria-current="page"] { background: #dce9f5; border-left-color: var(--azul)
 .menu-acoes[open] { display: grid; gap: .5rem; }
 .confirmar { border-color: var(--azul); margin: .5rem 0; }
 @media (min-width: 900px) { .lista-cartoes.bases { grid-template-columns: repeat(2, 1fr); } }
+
+.aviso-ambar { color: #8a5a00; background: #fff4db; border-left: 3px solid #d99a00; padding: .25rem .5rem; }
+.motivo-falha p { color: var(--erro, #a40000); }

@@ -34,8 +34,8 @@ class ConfigSqlServer:
 
     @classmethod
     def do_ambiente(cls, s: Settings) -> "ConfigSqlServer":
-        return cls(s.sqlserver_host, s.sqlserver_port, s.sqlserver_database, s.sqlserver_user,
-                   s.sqlserver_password, s.sqlserver_timeout, s.amostra_limite)
+        return cls(s.sqlserver_host, int(s.sqlserver_port), s.sqlserver_database, s.sqlserver_user,
+                   s.sqlserver_password, int(s.sqlserver_timeout), int(s.amostra_limite))
 
     def __repr__(self) -> str:  # nunca expõe host, usuário nem senha (logs, tracebacks)
         return (f"ConfigSqlServer(host=***, port={self.port}, database={self.database!r}, user=***, password=***, "
@@ -86,8 +86,9 @@ class SqlServerConnector:
     def _conectar(self):
         import pymssql  # import tardio: o driver só é necessário com origem real
         c = self.config
-        return pymssql.connect(server=c.host, port=c.port, user=c.user, password=c.password,
-                               database=c.database, login_timeout=c.timeout, timeout=c.timeout,
+        # Coolify entrega variáveis como texto: porta e timeout sempre int
+        return pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
+                               database=c.database, login_timeout=int(c.timeout), timeout=int(c.timeout),
                                autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
 
     def testar_conexao(self) -> dict[str, Any]:
@@ -102,6 +103,22 @@ class SqlServerConnector:
             return {"ok": True, "erro": None}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "erro": self._erro_limpo(exc)}
+
+    def diagnostico(self) -> dict[str, Any]:
+        """SELECT 1 + DB_NAME() pelo guard (ROLLBACK, timeout). Devolve só o nome do banco conectado."""
+        from app.services.diagnostico import categoria, motivo
+        try:
+            conn = self._conectar()
+            try:
+                linha = executa_somente_leitura(conn, "SELECT 1 AS ok, DB_NAME() AS banco", limite=1, como_dict=False)
+            finally:
+                conn.close()
+            banco = linha[0][1] if linha and len(linha[0]) > 1 else None
+            return {"ok": True, "banco": banco, "erro": None}
+        except Exception as exc:  # noqa: BLE001
+            c = categoria(exc)
+            return {"ok": False, "banco": None, "erro": {"classe": c["classe"], "numero": c["numero"],
+                                                         "motivo": motivo(c["classe"], c["numero"], None, c["objeto"])}}
 
     def _erro_limpo(self, exc: Exception) -> str:
         """Mensagem clara SEM senha, usuário, host nem string de conexão."""

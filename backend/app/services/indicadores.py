@@ -46,6 +46,9 @@ def indicadores(db: Session) -> list[dict]:
     bronze = _por_sistema(db, select(RegistroBronze.sistema_origem, func.count()).group_by(RegistroBronze.sistema_origem))
     prata = _por_sistema(db, select(Vinculo.sistema, func.count()).group_by(Vinculo.sistema))
     ouro = _por_sistema(db, select(DadoGold.sistema, func.count(func.distinct(DadoGold.cidadao_id))).group_by(DadoGold.sistema))
+    # ISS (Munícipe) tem silver própria (silver.municipes), fora de silver.vinculos: conta lá
+    from app.models.camadas import Municipe
+    prata["ISS"] = prata.get("ISS", 0) + int(db.scalar(select(func.count()).select_from(Municipe)) or 0)
     pend = _por_sistema(db, select(CorrelacaoPendente.sistema, func.count())
                         .where(CorrelacaoPendente.status == "pendente").group_by(CorrelacaoPendente.sistema))
     execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
@@ -62,12 +65,14 @@ def indicadores(db: Session) -> list[dict]:
             "pode_carregar": motivo is None, "motivo_bloqueio": motivo,
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
             "com_erro": ult is not None and ult.status == "falha",
+            "origem_vazia": ult is not None and ult.status == "origem_vazia",
             "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
                           "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)},
             "ultima_carga": None if ult is None else {
                 "id": ult.id, "tipo": ult.tipo, "status": ult.status, "iniciado_em": ult.iniciado_em,
                 "finalizado_em": ult.finalizado_em, "lidos": ult.lidos, "novos": ult.novos,
-                "atualizados": ult.atualizados, "ignorados": ult.ignorados, "mensagem": ult.mensagem},
+                "atualizados": ult.atualizados, "ignorados": ult.ignorados, "mensagem": ult.mensagem,
+                "erro": ult.erro_publico()},
         })
     return out
 

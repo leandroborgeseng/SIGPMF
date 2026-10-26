@@ -87,7 +87,7 @@ def _exec(e: Execucao) -> dict:
     return {"id": e.id, "tipo": e.tipo, "status": e.status, "usuario": e.usuario, "iniciado_em": e.iniciado_em,
             "finalizado_em": e.finalizado_em, "lidos": e.lidos, "novos": e.novos, "atualizados": e.atualizados,
             "ignorados": e.ignorados, "lotes": e.lotes, "duplicados": e.duplicados, "pendentes": e.pendentes,
-            "mensagem": e.mensagem}
+            "mensagem": e.mensagem, "erro": e.erro_publico()}
 
 
 # ---------- Catálogo ----------
@@ -288,6 +288,20 @@ def _reprocessa(db: Session, usuario: str, sistema: str) -> Execucao:
     audita(db, usuario, "reprocessamento_executado", f"execucao:{ex.id}", {"status": ex.status}, commit=False)
     db.commit()
     return ex
+
+
+@api.post("/conectores/{conector}/diagnostico")
+def diagnostico_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado),
+                         db: Session = Depends(get_db)):
+    """Testar conexão: SELECT 1 + DB_NAME() pelo guard. Admin, auditado; só o nome do banco volta."""
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    cfg, fallback = cc.config_do_conector(conector, db)
+    r = SqlServerConnector(cfg, nome=conector).diagnostico()
+    r.update({"banco_configurado": cfg.database, "banco_fallback": fallback})
+    audita(db, u.email, "diagnostico_conector", f"conector:{conector}", {"ok": r["ok"]}, _ip(req))
+    return r
 
 
 @api.post("/conectores/{conector}/completa")

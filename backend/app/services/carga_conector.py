@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.gold import visao
 from app.ingestion.mapeamentos import MAPEAMENTOS, NOMES_SISTEMAS
 from app.models.controle import BaseCatalogo, Execucao, Log, Sistema, TabelaCatalogo
+from app.services.diagnostico import MSG_ORIGEM_VAZIA, ORIGEM_VAZIA, FalhaLeitura, linha_json
 from app.silver import processamento
 
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
@@ -129,12 +130,26 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
         leitor = leitor or SqlServerConnector(cfg, nome=conector)
         tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
         try:
-            lidas = {t: leitor.ler_amostra(t, politica=pol) for t in tabelas}  # tudo lido antes de gravar
+            lidas = {}
+            for t in tabelas:  # tudo lido antes de gravar
+                try:
+                    lidas[t] = [linha_json(r) for r in leitor.ler_amostra(t, politica=pol)]
+                except Exception as exc:  # noqa: BLE001
+                    raise FalhaLeitura(t, exc) from exc
+            if not any(lidas.values()):  # 0 linhas: nunca "sem_novidades"
+                ex.status, ex.mensagem = ORIGEM_VAZIA, MSG_ORIGEM_VAZIA
+                ex.finalizado_em = datetime.now(UTC)
+                db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=MSG_ORIGEM_VAZIA))
+                db.commit()
+                return ex
             _garante_catalogo(db, sistema, tabelas)
             for t, linhas in lidas.items():
                 m = MAPEAMENTOS[(sistema, t)]
-                c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id,
-                           get_settings().lote_tamanho, rowversion=m.get("rowversion"), confirmar=False)
+                try:
+                    c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id,
+                               get_settings().lote_tamanho, rowversion=m.get("rowversion"), confirmar=False)
+                except Exception as exc:  # noqa: BLE001
+                    raise FalhaLeitura(t, exc) from exc
                 for k in tot:
                     tot[k] += c[k]
             sres = processamento.reconstruir(db)
@@ -150,7 +165,8 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
             db.rollback()  # nada parcial na bronze/silver
             ex = db.get(Execucao, ex.id)
             ex.status = "falha"
-            ex.mensagem = f"Falha na amostra de {conector}: {_erro_limpo(exc)}"
+            ex.registra_erro(exc)
+            ex.mensagem = f"Falha na amostra de {conector}: {ex.erro_publico()['motivo']}"
             ex.finalizado_em = datetime.now(UTC)
             db.add(Log(execucao_id=ex.id, nivel="ERROR", mensagem=ex.mensagem))
             db.commit()
@@ -164,11 +180,11 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
 def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, origem_banco: str, leitor):
     """ISS: mesma rota/lock/auditoria; leitura e classificação do Munícipe (#6), também transacional."""
     from app.services.carga_municipe import executar_carga_municipe
-    ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"))
+    ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"), bronze=True)
     db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                mensagem=f"Banco de origem do conector iss: {cfg.database or '-'} via {origem_banco}"))
-    if ex.status == "falha" and ex.mensagem and "Falha:" in ex.mensagem:
-        ex.mensagem = f"Falha na amostra de iss: erro na origem ({ex.mensagem.split('Falha: ')[-1]})"
+    if ex.status == "falha" and ex.erro_publico():
+        ex.mensagem = f"Falha na amostra de iss: {ex.erro_publico()['motivo']}"
     db.commit()
     return ex
 
