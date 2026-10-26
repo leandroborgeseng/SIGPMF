@@ -1,0 +1,7 @@
+# Só para uso local e CI: o `docker compose` carrega este arquivo automaticamente.
+# Em produção (Coolify) o compose é usado com `-f docker-compose.yml`, sem publicar porta;
+# o proxy do Coolify repassa o domínio para a porta 80 interna do frontend.
+services:
+  frontend:
+    ports:
+      - "${HTTP_PORT:-8080}:80"
