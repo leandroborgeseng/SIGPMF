@@ -8,6 +8,7 @@ O usuário SQL das origens NÃO é garantidamente somente leitura. Por isso:
   transação que termina SEMPRE em ROLLBACK (mesmo com sucesso ou erro), com timeout de consulta.
 """
 import re
+import unicodedata
 from typing import Any
 
 COMANDOS_PROIBIDOS = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "EXEC", "EXECUTE", "CREATE", "ALTER",
@@ -25,11 +26,23 @@ HINT_LOCK_RE = re.compile(r"\b(" + "|".join(HINTS_LOCK) + r")\b", re.IGNORECASE)
 COUNT_STAR_RE = re.compile(r"\bCOUNT\s*\(\s*\*\s*\)", re.IGNORECASE)
 
 
+# Caracteres invisíveis (largura zero, BOM, controles bidi, hífen suave...) escondem palavras proibidas
+# (ex.: "UPD\u200bLOCK"): qualquer caractere de formato (categoria Unicode Cf) é recusado (ressalva do QA do #4).
+INVISIVEIS_EXPLICITOS = frozenset("\u00ad\u180e\u200b\u200c\u200d\u200e\u200f\u2060\u2061\u2062\u2063\u2064"
+                                  "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff")
+
+
+def tem_invisivel(texto: str) -> bool:
+    return any(c in INVISIVEIS_EXPLICITOS or unicodedata.category(c) == "Cf" for c in texto)
+
+
 class ComandoProibido(ValueError):
     pass
 
 
 def garante_somente_leitura(sql: str) -> str:
+    if tem_invisivel(sql):
+        raise ComandoProibido("O conector só executa um único SELECT (caractere invisível recusado).")
     texto = sql.strip()
     inicio = texto.split(None, 1)[0].upper() if texto else ""
     if inicio not in ("SELECT", "WITH") or ";" in texto or PROIBIDO_RE.search(texto) or SELECT_INTO_RE.search(texto) \

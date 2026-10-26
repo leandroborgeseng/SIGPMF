@@ -133,3 +133,46 @@ class CidadaoSistemas(Base):
     sistemas: Mapped[list[str]] = mapped_column(JSONType, default=list)
     dominios: Mapped[list[str]] = mapped_column(JSONType, default=list)
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Municipe(Base):
+    """ISS.Municipes deduplicado: 1 linha por documento normalizado (M1). Empresas (J) nunca têm cidadao_id (M3).
+    Tabela própria do conector: não é apagada pela reconstrução da silver."""
+    __tablename__ = "municipes"
+    __table_args__ = SV
+    documento: Mapped[str] = mapped_column(String(14), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(10))                 # cidadao | empresa
+    tipo_pessoa: Mapped[str] = mapped_column(String(1))
+    nome: Mapped[str | None] = mapped_column(String(300))
+    nome_mae: Mapped[str | None] = mapped_column(String(300))
+    data_nascimento: Mapped[date | None] = mapped_column(Date)
+    pis_pasep: Mapped[str | None] = mapped_column(String(20))
+    data_alteracao: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    confianca: Mapped[float | None] = mapped_column(Float)
+    hash: Mapped[str] = mapped_column(String(64))
+    execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))
+
+
+class MunicipeVersao(Base):
+    """Versões divergentes do mesmo documento no ISS (sem PK, linhas repetidas): preservadas (M1)."""
+    __tablename__ = "municipes_versoes"
+    __table_args__ = (UniqueConstraint("documento", "hash"), SV)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    documento: Mapped[str] = mapped_column(String(14), index=True)
+    hash: Mapped[str] = mapped_column(String(64))
+    dados: Mapped[dict[str, Any]] = mapped_column(JSONType)
+    execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))
+
+
+class MunicipePendencia(Base):
+    """Linhas do ISS sem documento, com DV inválido ou Tipo_Pessoa R/nulo (M2/M4). Sem cidadao_id."""
+    __tablename__ = "municipes_pendencias"
+    __table_args__ = SV
+    chave: Mapped[str] = mapped_column(String(32), primary_key=True)
+    motivo: Mapped[str] = mapped_column(String(50))
+    tipo_pessoa: Mapped[str | None] = mapped_column(String(1))
+    nome: Mapped[str | None] = mapped_column(String(300))
+    documento_mascarado: Mapped[str | None] = mapped_column(String(20))  # M10: só a máscara, nunca em claro
+    status: Mapped[str] = mapped_column(String(20), default="pendente")
+    execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))

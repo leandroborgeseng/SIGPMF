@@ -1,11 +1,10 @@
 """catálogo de bases (controle.bases_catalogo) + seed idempotente
 
 Aditiva: só cria a tabela e faz upsert. Downgrade remove apenas a tabela nova.
-Encadeamento: aponta para 0003 (main em df9ac51). Se o PR #6 (0004_municipe_iss) entrar antes,
-trocar down_revision para '0004'.
+Encadeamento: depois do 0004_municipe_iss (PR #6).
 
 Revision ID: 0005
-Revises: 0003
+Revises: 0004
 """
 import sqlalchemy as sa
 from alembic import op
@@ -14,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from app.catalogo.bases import semeia
 
 revision = '0005'
-down_revision = '0003'
+down_revision = '0004'
 branch_labels = None
 depends_on = None
 

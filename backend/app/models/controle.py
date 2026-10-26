@@ -50,6 +50,8 @@ class Execucao(Base):
     atualizados: Mapped[int] = mapped_column(Integer, default=0)
     ignorados: Mapped[int] = mapped_column(Integer, default=0)
     lotes: Mapped[int] = mapped_column(Integer, default=0)
+    duplicados: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    pendentes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     mensagem: Mapped[str | None] = mapped_column(Text)
 
 
