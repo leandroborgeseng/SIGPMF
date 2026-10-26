@@ -173,5 +173,6 @@ class MunicipePendencia(Base):
     motivo: Mapped[str] = mapped_column(String(50))
     tipo_pessoa: Mapped[str | None] = mapped_column(String(1))
     nome: Mapped[str | None] = mapped_column(String(300))
+    documento_mascarado: Mapped[str | None] = mapped_column(String(20))  # M10: só a máscara, nunca em claro
     status: Mapped[str] = mapped_column(String(20), default="pendente")
     execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))

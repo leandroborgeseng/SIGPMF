@@ -60,6 +60,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
                 db.add(MunicipeVersao(documento=v["documento"], hash=v["hash"], dados=v["dados"], execucao_id=ex.id))
         for p in r.pendencias:
             db.merge(MunicipePendencia(chave=p["chave"], motivo=p["motivo"], tipo_pessoa=p["tipo_pessoa"],
+                                       documento_mascarado=p.get("documento_mascarado"),
                                        nome=p["nome"], status="pendente", execucao_id=ex.id))
         c = r.contagem
         ex.lidos, ex.novos, ex.atualizados = c["lidas"], c["novas"], c["atualizadas"]

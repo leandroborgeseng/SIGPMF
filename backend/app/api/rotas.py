@@ -246,11 +246,12 @@ def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0,
 
 @api.get("/silver/municipes/pendencias")
 def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    """M10: perfil leitura recebe 403; operador/admin veem a pendência sem documento em claro (a pendência não
-    guarda documento: a chave é um hash)."""
+    """M10: perfil leitura recebe 403; operador/admin veem o documento só mascarado (a pendência guarda apenas
+    a máscara; a chave é um hash)."""
     if u.perfil == "leitura":
         raise HTTPException(403, "Perfil leitura não acessa pendências de Munícipe")
-    return [{"chave": p.chave, "motivo": p.motivo, "tipo_pessoa": p.tipo_pessoa, "nome": p.nome, "status": p.status}
+    return [{"chave": p.chave, "motivo": p.motivo, "tipo_pessoa": p.tipo_pessoa, "nome": p.nome,
+             "documento": p.documento_mascarado, "status": p.status}
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 

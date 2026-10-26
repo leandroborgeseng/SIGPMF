@@ -294,3 +294,5 @@ def test_m10_pendencias_403_para_leitura(carga, client, tokens):
         p = client.get("/api/silver/municipes/pendencias", headers=tokens[perfil])
         assert p.status_code == 200 and p.json()
         assert A not in p.text and B not in p.text and C not in p.text and J not in p.text
+        mascarados = [x["documento"] for x in p.json() if x["documento"]]
+        assert mascarados and all("*" in d for d in mascarados)

@@ -110,7 +110,8 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
         if c["documento"] is None:
             r.contagem["pendentes"] += 1
             r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "documento_nulo", "nome": c["nome"],
-                                 "tipo_pessoa": c["tipo_pessoa"]})
+                                 "tipo_pessoa": c["tipo_pessoa"],
+                                 "documento_mascarado": docmod.mascara(c["documento"])})
             continue
         grupos.setdefault(c["documento"], []).append((pos, c))
 
@@ -121,7 +122,8 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
             for pos, c in itens:
                 r.contagem["pendentes"] += 1
                 r.pendencias.append({"chave": chave_linha(c, pos), "motivo": "tipo_divergente", "nome": c["nome"],
-                                     "tipo_pessoa": c["tipo_pessoa"]})
+                                     "tipo_pessoa": c["tipo_pessoa"],
+                                     "documento_mascarado": docmod.mascara(c["documento"])})
             continue
         ordenados = sorted(itens, key=lambda t: (_quando(t[1]["data_alteracao"]), t[0]))
         pos_v, venc = ordenados[-1]
@@ -141,7 +143,7 @@ def classificar(linhas, existentes: dict[str, str] | None = None) -> Resultado:
         if motivo:
             r.contagem["pendentes"] += 1
             r.pendencias.append({"chave": chave_linha(venc, pos_v), "motivo": motivo, "nome": venc["nome"],
-                                 "tipo_pessoa": tipo})
+                                 "tipo_pessoa": tipo, "documento_mascarado": docmod.mascara(doc)})
             continue
         for hc, c in divergentes.items():
             r.versoes.append({"documento": doc, "hash": hc, "dados": c})

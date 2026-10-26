@@ -51,6 +51,7 @@ def upgrade() -> None:
     sa.Column('motivo', sa.String(length=50), nullable=False),
     sa.Column('tipo_pessoa', sa.String(length=1), nullable=True),
     sa.Column('nome', sa.String(length=300), nullable=True),
+    sa.Column('documento_mascarado', sa.String(length=20), nullable=True),
     sa.Column('status', sa.String(length=20), nullable=False),
     sa.Column('execucao_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['execucao_id'], ['controle.execucoes.id']),
