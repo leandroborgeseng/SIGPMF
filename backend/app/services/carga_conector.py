@@ -25,6 +25,8 @@ from app.silver import processamento
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
 CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS")}
 TIPO_AMOSTRA = "amostra_conector"
+TIPO_AMOSTRA_ISS = "carga_municipe_amostra"  # ISS usa a carga do Munícipe (#6) com a política ISS
+TIPOS_AMOSTRA = (TIPO_AMOSTRA, TIPO_AMOSTRA_ISS)
 
 
 class ConectorDesconhecido(LookupError):
@@ -40,6 +42,8 @@ class SemMapeamento(RuntimeError):
 
 
 def tabelas_do_conector(sistema: str) -> list[str]:
+    if sistema == "ISS":
+        return ["Municipes"]  # política ISS do #6; classificação própria (app.ingestion.municipe)
     pol = politica(sistema)
     if pol is None:
         return []
@@ -68,10 +72,10 @@ def _garante_catalogo(db: Session, sistema: str, tabelas: list[str]) -> None:
 
 def amostra_reconciliada(db: Session, sistema: str) -> Execucao | None:
     """Última amostra com sucesso cujas contagens fecham (lidos = novos + atualizados + ignorados)."""
-    for e in db.scalars(select(Execucao).where(Execucao.tipo == TIPO_AMOSTRA, Execucao.sistema == sistema,
+    for e in db.scalars(select(Execucao).where(Execucao.tipo.in_(TIPOS_AMOSTRA), Execucao.sistema == sistema,
                                                Execucao.status.in_(("sucesso", "sem_novidades")))
                         .order_by(Execucao.id.desc())):
-        if e.lidos == e.novos + e.atualizados + e.ignorados:
+        if e.lidos > 0 and e.lidos == e.novos + e.atualizados + e.ignorados + (e.duplicados or 0) + (e.pendentes or 0):
             return e
     return None
 
@@ -92,14 +96,16 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
         trava.close()
         raise Conflito(f"Já existe uma amostra de {conector} em andamento.")
     try:
-        if db.scalar(select(Execucao.id).where(Execucao.tipo == TIPO_AMOSTRA, Execucao.sistema == sistema,
+        if db.scalar(select(Execucao.id).where(Execucao.tipo.in_(TIPOS_AMOSTRA), Execucao.sistema == sistema,
                                                Execucao.status == "em_andamento")):
             raise Conflito(f"Já existe uma amostra de {conector} em andamento.")
         cfg, fallback = config_do_conector(conector)
+        origem_banco = "SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
+        if sistema == "ISS":
+            return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor)
         ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario)
         db.add(ex)
         db.commit()
-        origem_banco = "SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
         db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                    mensagem=f"Banco de origem do conector {conector}: {cfg.database or '-'} via {origem_banco}"))
         db.commit()
@@ -136,6 +142,18 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
         trava.execute(text("select pg_advisory_unlock(:k)"), {"k": lock})
         trava.commit()
         trava.close()
+
+
+def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, origem_banco: str, leitor):
+    """ISS: mesma rota/lock/auditoria; leitura e classificação do Munícipe (#6), também transacional."""
+    from app.services.carga_municipe import executar_carga_municipe
+    ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"))
+    db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
+               mensagem=f"Banco de origem do conector iss: {cfg.database or '-'} via {origem_banco}"))
+    if ex.status == "falha" and ex.mensagem and "Falha:" in ex.mensagem:
+        ex.mensagem = f"Falha na amostra de iss: erro na origem ({ex.mensagem.split('Falha: ')[-1]})"
+    db.commit()
+    return ex
 
 
 def _erro_limpo(exc: Exception) -> str:

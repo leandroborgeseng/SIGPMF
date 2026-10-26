@@ -18,11 +18,36 @@ class Leitor:
         self.o, self.sistema, self.falha_em = OrigemMock(conjunto="saude+cemiterio"), sistema, falha_em
 
     def ler_amostra(self, tabela, politica=None):
+        if self.sistema == "ISS":
+            politica.colunas_select(tabela)  # exige a política ISS (Munícipe)
+            if self.falha_em:
+                raise TimeoutError(f"timeout conectando em {HOST} como {USER}")
+            return linhas_iss()
         if tabela == self.falha_em:
             raise TimeoutError(f"timeout conectando em {HOST} como {USER}")
         if (self.sistema, tabela) not in self.o.tabelas():
             return []
         return self.o.ler(self.sistema, tabela, 100, politica.colunas_select(tabela))
+
+
+def _cpf(base9: int) -> str:
+    from app.identity.cpf import digitos_verificadores
+    b = f"{base9:09d}"
+    return b + digitos_verificadores(b)
+
+
+def linhas_iss():
+    """Munícipes sintéticos: 2 F válidos (um duplicado), 1 J sem DV válido, 1 R."""
+    a, b = _cpf(111222333), _cpf(444555666)
+    base = {"Nome_Mae": "MAE SINTETICA", "Data_Nascimento": "1980-01-01", "Pis_Pasep": None}
+    return [{**base, "Tipo_Pessoa": "F", "CPF": a, "Documento_SoNumeros": a, "Nome": "FULANO A",
+             "Data_Alteracao": "2026-01-01T10:00:00"},
+            {**base, "Tipo_Pessoa": "F", "CPF": a, "Documento_SoNumeros": a, "Nome": "FULANO A",
+             "Data_Alteracao": "2026-02-01T10:00:00"},
+            {**base, "Tipo_Pessoa": "F", "CPF": b, "Documento_SoNumeros": b, "Nome": "FULANA B",
+             "Data_Alteracao": "2026-01-01T10:00:00"},
+            {**base, "Tipo_Pessoa": "R", "CPF": "00000000000", "Documento_SoNumeros": "00000000000",
+             "Nome": "TIPO R", "Data_Alteracao": "2026-01-01T10:00:00"}]
 
 
 @pytest.fixture
@@ -135,14 +160,11 @@ def test_amostra_concorrente_409_por_lock(client, tokens, leitor, db):
         outra.close()
 
 
-def test_iss_sem_mapeamento_409(client, tokens, leitor):
-    assert client.post("/api/conectores/iss/amostra", headers=tokens["admin"]).status_code == 409
-
-
 def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
     assert client.post("/api/conectores/iss/completa", headers=tokens["operador"]).status_code == 403
-    r = client.post("/api/conectores/iss/completa", headers=tokens["admin"])
-    assert r.status_code == 409
+    with pytest.MonkeyPatch.context() as mp:  # sem amostra reconciliada -> 409
+        mp.setattr(cc, "amostra_reconciliada", lambda db, sistema: None)
+        assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 409
     assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
     assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 501
 
@@ -206,3 +228,40 @@ def test_padrao_do_app_env_e_prod(monkeypatch):
     from app.core.config import Settings
     monkeypatch.delenv("APP_ENV", raising=False)
     assert Settings(_env_file=None).app_env == "prod"
+
+
+# ---------- ISS (após o merge do #6): mesma rota, política do Munícipe ----------
+def test_iss_amostra_usa_politica_do_municipe(client, tokens, leitor, db):
+    from app.models.camadas import Municipe
+    assert client.post("/api/conectores/iss/amostra", headers=tokens["operador"]).status_code == 403
+    r = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    ex = db.get(Execucao, r.json()["id"])
+    assert ex.tipo == cc.TIPO_AMOSTRA_ISS and ex.status in ("sucesso", "sem_novidades"), ex.mensagem
+    assert ex.lidos == 4 and ex.duplicados == 1 and ex.pendentes == 1
+    n = db.scalar(select(func.count()).select_from(Municipe))
+    r2 = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Municipe)) == n and r2.json()["novos"] == 0
+    assert client.post("/api/conectores/iss/completa", headers=tokens["admin"]).status_code == 501
+    logs = " ".join(x.mensagem for x in db.scalars(select(Log).where(Log.execucao_id == ex.id)))
+    assert "fallback" in logs and HOST not in logs and USER not in logs and PWD not in logs
+
+
+def test_amostra_reconciliada_exige_contagens(db):
+    assert cc.amostra_reconciliada(db, "NENHUM") is None
+    db.add(Execucao(tipo=cc.TIPO_AMOSTRA, sistema="NENHUM", status="sucesso", usuario="t@aion.local",
+                    lidos=5, novos=1, atualizados=0, ignorados=0))
+    db.commit()
+    assert cc.amostra_reconciliada(db, "NENHUM") is None  # 5 != 1: não reconcilia
+
+
+def test_iss_falha_sem_vazar_credencial(client, tokens, leitor, db):
+    leitor["falha_em"] = "Municipes"
+    r = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
+    db.expire_all()
+    ex = db.get(Execucao, r.json()["id"])
+    assert ex.status == "falha" and ex.finalizado_em is not None
+    for t in (r.text, ex.mensagem):
+        assert HOST not in t and USER not in t and PWD not in t
