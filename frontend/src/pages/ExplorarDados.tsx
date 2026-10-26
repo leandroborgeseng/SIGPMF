@@ -15,6 +15,7 @@ const MSG_ERRO = 'Não foi possível carregar os dados.'
 const MSG_FILTRO_LGPD = 'Filtro disponível só para o perfil LGPD'
 type Aba = 'perfil' | 'amostra' | 'pendencias' | 'origem'
 const ROTULO_PEND: Record<string, string> = { motivo: 'Motivo', tabela: 'Tabela', chave: 'Chave', data_carga: 'Data da carga' }
+const ROTULO_AMOSTRA: Record<string, string> = { quarentena: 'Quarentena' }
 const fmt = (v: unknown) => formata(v, dataBR, dataHoraBR)
 
 /** Hook de carga com estado de erro e "Tentar de novo" que refaz a MESMA chamada (UX-E7). */
@@ -85,7 +86,10 @@ function Uuid({ v }: { v: string }) {
   )
 }
 
+const OCULTO = '••• (oculto)'
+const ROTULO_QUARENTENA: Record<string, string> = { chave_nula: 'Chave nula na origem' }
 function Valor({ v }: { v: unknown }) {
+  if (v === OCULTO) return <span className="mascara">•••<span className="sr-only"> oculto</span></span>
   if (typeof v === 'string' && UUID.test(v)) return <Uuid v={v} />
   return <>{fmt(v)}</>
 }
@@ -258,7 +262,7 @@ function CamadaEscolha({ conectores, conector, setConector, camada, setCamada, t
       {atual.carregando && <Esqueleto linhas={5} texto="Carregando tabelas…" />}
       {atual.dados && (
         <>
-          <FaixaProcessando e={atual.dados.estado} />
+          {/* UX: o aviso "Processando… etapa N de 3" fica só no funil, não repetido na camada */}
           {(atual.dados.vazia || !info || info.linhas === 0) && <p className="vazio">Esta camada ainda não foi processada para esta tabela.</p>}
           {camada === 'prata' && escolhida && (atual.dados.vazia || !info || info.linhas === 0) && (
             <div className="detalhe">{children(escolhida)}</div>  /* Pendências (ex.: quarentena CC9) existem antes da prata */
@@ -329,8 +333,10 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
   }, [revelados])
 
   const sens = new Set(am?.colunas_sensiveis ?? [])
+  // P1: na bronze (sem catálogo) qualquer filtro além de id é só do perfil LGPD, com motivo
+  const restrito = (c: string) => sens.has(c) || (camada === 'bronze' && !pendencias && c !== 'id')
   const colsFiltro = pendencias ? ['motivo'] : (am?.colunas ?? []).filter((c) => !['extraido_em', 'quarentena'].includes(c)).slice(0, 6)
-  const temSensivel = Object.entries(rascunho).some(([k, v]) => v && sens.has(k))
+  const temSensivel = Object.entries(rascunho).some(([k, v]) => v && restrito(k))
   const aplicar = (e: React.FormEvent) => {
     e.preventDefault()
     if (temSensivel && motivoFiltro.trim().length < MOTIVO_MIN) return
@@ -341,9 +347,11 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
 
   return (
     <div>
+      {!lgpd && !pendencias && colsFiltro.some((c) => restrito(c)) && (
+        <p id="f-lgpd-aviso" className="dica-lgpd aviso-filtros"><span aria-hidden="true">🔒 </span>{MSG_FILTRO_LGPD}</p>)}
       <form onSubmit={aplicar} className="ex-filtros" aria-label="Filtros">
         {colsFiltro.map((c) => {
-          const bloqueado = sens.has(c) && !lgpd && !pendencias
+          const bloqueado = restrito(c) && !lgpd && !pendencias
           if (pendencias && c === 'motivo') {
             return (
               <div key={c} className="pmf-campo">
@@ -360,9 +368,8 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
               {/* campo bloqueado: readOnly + aria-disabled para continuar focável e anunciar o motivo (aria-describedby) */}
               <input id={`f-${c}`} value={rascunho[c] ?? ''} readOnly={bloqueado} aria-disabled={bloqueado || undefined}
                 className={bloqueado ? 'bloqueado' : undefined} title={bloqueado ? MSG_FILTRO_LGPD : 'Busca por valor exato'}
-                aria-describedby={bloqueado ? `f-${c}-lgpd` : undefined}
+                aria-describedby={bloqueado ? 'f-lgpd-aviso' : undefined}
                 onChange={(e) => { if (!bloqueado) setRascunho({ ...rascunho, [c]: e.target.value }) }} placeholder="valor exato" autoComplete="off" />
-              {bloqueado && <small id={`f-${c}-lgpd`} className="dica-lgpd">{MSG_FILTRO_LGPD}</small>}
             </div>)
         })}
         {lgpd && temSensivel && (
@@ -380,7 +387,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
           <div className="tabela-rolagem">
             <table>
               <caption>{pendencias ? 'Pendências' : 'Amostra'} · Página {am.pagina}</caption>
-              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{pendencias ? (ROTULO_PEND[c] ?? c) : c}</th>)}</tr></thead>
+              <thead><tr>{am.colunas.map((c) => <th key={c} scope="col">{pendencias ? (ROTULO_PEND[c] ?? c) : (ROTULO_AMOSTRA[c] ?? c)}</th>)}</tr></thead>
               <tbody>
                 {am.linhas.length === 0 && <tr><td colSpan={am.colunas.length}>Nenhuma linha encontrada.</td></tr>}
                 {am.linhas.map((l, i) => {
@@ -389,7 +396,7 @@ function AmostraTabela({ conector, camada, tabela, lgpd, pendencias = false, fil
                     <tr key={String(id ?? i) + i}>{am.colunas.map((c) => {
                       const k = chave(id, c)
                       const rv = revelados[k]
-                      const v = rv ? rv.v : l[c]
+                      const v = rv ? rv.v : (c === 'quarentena' && !pendencias && typeof l[c] === 'string' ? (ROTULO_QUARENTENA[l[c] as string] ?? l[c]) : l[c])
                       return (
                         <td key={c} className={typeof v === 'number' ? 'num' : undefined}>
                           {c === 'motivo' && pendencias ? <span title={String(l.motivo_codigo ?? '')}>{String(v)}</span>

@@ -80,3 +80,36 @@ BRONZE_AMOSTRA_CHAVES = 2000  # linhas lidas para descobrir as chaves do JSON
 MAX_LINHAS = 50
 # UX/perf: acima disso o perfil (preenchido %, distintos) é calculado numa amostra limitada e marcado como estimativa
 PERFIL_AMOSTRA = 10000
+
+# P1 (ressalva 1 do Tester no #16): na bronze não há catálogo de colunas. Só as colunas desta lista FECHADA, por
+# conector e tabela, aparecem em claro para o admin comum; qualquer outra chave do JSON (inclusive nomes fora do
+# padrão, como NU_INSCR ou Ident) vem mascarada e só o admin_lgpd revela. Subconjunto não pessoal das colunas da
+# política de leitura de cada conector (conferido em teste). Decisão do TL: Matricula (Saúde), UUID e
+# Codigo_Cadastro/Codigo_Cadastro_Domiciliar/Codigo_Domicilio_Familia (e-SUS, risco de junção) identificam a pessoa/domicílio e ficam FORA (mascarados para o admin comum).
+BRONZE_COLUNAS_LIVRES: dict[str, dict[str, frozenset[str]]] = {
+    "SAUDE": {
+        "pacientes": frozenset({"Sexo", "Normalizado", "Dt_Cad", "dt_ultimaatual"}),
+        "Pacientes_CNS": frozenset({"Data_Atribuicao", "Tipo_Cartao"}),
+        "ESUS_Cadastro_Domiciliar": frozenset({"Nu_CNES_Unidade_Saude", "Nu_INE", "Data_Cadastro"}),
+        "ESUS_Cadastro_Domiciliar_Familia": frozenset({"Data_Mudanca"}),
+        "ESUS_Paciente_Inconsistencia": frozenset({"Id", "Data_Origem", "Status_Resolvido"}),
+        "Medicos": frozenset({"Codigo", "Tp_Conselho", "Nr_Conselho", "UF_Conselho", "Ativo", "Dt_Inclusao", "Dt_UltimaAtual"}),
+        "ProfissionaisCNES": frozenset({"id", "Codigo", "DataInclusao", "CNES", "INE", "CBO", "Ativo"}),
+    },
+    "CEMITERIO": {
+        "Obitos": frozenset({"COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA", "DT_SEPULTADO",
+                             "Data_Inclusao", "Data_Ultima_Alteracao"}),
+        "Titulares": frozenset({"Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia", "Ativo", "Inclusao"}),
+        "Pessoas_Autorizadas": frozenset({"Cod_Cemiterio", "Quadra", "Sepultura", "Sequencia", "Parentesco", "Inclusao"}),
+        "Leilao": frozenset({"Cod_Cemiterio", "Quadra", "Sepultura", "DataVenda", "DataLiberacao"}),
+        "CAD_CEMITE": frozenset({"COD_CEMITERIO", "QUADRA", "SEPULTURA"}),
+        "USUARIO_NOVO": frozenset({"COD_CEMITERIO", "QUADRA", "SEPULTURA", "SEQUENCIA", "PARENTESCO"}),
+        "Ocorrencia_Sepultura": frozenset({"Cod_Cemiterio", "Quadra", "Sepultura", "Seq_Ocorrencia", "Dt_Inclusao"}),
+        "Cemiterio": frozenset({"codcemite"}),
+    },
+    "ISS": {"Municipes": frozenset({"Tipo_Pessoa", "Data_Alteracao"})},
+}
+
+
+def bronze_livres(conector: str, tabela: str) -> frozenset[str]:
+    return BRONZE_COLUNAS_LIVRES.get(conector, {}).get(tabela, frozenset())

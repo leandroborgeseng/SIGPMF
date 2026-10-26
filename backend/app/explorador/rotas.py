@@ -95,12 +95,14 @@ def perfil(d: TabelaIn, req: Request, u: Usuario = Depends(acesso_explorador), d
 def amostra(d: AmostraIn, req: Request, u: Usuario = Depends(acesso_explorador), db: Session = Depends(get_db)):
     c = sv.valida_conector(db, d.conector)
     spec_ = sv.cat.POR_CAMADA.get(d.camada, {}).get(d.tabela) if d.camada != "bronze" else None
-    sens = [] if d.somente_pendencias else sv.colunas_sensiveis_filtradas(d.filtros, spec_)
-    if sens:  # filtro em coluna pessoal: só admin_lgpd, com motivo, auditado (decisão TL)
+    pend = d.somente_pendencias and d.camada == "prata"  # pendências só existem na prata; na bronze a flag não libera nada
+    sens = [] if pend else sv.colunas_sensiveis_filtradas(d.filtros, spec_, bronze=d.camada == "bronze")
+    if sens:  # filtro em coluna pessoal (ou qualquer filtro além de id na bronze): só admin_lgpd, com motivo, auditado
         alvo = f"{d.camada}:{d.tabela}:{','.join(sens)}"
         if u.perfil != PERFIL_REVELA:
             audita(db, u.email, "explorar_filtro_pessoal_negado", alvo, {"colunas": sens}, _ip(req))
-            raise HTTPException(403, "Filtro em coluna pessoal disponível só para o perfil LGPD")
+            raise HTTPException(403, "Filtro na bronze (além de id) ou em coluna pessoal disponível só para o perfil LGPD"
+                                if d.camada == "bronze" else "Filtro em coluna pessoal disponível só para o perfil LGPD")
         motivo = (d.motivo_filtro or "").strip()
         if len(motivo) < get_settings().revelar_motivo_min:
             raise HTTPException(400, f"Informe o motivo do filtro (mínimo {get_settings().revelar_motivo_min} caracteres).")
