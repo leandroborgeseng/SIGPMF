@@ -54,6 +54,16 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   const [toast, setToast] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [erroPoll, setErroPoll] = useState('')
+  const [confRetomar, setConfRetomar] = useState(false)
+  const [retomando, setRetomando] = useState(false)
+  const cancelarRetomar = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!confRetomar) return
+    cancelarRetomar.current?.focus()
+    const f = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfRetomar(false) }
+    document.addEventListener('keydown', f)
+    return () => document.removeEventListener('keydown', f)
+  }, [confRetomar])
   const [quar, setQuar] = useState<LinhaQuarentena[] | null>(null)
   const [quarErro, setQuarErro] = useState('')
   const verQuarentena = async () => {
@@ -129,14 +139,14 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
     }
   }
   const retomarCamadas = async () => {
-    setErro(''); setEnviando(true)
+    setConfRetomar(false); setErro(''); setEnviando(true); setRetomando(true)
     try {
       setSit(await api<Situacao>(`/conectores/${conector}/completa/retomar-camadas`, { method: 'POST' }))
       anterior.current = 'em_andamento'
     } catch (e) {
       setErro(e instanceof ApiErro ? e.message : 'Não foi possível retomar a prata e o ouro.')
     } finally {
-      setEnviando(false)
+      setEnviando(false); setRetomando(false)
     }
   }
   const cancelar = async () => {
@@ -162,6 +172,18 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           </button>
           {!ok && porque && <span id={idMotivo} className="sutil motivo-desabilitado"> {porque}</span>}
         </span>
+      )}
+
+      {confRetomar && (
+        <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfRetomar(false) }}>
+          <div role="dialog" aria-modal="true" aria-labelledby={`t-rc-${conector}`} className="dialogo">
+            <h3 id={`t-rc-${conector}`}>Reprocessar prata e ouro a partir da bronze já carregada? A origem não será consultada.</h3>
+            <div className="acoes">
+              <button ref={cancelarRetomar} className="btn secundario" onClick={() => setConfRetomar(false)}>Cancelar</button>
+              <button className="btn" onClick={retomarCamadas}>Reprocessar prata e ouro</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modal && (
@@ -200,7 +222,9 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
         <div className="aviso-ambar" role="status">
           <p><strong>Carga interrompida</strong>{ex.etapa_nome ? ` durante: ${ex.etapa_nome}` : ''}. {ex.mensagem}</p>
           {ex.pode_retomar_camadas && (
-            <button className="btn" onClick={retomarCamadas} disabled={enviando}>Retomar prata e ouro</button>
+            <button className="btn" onClick={() => setConfRetomar(true)} disabled={enviando || retomando}>
+              {retomando ? 'Retomando…' : 'Retomar prata e ouro'}
+            </button>
           )}
           <button className="btn outlined" onClick={abrir} disabled={!ok}>Iniciar carga de novo</button>
         </div>

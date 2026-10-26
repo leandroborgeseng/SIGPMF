@@ -261,9 +261,46 @@ describe('indicador de progresso (CC7)', () => {
     const c = await cartao()
     expect(await within(c).findByText('Carga interrompida')).toBeInTheDocument()
     await userEvent.click(within(c).getByRole('button', { name: 'Retomar prata e ouro' }))
+    const d = await screen.findByRole('dialog', { name: 'Reprocessar prata e ouro a partir da bronze já carregada? A origem não será consultada.' })
+    await userEvent.click(within(d).getByRole('button', { name: 'Reprocessar prata e ouro' }))
     expect(await within(c).findByRole('status', { name: 'Andamento da carga completa de Saúde' })).toHaveTextContent('Prata: 5.000 de 921.378')
     const posts = f.mock.calls.filter(([, i]) => i?.method === 'POST').map(([u]) => String(u))
     expect(posts).toEqual([expect.stringMatching(/\/conectores\/saude\/completa\/retomar-camadas$/)])
+  })
+})
+
+describe('retomar prata e ouro (UX Designer)', () => {
+  const INT = { ...EX, status: 'interrompida', status_texto: 'Carga interrompida', finalizado_em: '2026-10-26T18:00:00Z',
+    mensagem: 'Carga interrompida: o servidor parou durante a carga.', pode_retomar_camadas: true, etapa: 'prata', etapa_nome: 'Tratando (prata)' }
+
+  it('abre a confirmação; Cancelar não dispara nada', async () => {
+    const f = mock((u) => [200, u.endsWith('/conectores') ? resp({}) : sit({ execucao: INT })])
+    const { container } = montar('admin')
+    const c = await cartao()
+    await userEvent.click(await within(c).findByRole('button', { name: 'Retomar prata e ouro' }))
+    const d = await screen.findByRole('dialog', { name: 'Reprocessar prata e ouro a partir da bronze já carregada? A origem não será consultada.' })
+    expect(within(d).getByRole('button', { name: 'Cancelar' })).toHaveFocus()
+    expect((await axe.run(container, { runOnly: ['wcag2a', 'wcag2aa'] })).violations).toEqual([])
+    await userEvent.click(within(d).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(f.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false)
+  })
+
+  it('enquanto o pedido roda, o botão fica desabilitado com "Retomando…"', async () => {
+    let solta: (v: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith('/retomar-camadas') && init?.method === 'POST') return new Promise<Response>((r) => { solta = r })
+      const corpo = url.endsWith('/conectores') ? resp({}) : sit({ execucao: INT })
+      return Promise.resolve(new Response(JSON.stringify(corpo), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    }))
+    montar('admin')
+    const c = await cartao()
+    await userEvent.click(await within(c).findByRole('button', { name: 'Retomar prata e ouro' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reprocessar prata e ouro' }))
+    const b = await within(c).findByRole('button', { name: 'Retomando…' })
+    expect(b).toBeDisabled()
+    await act(async () => { solta(new Response(JSON.stringify(sit({ execucao: { ...INT, status: 'em_andamento' } })), { status: 202, headers: { 'Content-Type': 'application/json' } })) })
+    await waitFor(() => expect(within(c).queryByRole('button', { name: 'Retomando…' })).toBeNull())
   })
 })
 
