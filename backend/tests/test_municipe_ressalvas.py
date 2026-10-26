@@ -215,7 +215,8 @@ def test_cc9_amostra_nao_mostra_divergente(client, db):
     assert ex.status != "falha", ex.mensagem
     assert "status=amostra" in ex.mensagem and "divergente" not in ex.mensagem
     r = reconciliacao(db, 366166, amostra=True)
-    assert r["status"] == "amostra" and r["ok"] is None
+    assert r["status"] == "amostra" and r["ok"] is None and r["cor"] == "cinza"
+    assert r["rotulo"] == "Amostra · reconciliação só na carga completa" and r["rotulo"] in ex.mensagem
     # carga completa mantém a igualdade exata
     assert reconciliacao(db, 366166)["status"] == "divergente"
     b = _rec(db)

@@ -90,10 +90,14 @@ def reconciliacao(db: Session, total_origem: int | None, amostra: bool = False) 
         "SELECT COUNT(*) FILTER (WHERE quarentena IS NULL), COUNT(*) FILTER (WHERE quarentena IS NOT NULL) "
         "FROM bronze.registros WHERE sistema_origem = 'ISS' AND tabela = :t"), {"t": TABELA}).one()
     if amostra:
-        return {"origem": total_origem, "bronze": int(b), "quarentena": int(q), "ok": None, "status": "amostra"}
+        return {"origem": total_origem, "bronze": int(b), "quarentena": int(q), "ok": None, "status": "amostra",
+                "rotulo": ROTULO_AMOSTRA, "cor": "cinza"}  # neutro: nunca vermelho/"divergente"
     ok = total_origem is not None and b + q == total_origem
     return {"origem": total_origem, "bronze": int(b), "quarentena": int(q), "ok": ok,
             "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
+
+
+ROTULO_AMOSTRA = "Amostra · reconciliação só na carga completa"
 
 
 def texto_quarentena(n: int) -> str:
@@ -213,7 +217,8 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         if total_origem is not None and bronze:
             rec = reconciliacao(db, total_origem, amostra=ex.tipo == "carga_municipe_amostra")
             ex.mensagem += (f"; reconciliacao origem={rec['origem']} bronze={rec['bronze']} "
-                            f"quarentena={rec['quarentena']} status={rec['status']}")
+                            f"quarentena={rec['quarentena']} status={rec['status']}"
+                            + (f" ({rec['rotulo']})" if rec.get("rotulo") else ""))
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=ex.mensagem))
     except Exception as exc:  # noqa: BLE001
         db.rollback()
