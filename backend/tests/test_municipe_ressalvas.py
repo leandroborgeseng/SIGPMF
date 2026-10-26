@@ -146,7 +146,7 @@ def test_cc9_quarentena_reconcilia_e_ok_com_pendencias(client, db):
     rec = reconciliacao(db, base + 201)
     assert rec["quarentena"] - a["quarentena"] == 2 and rec["bronze"] - a["bronze"] == 199
     assert rec["ok"] and rec["status"] == "ok_com_pendencias"
-    assert "status=ok_com_pendencias" in ex.mensagem
+    assert "status=amostra" in ex.mensagem and "divergente" not in ex.mensagem  # amostra: sem conferência exata
     q = db.execute(text("SELECT quarentena, quarentena_campos FROM bronze.registros WHERE sistema_origem='ISS' "
                         "AND quarentena IS NOT NULL AND dados->>'Nome' LIKE 'CC9 %'")).all()
     assert len(q) == 2 and all(m == "chave_nula" and c == ["Documento_SoNumeros"] for m, c in q)
@@ -205,3 +205,18 @@ def test_cc9_ler_nulos_no_conector(monkeypatch):
     monkeypatch.setattr("app.core.sql_guard.executa_somente_leitura",
                         lambda *a, **k: [(100, 5)])  # 5% > 1%: não lê as linhas
     assert cm.ler_nulos(c) == (100, 5, [])
+
+
+def test_cc9_amostra_nao_mostra_divergente(client, db):
+    from app.services.carga_municipe import executar_carga_municipe, reconciliacao
+    a = _rec(db)
+    ex = executar_carga_municipe(db, "operador@aion.local", linhas=[_sonum(cpf(730000001), nome="AMOSTRA 1")],
+                                 total_origem=366166, total_nulos=0, bronze=True)  # amostra << origem
+    assert ex.status != "falha", ex.mensagem
+    assert "status=amostra" in ex.mensagem and "divergente" not in ex.mensagem
+    r = reconciliacao(db, 366166, amostra=True)
+    assert r["status"] == "amostra" and r["ok"] is None
+    # carga completa mantém a igualdade exata
+    assert reconciliacao(db, 366166)["status"] == "divergente"
+    b = _rec(db)
+    assert reconciliacao(db, b["bronze"] + b["quarentena"])["ok"] and b["bronze"] == a["bronze"] + 1

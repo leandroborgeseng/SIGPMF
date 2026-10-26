@@ -82,12 +82,15 @@ def _chaves_bronze(linhas: list[dict]) -> list[str]:
     return out
 
 
-def reconciliacao(db: Session, total_origem: int | None) -> dict:
-    """CC9: bronze_ok + quarentena == COUNT(*) da origem (exato). Pendentes > 0 -> "ok_com_pendencias", nunca "ok"."""
+def reconciliacao(db: Session, total_origem: int | None, amostra: bool = False) -> dict:
+    """CC9: bronze_ok + quarentena == COUNT(*) da origem (exato). Pendentes > 0 -> "ok_com_pendencias", nunca "ok".
+    Amostra (TOP AMOSTRA_LIMITE): a igualdade com a origem não se aplica -> status "amostra", ok=None, sem conferência."""
     from sqlalchemy import text
     b, q = db.execute(text(
         "SELECT COUNT(*) FILTER (WHERE quarentena IS NULL), COUNT(*) FILTER (WHERE quarentena IS NOT NULL) "
         "FROM bronze.registros WHERE sistema_origem = 'ISS' AND tabela = :t"), {"t": TABELA}).one()
+    if amostra:
+        return {"origem": total_origem, "bronze": int(b), "quarentena": int(q), "ok": None, "status": "amostra"}
     ok = total_origem is not None and b + q == total_origem
     return {"origem": total_origem, "bronze": int(b), "quarentena": int(q), "ok": ok,
             "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
@@ -208,7 +211,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         if quar:
             ex.mensagem += f"; {texto_quarentena(len(quar))}"
         if total_origem is not None and bronze:
-            rec = reconciliacao(db, total_origem)
+            rec = reconciliacao(db, total_origem, amostra=ex.tipo == "carga_municipe_amostra")
             ex.mensagem += (f"; reconciliacao origem={rec['origem']} bronze={rec['bronze']} "
                             f"quarentena={rec['quarentena']} status={rec['status']}")
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=ex.mensagem))
