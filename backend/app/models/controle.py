@@ -109,3 +109,20 @@ class ConfirmacaoObito(Base):
     usuario: Mapped[str] = mapped_column(String(200))
     motivo: Mapped[str] = mapped_column(Text)
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BaseCatalogo(Base):
+    """Bases do servidor de origem examinadas pelo DBA (seed em app/catalogo/bases.py, migração 0005)."""
+    __tablename__ = "bases_catalogo"
+    __table_args__ = S
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(100), unique=True)
+    grupo: Mapped[str] = mapped_column(String(30))
+    triagem: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    prioridade: Mapped[int | None] = mapped_column(Integer)
+    sistemas: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    conjunto: Mapped[str | None] = mapped_column(String(50))
+    descricao: Mapped[str | None] = mapped_column(Text)
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

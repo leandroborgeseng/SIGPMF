@@ -1,4 +1,4 @@
-
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -6,7 +6,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CargaIn, ConfirmaObitoIn, LoginIn, RevelarIn, SistemaIn, TabelaIn, UsuarioIn
+from app.api.schemas import CargaIn, ConfirmaObitoIn, ExecutarBaseIn, LoginIn, RevelarIn, SistemaIn, TabelaIn, UsuarioIn
 from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
 from app.connectors.sqlserver.politicas import TabelaRecusada, politica
 from app.core.audit import audita
@@ -29,8 +29,9 @@ from app.models.camadas import (
     RegistroBronze,
     Vinculo,
 )
-from app.models.controle import Auditoria, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
 from app.services.carga_municipe import executar_carga_municipe
+from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
 from app.services.pipeline import executar_demo
 from app.silver import processamento
 
@@ -153,6 +154,7 @@ def _404():
 def conectores(db: Session = Depends(get_db)):
     """Um conector por sistema do catálogo, com status e última execução."""
     cfg = ConfigSqlServer.do_ambiente(get_settings())
+    bases = indicadores(db)
     execs = list(db.scalars(select(Execucao).order_by(Execucao.id.desc()).limit(50)))
     lista = []
     for s, tabs in [(x["codigo"], x) for x in lista_sistemas(db)]:
@@ -161,7 +163,8 @@ def conectores(db: Session = Depends(get_db)):
         lista.append({**tabs, "status": status, "ultima_execucao": _exec(ult) if ult else None,
                       "credencial": "Configurada via variável de ambiente" if cfg.resumo_publico()["configurado"] else "Não configurada",
                       "amostra_limite": cfg.amostra_limite})
-    return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]]}
+    return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]], "bases": bases,
+            "totais": totais(bases), "carga_habilitada": carga_habilitada()}
 
 
 @api.post("/conectores/{conector}/testar")
@@ -173,13 +176,71 @@ def testar(conector: str, req: Request, u: Usuario = Depends(CARGA), db: Session
     return r
 
 
+AMBIENTES_CARGA = ("dev", "test")  # allowlist explícita: APP_ENV ausente (padrão "prod") ou qualquer outro valor não carregam
+
+
+def carga_habilitada() -> bool:
+    return get_settings().app_env in AMBIENTES_CARGA
+
+
 @api.post("/conectores/demo/executar")
 def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
+    if not carga_habilitada():  # mesma trava da carga por base: 404 fora de dev/test
+        _404()
     completa = bool(dados and dados.completa)
     if completa and u.perfil != "admin":
         audita(db, u.email, "carga_completa_negada", "conector:demo", ip=_ip(req))
         raise HTTPException(403, "Carga acima do limite de amostra exige perfil admin")
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
+
+
+@api.post("/conectores/{base_id:int}/executar")
+def executa_base(base_id: int, req: Request, dados: ExecutarBaseIn | None = None, u: Usuario = Depends(usuario_atual),
+                 db: Session = Depends(get_db)):
+    """Puxar e processar uma base do catálogo (só admin, sempre auditado).
+    amostra: limite AMOSTRA_LIMITE; completa: só depois de uma amostra bem-sucedida; reprocessar: refaz prata/ouro
+    a partir do bronze, sem ler a origem. Reusa executar_demo (OrigemMock sintética nesta entrega)."""
+    if not carga_habilitada():  # carga real em preparação: rota inexistente fora de dev/test
+        _404()
+    modo = dados.modo if dados else "amostra"
+    if u.perfil != "admin":  # 403 de perfil também fica auditado
+        audita(db, u.email, "executar_conector_negado", f"base_id:{base_id}", {"modo": modo, "motivo": "perfil",
+                                                                              "perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    b = db.get(BaseCatalogo, base_id) or _404()
+    motivo = bloqueio(b)
+    if motivo is not None:
+        audita(db, u.email, "executar_conector_negado", f"base:{b.nome}", {"status": b.status, "modo": modo, "motivo": motivo},
+               _ip(req))
+        raise HTTPException(422 if b.status == "excluido" else 409, f"{b.nome}: {motivo}.")
+    execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
+    if modo == "completa":
+        a = ultima_execucao(execs, b, TIPOS_AMOSTRA)
+        if a is None or a.status not in ("sucesso", "sem_novidades"):
+            audita(db, u.email, "executar_conector_negado", f"base:{b.nome}", {"modo": modo, "motivo": "sem amostra"}, _ip(req))
+            raise HTTPException(409, "Carga completa libera depois de uma amostra concluída.")
+    audita(db, u.email, "executar_conector", f"base:{b.nome}", {"conjunto": b.conjunto, "modo": modo}, _ip(req))
+    if modo == "reprocessar":
+        return _exec(_reprocessa(db, u.email, b.conjunto.upper()))
+    return _exec(executar_demo(db, u.email, completa=modo == "completa", conjunto=b.conjunto))
+
+
+def _reprocessa(db: Session, usuario: str, sistema: str) -> Execucao:
+    ex = Execucao(tipo="reprocessamento", sistema=sistema, status="em_andamento", usuario=usuario)
+    db.add(ex)
+    db.commit()
+    try:
+        sres = processamento.reconstruir(db)
+        gres = visao.reconstruir(db)
+        ex.status, ex.mensagem = "sucesso", f"silver={sres} gold={gres}"
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        ex = db.get(Execucao, ex.id)
+        ex.status, ex.mensagem = "falha", f"Falha: {type(exc).__name__}"
+    ex.finalizado_em = datetime.now(UTC)
+    audita(db, usuario, "reprocessamento_executado", f"execucao:{ex.id}", {"status": ex.status}, commit=False)
+    db.commit()
+    return ex
 
 
 @api.post("/conectores/iss/municipes/executar")

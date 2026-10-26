@@ -3,7 +3,7 @@
 ## Variáveis (`.env`, a partir do `.env.example`)
 | Variável | Uso |
 |---|---|
-| APP_ENV | `dev`/`prod`. Docs só em dev |
+| APP_ENV | `dev`/`test`/`prod`. **Ausente = `prod`.** Docs só em dev. Carga pela tela (`POST /api/conectores/{id}/executar` e `POST /api/conectores/demo/executar`) só com `dev` ou `test`; fora disso as rotas respondem 404 |
 | DOCS_HABILITADO | `true` liga `/api/docs` (só com APP_ENV=dev) |
 | HTTP_PORT | porta publicada do frontend |
 | POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD | banco interno (sem porta no host) |

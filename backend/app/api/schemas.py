@@ -50,3 +50,7 @@ class CargaIn(BaseModel):
 class ConfirmaObitoIn(BaseModel):
     cidadao_id: str = Field(min_length=1, max_length=36)
     motivo: str | None = None
+
+
+class ExecutarBaseIn(BaseModel):
+    modo: str = Field("amostra", pattern=r"^(amostra|completa|reprocessar)$")
