@@ -13,6 +13,18 @@ from app.ingestion.origem_mock import OrigemMock
 from app.models.controle import Execucao, Log, Sistema, TabelaCatalogo
 from app.silver import processamento
 
+# Carga sintética (demo/OrigemMock) só com APP_ENV exatamente "dev" ou "test" (alinhado ao #7).
+# "development", vazio, ausente (padrão do código = "prod"), prod etc. -> bloqueada.
+AMBIENTES_SINTETICOS = frozenset({"dev", "test"})
+
+
+class CargaSinteticaBloqueada(PermissionError):
+    pass
+
+
+def carga_sintetica_permitida() -> bool:
+    return get_settings().app_env in AMBIENTES_SINTETICOS
+
 
 def garante_catalogo_demo(db: Session, sistemas: set[str] | None = None) -> None:
     for (codigo, tabela), m in MAPEAMENTOS.items():
@@ -36,6 +48,9 @@ def executar_demo(db: Session, usuario: str, completa: bool = False, origem: Ori
     """Carga de demonstração. Padrão: amostra (AMOSTRA_LIMITE, 100 por tabela). `completa` só por admin, auditada.
     Sistemas com política (SAUDE, CEMITERIO): tabela fora da lista é recusada e auditada; só colunas permitidas."""
     s = get_settings()
+    if not carga_sintetica_permitida():  # vale também para o CLI (app/demo.py)
+        audita(db, usuario, "carga_demo_negada", "conector:demo", {"ambiente": s.app_env})
+        raise CargaSinteticaBloqueada("Carga sintética bloqueada fora de APP_ENV=dev/test")
     origem = origem or OrigemMock(conjunto=conjunto)
     garante_catalogo_demo(db, {sis for sis, _ in origem.tabelas()})
     limite = None if completa else s.amostra_limite

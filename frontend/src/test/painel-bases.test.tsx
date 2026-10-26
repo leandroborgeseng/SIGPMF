@@ -12,9 +12,9 @@ const Z = { bronze: 0, prata: 0, ouro: 0, pendentes: 0 }
 const base = (o: object) => ({ descricao: null, grupo: 'painel_cidadao', triagem: 'schema', prioridade: null, tem_conector: false, pode_carregar: false, motivo_bloqueio: 'Conector ainda não implementado', tem_amostra: false, com_erro: false, contagens: Z, ultima_carga: null, ...o })
 const ULT = { id: 9, tipo: 'carga_demo_amostra', status: 'sucesso', iniciado_em: '2026-10-26T00:30:00Z', finalizado_em: '2026-10-26T00:30:05Z', lidos: 1200, mensagem: null }
 const BASES = [
-  base({ id: 1, nome: 'Saude', status: 'implementado', prioridade: 1, tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: false, contagens: { bronze: 1200, prata: 1080, ouro: 1080, pendentes: 7 }, ultima_carga: ULT }),
+  base({ id: 1, nome: 'Saude', status: 'implementado', prioridade: 1, conector_id: 'saude', tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: false, contagens: { bronze: 1200, prata: 1080, ouro: 1080, pendentes: 7 }, ultima_carga: ULT }),
   base({ id: 2, nome: 'Cemiterio', status: 'implementado', prioridade: 2, tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: true, com_erro: true, contagens: { bronze: 300, prata: 300, ouro: 250, pendentes: 0 }, ultima_carga: { ...ULT, status: 'falha' } }),
-  base({ id: 3, nome: 'ISS', status: 'mapeado', prioridade: 3, motivo_bloqueio: 'Sem lista de colunas aprovada' }),
+  base({ id: 3, nome: 'CadastroUnico', status: 'mapeado', prioridade: 3, motivo_bloqueio: 'Sem lista de colunas aprovada' }),
   base({ id: 4, nome: 'Bibliotecario', status: 'triado', triagem: 'nome' }),
   base({ id: 5, nome: 'Senhas', status: 'excluido', grupo: 'descartavel', motivo_bloqueio: 'Base descartada na triagem' }),
 ]
@@ -45,7 +45,7 @@ describe('painel de bases', () => {
     expect(within(saude).getByText('Pronto')).toBeInTheDocument()
     expect(within(saude).getByText('1.200')).toBeInTheDocument()
     expect(within(saude).getByText(/7 sem correspondência/)).toBeInTheDocument()
-    const iss = await cartao('ISS')
+    const iss = await cartao('CadastroUnico')
     expect(within(iss).getByText('Mapeado')).toBeInTheDocument()
     expect(within(iss).getAllByText('—').length).toBe(3)
     expect(within(iss).getByText(/Pendências: —/)).toBeInTheDocument()
@@ -92,12 +92,12 @@ describe('painel de bases', () => {
     const saude = await cartao('Saude')
     expect(within(saude).getByRole('button', { name: 'Puxar carga completa de Saude' })).toBeDisabled()
     expect(within(saude).getByText(/Libera depois da conferência da amostra/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Puxar amostra de ISS' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Puxar amostra de CadastroUnico' })).toBeNull()
     await userEvent.click(within(saude).getByRole('button', { name: 'Puxar amostra de Saude' }))
     expect(await screen.findByText(/Puxar amostra de Saude concluída/)).toBeInTheDocument()
     const post = f.mock.calls.find(([, i]) => i?.method === 'POST')!
-    expect(post[0]).toBe('/api/conectores/1/executar')
-    expect(JSON.parse(String(post[1]!.body))).toEqual({ modo: 'amostra' })
+    expect(post[0]).toBe('/api/conectores/saude/amostra')  // carga real por conector (#8)
+    expect(post[1]!.body).toBeUndefined()
     const cem = await cartao('Cemiterio')
     await userEvent.click(within(cem).getByRole('button', { name: 'Reprocessar Cemiterio' }))
     const dlg = screen.getByRole('dialog')
@@ -125,18 +125,30 @@ describe('painel de bases', () => {
     expect(await screen.findByText('Nenhuma base cadastrada.')).toBeInTheDocument()
   })
 
-  it('produção: botões de carga desabilitados com "Carga real em preparação"', async () => {
+  it('produção: "Puxar amostra" (real) liberado para base Pronta; completa e reprocessar (sintéticos) travados', async () => {
     for (const flag of [false, undefined]) {
-      const f = mock(() => [200, { ...RESP, carga_habilitada: flag }])
+      const f = mock((_u, init) => (init?.method === 'POST' ? [200, { status: 'sucesso', lidos: 3, mensagem: null }] : [200, { ...RESP, carga_habilitada: flag }]))
       const { unmount } = montar('admin')
       const saude = await cartao('Saude')
-      for (const nome of ['Puxar amostra de Saude', 'Puxar carga completa de Saude', 'Reprocessar Saude'])
+      for (const nome of ['Puxar carga completa de Saude', 'Reprocessar Saude'])
         expect(within(saude).getByRole('button', { name: nome })).toBeDisabled()
       expect(within(saude).getByText(/Carga real em preparação/)).toBeInTheDocument()
-      await userEvent.click(within(saude).getByRole('button', { name: 'Puxar amostra de Saude' }))
-      expect(f.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false)
+      const amostra = within(saude).getByRole('button', { name: 'Puxar amostra de Saude' })
+      expect(amostra).toBeEnabled()
+      await userEvent.click(amostra)
+      expect(await screen.findByText(/Puxar amostra de Saude concluída/)).toBeInTheDocument()
+      const posts = f.mock.calls.filter(([, i]) => i?.method === 'POST').map(([u]) => u)
+      expect(posts).toEqual(['/api/conectores/saude/amostra'])
       unmount()
     }
+  })
+
+  it('base sem política aprovada: "Puxar amostra" desabilitado com o motivo', async () => {
+    mock(() => [200, { ...RESP, carga_habilitada: false, bases: [base({ id: 7, nome: 'IPTU', status: 'implementado', tem_conector: true, pode_carregar: false, motivo_bloqueio: 'Sem lista de colunas aprovada' })] }])
+    montar('admin')
+    const c = await cartao('IPTU')
+    expect(within(c).getByRole('button', { name: 'Puxar amostra de IPTU' })).toBeDisabled()
+    expect(within(c).getByText(/Sem lista de colunas aprovada/)).toBeInTheDocument()
   })
 
   it('produção: botão de carga demo também desabilitado', async () => {

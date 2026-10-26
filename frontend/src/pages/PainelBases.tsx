@@ -6,7 +6,7 @@ export type Contagens = { bronze: number; prata: number; ouro: number; pendentes
 export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null }
 export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
-  tem_conector: boolean; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean
+  tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
 type Modo = 'amostra' | 'completa' | 'reprocessar'
@@ -56,7 +56,11 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
   const executar = async (b: Base, modo: Modo) => {
     setConfirmar(null); setRodando(b.id); setAviso(null)
     try {
-      const r = await api<{ status: string; lidos: number; mensagem: string | null }>(`/conectores/${b.id}/executar`, { method: 'POST', body: JSON.stringify({ modo }) })
+      // Puxar amostra = carga real por conector (política de tabelas, admin), liberada também em produção.
+      // Carga completa e reprocessar seguem pela rota sintética, só em dev/test.
+      const r = modo === 'amostra'
+        ? await api<{ status: string; lidos: number; mensagem: string | null }>(`/conectores/${b.conector_id ?? b.id}/amostra`, { method: 'POST' })
+        : await api<{ status: string; lidos: number; mensagem: string | null }>(`/conectores/${b.id}/executar`, { method: 'POST', body: JSON.stringify({ modo }) })
       if (r.status === 'falha') setAviso({ texto: `Falha na carga de ${b.nome}: ${r.mensagem ?? 'erro'}.`, erro: true })
       else setAviso({ texto: `${ROTULO_MODO[modo]} de ${b.nome} concluída (${r.status === 'sem_novidades' ? 'sem novidades' : 'sucesso'}). Contagens atualizadas abaixo.`, erro: false })
       onRecarregar()
@@ -119,7 +123,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
-  const ocupado = rodando !== null || !habilitada
+  const rodandoAlgo = rodando !== null
+  const ocupado = rodandoAlgo || !habilitada
   const u = b.ultima_carga
   return (
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
@@ -145,15 +150,15 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
       {ehAdmin && b.tem_conector && (
         <div className="acoes">
-          <button className="btn" disabled={ocupado || !b.pode_carregar} aria-label={`Puxar amostra de ${b.nome}`} onClick={() => onAcao(b, 'amostra')}>
+          <button className="btn" disabled={rodandoAlgo || !b.pode_carregar} aria-label={`Puxar amostra de ${b.nome}`} onClick={() => onAcao(b, 'amostra')}>
             {rodando === b.id ? 'Carregando…' : 'Puxar amostra'}
           </button>
-          {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
-            : !b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
+          {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
             <button className="btn secundario" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
-            {habilitada && !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
+            {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
+              : !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
             <button className="btn secundario" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
           </details>
         </div>

@@ -36,7 +36,8 @@ def _data(v: Any) -> datetime | None:
 
 def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_data: str | None,
            registros: list[dict[str, Any]], execucao_id: int, lote: int = 500,
-           antes_do_lote: Callable[[int], None] | None = None, rowversion: str | None = None) -> dict[str, int]:
+           antes_do_lote: Callable[[int], None] | None = None, rowversion: str | None = None,
+           confirmar: bool = True) -> dict[str, int]:
     """Carga completa com hash por linha (S2/CM3); se a origem tiver rowversion, ela substitui o hash."""
     c = {"lidos": len(registros), "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
     for n, i in enumerate(range(0, len(registros), lote), start=1):
@@ -64,5 +65,8 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_dat
         c["lotes"] += 1
         db.add(Log(execucao_id=execucao_id, nivel="INFO",
                    mensagem=f"{sistema}.{tabela} lote {n}: lidos={len(registros[i:i + lote])} gravados={len(inseridos)}"))
-        db.commit()  # lote confirmado
+        if confirmar:
+            db.commit()  # lote confirmado
+        else:
+            db.flush()  # amostra por conector: a transação inteira é confirmada pelo chamador
     return c

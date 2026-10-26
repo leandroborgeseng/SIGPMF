@@ -21,7 +21,7 @@ def _por_sistema(db: Session, stmt) -> dict[str, int]:
     return {k: int(v) for k, v in db.execute(stmt).all()}
 
 
-TIPOS_AMOSTRA = ("carga_demo_amostra",)
+TIPOS_AMOSTRA = ("carga_demo_amostra", "amostra_conector", "carga_municipe_amostra")
 
 
 def bloqueio(b: BaseCatalogo) -> str | None:
@@ -58,7 +58,7 @@ def indicadores(db: Session) -> list[dict]:
         motivo = bloqueio(b)
         out.append({
             "id": b.id, "nome": b.nome, "descricao": b.descricao, "grupo": b.grupo, "triagem": b.triagem,
-            "status": b.status, "prioridade": b.prioridade, "tem_conector": b.status == "implementado",
+            "status": b.status, "prioridade": b.prioridade, "conector_id": b.conjunto, "tem_conector": b.status == "implementado",
             "pode_carregar": motivo is None, "motivo_bloqueio": motivo,
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
             "com_erro": ult is not None and ult.status == "falha",

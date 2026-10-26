@@ -30,7 +30,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
-from app.services.carga_municipe import executar_carga_municipe
+from app.services import carga_conector as cc
 from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
 from app.services.pipeline import executar_demo
 from app.silver import processamento
@@ -145,6 +145,14 @@ def cria_tabela(sid: int, dados: TabelaIn, req: Request, u: Usuario = Depends(AD
     return {"id": t.id, **dados.model_dump()}
 
 
+def admin_auditado(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Usuario:
+    """Como ADMIN, mas o 403 também fica auditado (rotas de carga por conector)."""
+    if u.perfil != "admin":
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    return u
+
+
 def _404():
     raise HTTPException(404, "Não encontrado")
 
@@ -162,9 +170,27 @@ def conectores(db: Session = Depends(get_db)):
         status = "Nunca executado" if ult is None else ("Com erro" if ult.status == "falha" else "Ativo")
         lista.append({**tabs, "status": status, "ultima_execucao": _exec(ult) if ult else None,
                       "credencial": "Configurada via variável de ambiente" if cfg.resumo_publico()["configurado"] else "Não configurada",
-                      "amostra_limite": cfg.amostra_limite})
+                      "amostra_limite": cfg.amostra_limite, **_banco_origem(s, db)})
     return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]], "bases": bases,
             "totais": totais(bases), "carga_habilitada": carga_habilitada()}
+
+
+def _id_conector(db: Session, conector: str) -> str:
+    """Aceita o id do conector (saude/cemiterio/iss) ou o id numérico da base do catálogo (usa o `conjunto`)."""
+    if conector.isdigit():
+        b = db.get(BaseCatalogo, int(conector))
+        return (b.conjunto or "") if b else ""
+    return conector
+
+
+def _banco_origem(codigo: str, db: Session | None = None) -> dict:
+    """PB12: banco de origem do conector (nome do banco, nunca host/usuário). Sem #7, vem de SQLSERVER_DATABASE_<X>."""
+    cid = next((k for k, (sis, _b) in cc.CONECTORES.items() if sis == codigo), None)
+    if cid is None:
+        return {}
+    c, fallback = cc.config_do_conector(cid, db)
+    return {"conector_id": cid, "banco_origem": c.database, "banco_origem_esperado": cc.CONECTORES[cid][1],
+            "banco_origem_fallback": fallback}
 
 
 @api.post("/conectores/{conector}/testar")
@@ -185,13 +211,34 @@ def carga_habilitada() -> bool:
 
 @api.post("/conectores/demo/executar")
 def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
-    if not carga_habilitada():  # mesma trava da carga por base: 404 fora de dev/test
+    if not carga_habilitada():  # carga sintética: 404 fora de APP_ENV exatamente dev/test (auditado)
+        audita(db, u.email, "carga_demo_negada", "conector:demo", {"ambiente": get_settings().app_env}, _ip(req))
         _404()
     completa = bool(dados and dados.completa)
     if completa and u.perfil != "admin":
         audita(db, u.email, "carga_completa_negada", "conector:demo", ip=_ip(req))
         raise HTTPException(403, "Carga acima do limite de amostra exige perfil admin")
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
+
+
+@api.post("/conectores/{conector}/amostra")
+def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """PB13: carga real por conector, só pela política de tabelas, TOP (AMOSTRA_LIMITE). Admin, auditado."""
+    conector = _id_conector(db, conector)
+    audita(db, u.email, "amostra_conector_solicitada", f"conector:{conector}", ip=_ip(req))
+    try:
+        ex = cc.executar_amostra(db, u.email, conector)
+    except cc.ConectorDesconhecido:
+        _404()
+    except cc.SemMapeamento as exc:
+        audita(db, u.email, "amostra_conector_recusada", f"conector:{conector}", {"motivo": "sem_mapeamento"}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except cc.Conflito as exc:
+        audita(db, u.email, "amostra_conector_conflito", f"conector:{conector}", ip=_ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "amostra_conector_executada", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos},
+           _ip(req))
+    return _exec(ex)
 
 
 @api.post("/conectores/{base_id:int}/executar")
@@ -243,14 +290,24 @@ def _reprocessa(db: Session, usuario: str, sistema: str) -> Execucao:
     return ex
 
 
+@api.post("/conectores/{conector}/completa")
+def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Carga completa só depois de uma amostra com contagens reconciliadas (PB/UX-C: travada até existir amostra)."""
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    sistema = cc.CONECTORES[conector][0]
+    if cc.amostra_reconciliada(db, sistema) is None:
+        audita(db, u.email, "carga_completa_negada", f"conector:{conector}", {"motivo": "sem_amostra"}, _ip(req))
+        raise HTTPException(409, "Carga completa bloqueada: faça antes uma amostra com contagens reconciliadas")
+    audita(db, u.email, "carga_completa_solicitada", f"conector:{conector}", ip=_ip(req))
+    raise HTTPException(501, "Carga completa por conector entra em PR próprio (amostra já reconciliada)")
+
+
 @api.post("/conectores/iss/municipes/executar")
-def executa_municipe(req: Request, u: Usuario = Depends(CARGA), db: Session = Depends(get_db)):
-    """Amostra controlada (AMOSTRA_LIMITE) de ISS.dbo.Municipes; credencial só pelo ambiente."""
-    cfg = ConfigSqlServer.do_ambiente(get_settings())
-    if not cfg.resumo_publico()["configurado"]:
-        raise HTTPException(400, "Origem ISS não configurada no ambiente.")
-    ex = executar_carga_municipe(db, u.email, connector=SqlServerConnector(cfg, nome="ISS"))
-    return _exec(ex)
+def executa_municipe(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Compatibilidade com o #6: a carga real só passa pela amostra por conector (PB13), admin e auditada."""
+    return amostra_conector("iss", req, u, db)
 
 
 @api.get("/execucoes/{eid}/logs")

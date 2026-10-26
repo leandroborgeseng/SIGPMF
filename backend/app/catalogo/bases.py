@@ -25,7 +25,7 @@ BASES: list[tuple] = [
     ("Saude", _P, _A, _I, 1, ["SAUDE"], "saude", "Pacientes (fonte-mestre de pessoa), CNS e inconsistências e-SUS"),
     ("Cemiterio", _P, _N, _I, 2, ["CEMITERIO"], "cemiterio", "Óbitos, titulares, autorizados e leilão de sepulturas"),
     # ---- fila aprovada pelo Tech Lead ----
-    ("ISS", _P, _A, _M, 3, ["ISS"], None, "Munícipe: ISS.Municipes (fonte decidida; Geral é espelho)"),
+    ("ISS", _P, _A, _I, 3, ["ISS"], "iss", "Munícipe: ISS.Municipes (fonte decidida; Geral é espelho)"),
     ("CadastroUnico", _P, _A, _M, 4, [], None, "Cadastro multi-secretaria; núcleo cad_CadastroSimples"),
     ("Protocolo_WEB", _P, _A, _M, 5, [], None, "Protocolo web: users e protocols (sem password/remember_token)"),
     ("Labor", _P, _A, _M, 6, [], None, "Laboratório: Cliente (sem CID nem senhas)"),
@@ -81,14 +81,12 @@ CAMPOS = ("nome", "grupo", "triagem", "status", "prioridade", "sistemas", "conju
 _UPSERT = text("""
 INSERT INTO controle.bases_catalogo (nome, grupo, triagem, status, prioridade, sistemas, conjunto, descricao)
 VALUES (:nome, :grupo, :triagem, :status, :prioridade, CAST(:sistemas AS jsonb), :conjunto, :descricao)
-ON CONFLICT (nome) DO UPDATE SET grupo = EXCLUDED.grupo, triagem = EXCLUDED.triagem, status = EXCLUDED.status,
-    prioridade = EXCLUDED.prioridade, sistemas = EXCLUDED.sistemas, conjunto = EXCLUDED.conjunto,
-    descricao = EXCLUDED.descricao, atualizado_em = now()
-""")
+ON CONFLICT (nome) DO NOTHING
+""")  # só insere bases novas: nunca altera (nem rebaixa) linha existente - decisão do TL no #8
 
 
 def semeia(conn: Connection) -> int:
-    """Upsert de todas as bases. Nunca apaga linhas."""
+    """Insere as bases que ainda não existem. Nunca altera nem apaga linhas existentes."""
     import json
     for b in BASES:
         p = dict(zip(CAMPOS, b, strict=True))

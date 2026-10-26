@@ -205,9 +205,10 @@ def test_m7_api_mascara_documento(carga, client, tokens):
     assert p.status_code == 200 and A not in p.text
 
 
-def test_execucao_municipe_sem_origem_configurada(client, tokens, monkeypatch):
+def test_execucao_municipe_rota_antiga_so_admin(client, tokens, monkeypatch):
+    # PB13 (#8): a rota antiga delega à amostra por conector, só admin
     r = client.post("/api/conectores/iss/municipes/executar", headers=tokens["operador"])
-    assert r.status_code == 400
+    assert r.status_code == 403
 
 
 # ---------- Ajustes do TL no #6: Documento_SoNumeros e ordenação da amostra ----------
