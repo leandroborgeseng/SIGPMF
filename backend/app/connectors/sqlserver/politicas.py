@@ -16,7 +16,7 @@ class Politica:
     sistema: str
     base: str
     colunas: dict[str, tuple[str, ...]]          # tabela permitida -> colunas do SELECT
-    apoio: frozenset[str] = field(default_factory=frozenset)  # lookups permitidos (SELECT * não; colunas a definir)
+    apoio: frozenset[str] = field(default_factory=frozenset)  # lookups: autorizados, mas sem colunas definidas -> recusados no SELECT
     recusar: tuple[str, ...] = ()                 # padrões sempre recusados (regex, sem distinção de caixa)
     proibidas: frozenset[str] = field(default_factory=frozenset)
 
@@ -30,7 +30,10 @@ class Politica:
 
     def colunas_select(self, tabela: str) -> tuple[str, ...]:
         self.autoriza(tabela)
-        cols = self.colunas.get(tabela.split(".")[-1], ())
+        nome = tabela.split(".")[-1]
+        cols = self.colunas.get(nome, ())
+        if not cols:  # tabelas de apoio ainda sem lista de colunas: recusa explícita (ressalva do QA do #4)
+            raise TabelaRecusada(f"Tabela {nome} de {self.sistema} sem colunas definidas na política.")
         ruins = {c for c in cols if c.lower() in {p.lower() for p in self.proibidas}}
         if ruins:
             raise TabelaRecusada(f"Colunas proibidas na política: {sorted(ruins)}")
@@ -98,7 +101,18 @@ CEMITERIO = Politica(
                          "AAA_NAO_UTILIZADO_Senha", "Usuario_Sistema", "CodUsu", "RG", "Fone", "Email"}),
 )
 
-POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO}
+# Munícipe (aceite M1-M8): fonte única ISS.dbo.Municipes (a Geral é espelho contido no ISS e não é lida).
+# Colunas confirmadas na triagem (mapeamentos/triagem-bancos.md); CTPS, Título, Reservista, CNH e senhas nunca entram.
+COLUNAS_MUNICIPES = ("Tipo_Pessoa", "CPF", "Nome", "Nome_Mae", "Data_Nascimento", "Pis_Pasep", "Data_Alteracao")
+
+ISS = Politica(
+    sistema="ISS", base="ISS",
+    colunas={"Municipes": COLUNAS_MUNICIPES},
+    recusar=(r"Senha", r"Antigo") + _RECUSA_COMUM,
+    proibidas=frozenset({"Senha", "CTPS", "Titulo_Eleitor", "Reservista", "CNH"}),
+)
+
+POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS}
 
 
 def politica(sistema: str) -> Politica | None:

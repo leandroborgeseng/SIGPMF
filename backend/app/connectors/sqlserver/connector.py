@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.connectors.sqlserver.politicas import TabelaRecusada
 from app.core.config import Settings
 from app.core.sql_guard import executa_somente_leitura, garante_somente_leitura
 
@@ -90,16 +91,21 @@ class SqlServerConnector:
             return f"Falha ao conectar em {nome}: servidor não respondeu. Verifique a configuração do ambiente."
         return f"Falha ao conectar em {nome}: servidor não respondeu ou recusou a conexão. Verifique a configuração do ambiente."
 
-    def montar_select_politica(self, politica, tabela: str, limite: int | None = None) -> str:
+    def montar_select_politica(self, politica, tabela: str, limite: int | None = None,
+                               campo_incremental: str | None = None) -> str:
         """SELECT só com as colunas permitidas pela política do sistema (recusa tabela fora da lista)."""
-        return self.montar_select(f"dbo.{tabela.split('.')[-1]}", list(politica.colunas_select(tabela)), limite=limite)
+        cols = list(politica.colunas_select(tabela))
+        if campo_incremental and campo_incremental not in cols:
+            raise ValueError(f"Campo incremental {campo_incremental!r} fora das colunas da política.")
+        return self.montar_select(f"dbo.{tabela.split('.')[-1]}", cols, campo_incremental=campo_incremental,
+                                  limite=limite)
 
-    def ler_amostra(self, tabela: str, campo_incremental: str | None = None,
-                    desde: datetime | None = None, politica=None) -> list[dict[str, Any]]:
-        if politica is not None:
-            sql = self.montar_select_politica(politica, tabela)
-        else:
-            sql = self.montar_select(tabela, campo_incremental=campo_incremental if desde else None)
+    def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,
+                    desde: datetime | None = None) -> list[dict[str, Any]]:
+        """Lê no máximo AMOSTRA_LIMITE linhas, sempre com a política do sistema (lista de colunas explícita)."""
+        if politica is None:
+            raise TabelaRecusada(f"Leitura de {tabela!r} exige a política do sistema.")
+        sql = self.montar_select_politica(politica, tabela, campo_incremental=campo_incremental if desde else None)
         conn = self._conectar()
         try:
             return executa_somente_leitura(conn, sql, (desde,) if desde else None, limite=self.config.amostra_limite)
