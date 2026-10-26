@@ -44,10 +44,7 @@ def limite_nulos_min() -> int:
 
 
 def bloqueia_nulos(nulos: int, total: int) -> bool:
-    """CC9: só bloqueia se os nulos passarem do limite % E do mínimo absoluto (tabela pequena não para).
-    Exceção: 100% de chave nula (total > 0) sempre bloqueia, mesmo abaixo do mínimo."""
-    if total > 0 and nulos >= total:
-        return True
+    """CC9: só bloqueia se os nulos passarem do limite % E do mínimo absoluto (tabela pequena não para)."""
     return bool(nulos) and 100.0 * nulos / max(total, 1) > limite_nulos_pct() and nulos > limite_nulos_min()
 
 
@@ -192,11 +189,6 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
             base = total_origem if total_origem is not None else len(linhas) + len(quar)
             if bloqueia_nulos(n_nulos, base):  # CC9.3: problema de origem -> DBA
                 pct = 100.0 * n_nulos / max(base, 1)
-                if base > 0 and n_nulos >= base:
-                    raise ChaveNulaAcimaDoLimite(
-                        f"Chave nula em todas as {base} linha(s) de {TABELA} (100%): nada poderia ir para a bronze, "
-                        f"então a carga para mesmo abaixo do mínimo de {limite_nulos_min()} linha(s). "
-                        "Corrigir na origem (DBA).")
                 raise ChaveNulaAcimaDoLimite(f"Chave nula em {n_nulos} de {base} linha(s) de {TABELA} ({pct:.2f}%), acima do "
                                    f"limite de {limite_nulos_pct():g}% e do mínimo de {limite_nulos_min()} linha(s): "
                                    "corrigir na origem (DBA).")

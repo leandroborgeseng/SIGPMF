@@ -219,17 +219,6 @@ def test_cc9_minimo_customizado_por_env(client, db, monkeypatch):
     assert not bloqueia_nulos(40, 5000)  # > mínimo mas <= 1%
 
 
-def test_cc9_tabela_toda_nula_bloqueia_mesmo_abaixo_do_minimo(client, db, monkeypatch):
-    from app.services.carga_municipe import bloqueia_nulos
-    monkeypatch.delenv("SIGPMF_CARGA_NULOS_LIMITE_PCT", raising=False)
-    monkeypatch.delenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", raising=False)
-    assert bloqueia_nulos(5, 5) and not bloqueia_nulos(4, 5) and not bloqueia_nulos(0, 0)
-    ex = _carga_pequena(db, 5, total=5, base_cpf=733000000)  # ZZTESTE: 5 linhas, todas nulas (5 <= mínimo 10)
-    assert ex.status == "falha"
-    assert "todas as 5 linha(s)" in ex.mensagem and "100%" in ex.mensagem and "mínimo de 10" in ex.mensagem
-    assert db.query(RegistroBronze).filter(RegistroBronze.execucao_id == ex.id).count() == 0
-
-
 def test_cc9_selects_separados_limitados_e_pela_guarda():
     from app.services.carga_municipe import _sql_nulos
     q1, q2 = _sql_nulos(7)
