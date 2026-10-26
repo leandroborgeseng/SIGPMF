@@ -26,6 +26,8 @@ const FILTROS = [
 const TIPO: Record<string, string> = { carga_demo_amostra: 'Amostra', amostra_conector: 'Amostra', carga_municipe_amostra: 'Amostra', carga_demo_completa: 'Completa', reprocessamento: 'Reprocessamento' }
 const ROTULO_MODO: Record<Modo, string> = { amostra: 'Puxar amostra', completa: 'Puxar carga completa', reprocessar: 'Reprocessar' }
 
+/** Contagem com concordância: 1 → singular; 0 ou ≥ 2 → plural. */
+export const plural = (n: number, um: string, varios: string) => `${new Intl.NumberFormat('pt-BR').format(n)} ${n === 1 ? um : varios}`
 export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
 export function perda(de: number, para: number): number | null {
   if (de <= 0 || para >= de) return null
@@ -85,7 +87,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
         : bases.length === 0 ? <p className="vazio">Nenhuma base cadastrada.</p>
         : (
           <>
-            <p className="subtitulo">{todas.length} bases cadastradas · {conta('implementado')} prontas · {conta('mapeado')} mapeadas · {conta('triado')} triadas · {conta('excluido')} descartadas</p>
+            <p className="subtitulo">{plural(todas.length, 'base cadastrada', 'bases cadastradas')} · {plural(conta('implementado'), 'pronta', 'prontas')} · {plural(conta('mapeado'), 'mapeada', 'mapeadas')} · {plural(conta('triado'), 'triada', 'triadas')} · {plural(conta('excluido'), 'descartada', 'descartadas')}</p>
             <ul className="totais" aria-label="Totais por camada das bases visíveis">
               <li className="cartao"><span className="cartao-rotulo">Bronze</span> <span className="cartao-valor">{milhar(tot.bronze)}</span></li>
               <li className="cartao"><span className="cartao-rotulo">Prata</span> <span className="cartao-valor">{milhar(tot.prata)}</span></li>
