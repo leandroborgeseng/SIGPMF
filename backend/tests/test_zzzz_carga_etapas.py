@@ -359,6 +359,7 @@ def test_cc9_duplicatas_identicas_de_chave_nula_nao_colapsam(client, tokens, ori
 def test_cc9_3_acima_do_limite_para_com_a_mensagem_atual(client, tokens, origem, db, monkeypatch):  # noqa: F811
     from app.connectors.sqlserver.politicas import politica
     monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_PCT", "1")
+    monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", "0")  # sem mínimo absoluto: 1 nula em poucas linhas para
     get_settings.cache_clear()
     _amostra(db, "cemiterio")
     o = origem["CEMITERIO"]
@@ -368,7 +369,7 @@ def test_cc9_3_acima_do_limite_para_com_a_mensagem_atual(client, tokens, origem,
         o.sqls.clear()
         assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
         ex = _ultima(db, "CEMITERIO")
-        assert ex.status == "falha" and "a carga completa exige chave sem NULL" in ex.mensagem
+        assert ex.status == "falha" and "a carga completa para" in ex.mensagem and "limite de 1%" in ex.mensagem
         assert not [x for x, _ in o.sqls if "TOP (" in x]
     finally:
         o.extras.clear()
@@ -397,8 +398,70 @@ def test_cc9_reconciliacao_isolada_bronze_mais_quarentena_igual_origem(db):
 def test_cc9_limite_proporcional():
     v = {"total": 1000, "nulos": 10, "distintas": 990}
     assert ccomp.problema_chave("T", ("a",), v) is None  # 1,0%: no limite, quarentena
-    assert "exige chave sem NULL" in ccomp.problema_chave("T", ("a",), {**v, "nulos": 11, "distintas": 989})
+    msg = ccomp.problema_chave("T", ("a",), {**v, "nulos": 11, "distintas": 989})
+    assert "a carga completa para" in msg and "1.10%" in msg and "limite de 1%" in msg and "mínimo de 10" in msg
     assert "não é única" in ccomp.problema_chave("T", ("a",), {**v, "distintas": 989})
+
+
+def test_cc9_minimo_absoluto_tabela_pequena_nao_bloqueia():
+    # Leilao sintética: 50 linhas, 1 nula = 2% (> 1%), mas 1 <= mínimo 10 -> quarentena
+    assert ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 1, "distintas": 49}) is None
+    assert ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 10, "distintas": 40}) is None
+    # acima dos dois limites (> 1% e > 10): ainda bloqueia
+    msg = ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 11, "distintas": 39})
+    assert msg and "22.00%" in msg and "limite de 1%" in msg and "mínimo de 10" in msg
+    # > 10 nulos mas <= 1%: quarentena
+    assert ccomp.problema_chave("T", ("a",), {"total": 5000, "nulos": 40, "distintas": 4960}) is None
+
+
+def test_cc9_minimo_absoluto_por_env(monkeypatch):
+    monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", "0")
+    get_settings.cache_clear()
+    try:
+        msg = ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 1, "distintas": 49})
+        assert msg and "2.00%" in msg and "mínimo de 0" in msg
+        monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", "25")
+        get_settings.cache_clear()
+        assert ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 20, "distintas": 30}) is None
+        assert ccomp.problema_chave("Leilao", ("a",), {"total": 50, "nulos": 26, "distintas": 24})
+    finally:
+        get_settings.cache_clear()
+
+
+def test_cc9_leilao_50_linhas_1_nula_termina_ok_com_pendencias(client, tokens, origem, db, monkeypatch):  # noqa: F811
+    """Regressão do caso real (sintético): Leilao pequena com 1 chave nula não para a carga com o padrão 1% + mín. 10."""
+    from app.connectors.sqlserver.politicas import politica
+    monkeypatch.delenv("SIGPMF_CARGA_NULOS_LIMITE_PCT", raising=False)
+    monkeypatch.delenv("SIGPMF_CARGA_NULOS_LIMITE_MIN", raising=False)
+    get_settings.cache_clear()
+    _isola_bronze(db, "CEMITERIO")
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Leilao", None, politica("CEMITERIO").colunas_select("Leilao"))
+    falta = 50 - len(base)
+    extras = [{**base[0], "Quadra": "QZ", "Sepultura": f"ZZ{i:03d}", "Nome": f"ZZTESTE LEILAO {i:03d}",
+               "CPF": None} for i in range(falta - 1)]
+    extras.append({**base[0], "Quadra": "QZ", "Sepultura": "ZZNULA", "DataVenda": None,
+                   "Nome": "ZZTESTE LEILAO NULA", "CPF": None})
+    o.extras["Leilao"] = extras
+    try:
+        assert len(o.linhas("Leilao")) == 50
+        assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+        ex = _ultima(db, "CEMITERIO")
+        assert ex.status == "sucesso", ex.mensagem
+        assert "1 linha(s) em quarentena (chave nula)" in ex.mensagem
+        s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()
+        assert s["quarentena"] == 1
+        r = s["reconciliacao"]["Leilao"]
+        assert r["bronze"] + r["quarentena"] == r["origem"] == 50
+        assert r["quarentena"] == 1 and r["ok"] is True and r["status"] == "ok_com_pendencias"
+        q = list(db.scalars(select(RegistroBronze).where(RegistroBronze.sistema_origem == "CEMITERIO",
+                                                           RegistroBronze.quarentena.is_not(None))))
+        assert len(q) == 1 and q[0].tabela == "Leilao" and q[0].quarentena_campos == ["DataVenda"]
+        assert "ZZTESTE" not in q[0].id_origem
+    finally:
+        o.extras.clear()
+        get_settings.cache_clear()
 
 
 @pytest.mark.parametrize("nome", ["sigpmf", "sigpmf_prod", "hef", "postgres", "", None])

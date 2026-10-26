@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
     carga_lote: int = Field(1000, alias="CARGA_COMPLETA_LOTE", ge=1, le=5000)
     carga_nulos_limite_pct: float = Field(1.0, alias="SIGPMF_CARGA_NULOS_LIMITE_PCT", ge=0, le=100)
+    # CC9: mínimo absoluto de nulos para bloquear (tabelas pequenas: 1 nula em 50 não passa de 1% "de verdade").
+    carga_nulos_limite_min: int = Field(10, alias="SIGPMF_CARGA_NULOS_LIMITE_MIN", ge=0)
     carga_alerta_min: int = Field(5, alias="SIGPMF_CARGA_ALERTA_MIN", ge=1, le=1440)
     carga_pausa_ms: int = Field(200, alias="CARGA_COMPLETA_PAUSA_MS", ge=0, le=60000)
 

@@ -74,11 +74,18 @@ class ChaveInvalida(RuntimeError):
 
 
 def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
-    """CC9: chave nula até SIGPMF_CARGA_NULOS_LIMITE_PCT (padrão 1%) vai para a quarentena; acima, a carga para."""
+    """CC9: chave nula vai para a quarentena; a carga só para se os nulos passarem de SIGPMF_CARGA_NULOS_LIMITE_PCT
+    (padrão 1%) E de SIGPMF_CARGA_NULOS_LIMITE_MIN linhas (padrão 10). Tabela pequena com poucas nulas não bloqueia."""
     chave = ", ".join(ordem_)
-    limite = get_settings().carga_nulos_limite_pct
-    if v["nulos"] and (not v["total"] or 100.0 * v["nulos"] / v["total"] > limite):
-        return f"Tabela {tabela}: {v['nulos']} linha(s) com chave ({chave}) nula na origem; a carga completa exige chave sem NULL."
+    s = get_settings()
+    limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
+    nulos, total = v["nulos"], v["total"]
+    if nulos:
+        pct = 100.0 * nulos / total if total else 100.0
+        if pct > limite and nulos > minimo:
+            return (f"Tabela {tabela}: {nulos} linha(s) com chave ({chave}) nula na origem ({pct:.2f}% de {total}); "
+                    f"acima do limite de {limite:g}% e do mínimo de {minimo} linha(s), a carga completa para. "
+                    "Corrigir na origem (DBA) ou ajustar SIGPMF_CARGA_NULOS_LIMITE_PCT/SIGPMF_CARGA_NULOS_LIMITE_MIN.")
     if v["distintas"] != v["total"] - v["nulos"]:
         return (f"Tabela {tabela}: chave ({chave}) não é única na origem ({v['total']} linhas, {v['distintas']} chaves "
                 "distintas); a carga completa exige chave única.")
