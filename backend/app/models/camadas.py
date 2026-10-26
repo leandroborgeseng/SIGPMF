@@ -33,6 +33,9 @@ class Cidadao(Base):
     nome: Mapped[str] = mapped_column(String(300))
     data_nascimento: Mapped[date | None] = mapped_column(Date)
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    falecido: Mapped[bool] = mapped_column(default=False, server_default="false")
+    data_obito: Mapped[date | None] = mapped_column(Date)
+    obito_fonte: Mapped[str | None] = mapped_column(String(100))
 
 
 class Identificador(Base):
@@ -91,6 +94,7 @@ class CorrelacaoPendente(Base):
     motivo: Mapped[str] = mapped_column(String(50))
     nome: Mapped[str | None] = mapped_column(String(300))
     candidatos: Mapped[list[str]] = mapped_column(JSONType, default=list)
+    detalhe: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
     status: Mapped[str] = mapped_column(String(20), default="pendente")
 
 

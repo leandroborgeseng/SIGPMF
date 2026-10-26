@@ -4,17 +4,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
+from app.connectors.sqlserver.politicas import TabelaRecusada, politica
 from app.core.audit import audita
 from app.core.config import get_settings
 from app.gold import visao
 from app.ingestion.mapeamentos import MAPEAMENTOS, NOMES_SISTEMAS
 from app.ingestion.origem_mock import OrigemMock
-from app.models.controle import Execucao, Sistema, TabelaCatalogo
+from app.models.controle import Execucao, Log, Sistema, TabelaCatalogo
 from app.silver import processamento
 
 
-def garante_catalogo_demo(db: Session) -> None:
+def garante_catalogo_demo(db: Session, sistemas: set[str] | None = None) -> None:
     for (codigo, tabela), m in MAPEAMENTOS.items():
+        if sistemas is not None and codigo not in sistemas:
+            continue
         sis = db.scalar(select(Sistema).where(Sistema.codigo == codigo))
         if sis is None:
             sis = Sistema(codigo=codigo, nome=NOMES_SISTEMAS.get(codigo, codigo), dominio=m["dominio"],
@@ -22,27 +25,43 @@ def garante_catalogo_demo(db: Session) -> None:
             db.add(sis)
             db.flush()
         if db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == tabela)) is None:
-            db.add(TabelaCatalogo(sistema_id=sis.id, nome=tabela, chave=m["chave"], campo_incremental=m["campo_incremental"]))
+            ch = m["chave"]
+            db.add(TabelaCatalogo(sistema_id=sis.id, nome=tabela, chave=",".join(ch) if isinstance(ch, tuple) else ch,
+                                  campo_incremental=m["campo_incremental"]))
     db.commit()
 
 
 def executar_demo(db: Session, usuario: str, completa: bool = False, origem: OrigemMock | None = None,
-                  antes_do_lote=None) -> Execucao:
-    """Carga de demonstração. Padrão: amostra (AMOSTRA_LIMITE, 100). `completa` só por admin, auditada."""
+                  antes_do_lote=None, conjunto: str = "base") -> Execucao:
+    """Carga de demonstração. Padrão: amostra (AMOSTRA_LIMITE, 100 por tabela). `completa` só por admin, auditada.
+    Sistemas com política (SAUDE, CEMITERIO): tabela fora da lista é recusada e auditada; só colunas permitidas."""
     s = get_settings()
-    garante_catalogo_demo(db)
-    origem = origem or OrigemMock()
+    origem = origem or OrigemMock(conjunto=conjunto)
+    garante_catalogo_demo(db, {sis for sis, _ in origem.tabelas()})
     limite = None if completa else s.amostra_limite
-    ex = Execucao(tipo="carga_demo_completa" if completa else "carga_demo_amostra", sistema="DEMO",
+    nome_conj = "DEMO" if conjunto == "base" else conjunto.upper()
+    ex = Execucao(tipo="carga_demo_completa" if completa else "carga_demo_amostra", sistema=nome_conj,
                   status="em_andamento", usuario=usuario)
     db.add(ex)
     db.commit()
     tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
     try:
         for sistema, tabela in origem.tabelas():
-            m = MAPEAMENTOS[(sistema, tabela)]
-            c = ingere(db, sistema, tabela, m["chave"], m["campo_incremental"], origem.ler(sistema, tabela, limite),
-                       ex.id, s.lote_tamanho, antes_do_lote)
+            pol = politica(sistema)
+            colunas = None
+            if pol is not None:
+                try:
+                    colunas = pol.colunas_select(tabela)
+                except TabelaRecusada as exc:
+                    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=str(exc)))
+                    audita(db, usuario, "tabela_recusada", f"{sistema}.{tabela}", {"motivo": str(exc)}, commit=False)
+                    db.commit()
+                    continue
+            m = MAPEAMENTOS.get((sistema, tabela))
+            if m is None:  # permitida, mas ainda sem mapeamento para a silver: não carrega nesta entrega
+                continue
+            c = ingere(db, sistema, tabela, m["chave"], m["campo_incremental"], origem.ler(sistema, tabela, limite, colunas),
+                       ex.id, s.lote_tamanho, antes_do_lote, rowversion=m.get("rowversion"))
             for k in tot:
                 tot[k] += c[k]
         sres = processamento.reconstruir(db)
@@ -58,6 +77,6 @@ def executar_demo(db: Session, usuario: str, completa: bool = False, origem: Ori
         setattr(ex, k, v)
     ex.finalizado_em = datetime.now(UTC)
     audita(db, usuario, "carga_executada", f"execucao:{ex.id}",
-           {"status": ex.status, "completa": completa, **tot}, commit=False)
+           {"status": ex.status, "completa": completa, "conjunto": conjunto, **tot}, commit=False)
     db.commit()
     return ex

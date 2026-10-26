@@ -19,9 +19,25 @@ def hash_registro(dados: dict[str, Any]) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
-def ingere(db: Session, sistema: str, tabela: str, chave: str, campo_data: str | None,
+def _id(chave: str | tuple, r: dict) -> str:
+    if isinstance(chave, tuple):
+        return "|".join("" if r.get(c) is None else str(r.get(c)) for c in chave)
+    return str(r[chave])
+
+
+def _data(v: Any) -> datetime | None:
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v))
+    except ValueError:
+        return None
+
+
+def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_data: str | None,
            registros: list[dict[str, Any]], execucao_id: int, lote: int = 500,
-           antes_do_lote: Callable[[int], None] | None = None) -> dict[str, int]:
+           antes_do_lote: Callable[[int], None] | None = None, rowversion: str | None = None) -> dict[str, int]:
+    """Carga completa com hash por linha (S2/CM3); se a origem tiver rowversion, ela substitui o hash."""
     c = {"lidos": len(registros), "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
     for n, i in enumerate(range(0, len(registros), lote), start=1):
         if antes_do_lote:
@@ -29,10 +45,11 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str, campo_data: str |
         linhas: dict[tuple[str, str], dict] = {}
         for r in registros[i:i + lote]:
             d = r.get(campo_data) if campo_data else None
-            h = hash_registro(r)
-            linhas[(str(r[chave]), h)] = {
-                "sistema_origem": sistema, "tabela": tabela, "id_origem": str(r[chave]), "dados": r, "hash": h,
-                "execucao_id": execucao_id, "atualizado_origem_em": datetime.fromisoformat(d) if d else None}
+            rv = r.get(rowversion) if rowversion else None
+            h = hashlib.sha256(f"rowversion:{rv}".encode()).hexdigest() if rv is not None else hash_registro(r)
+            linhas[(_id(chave, r), h)] = {
+                "sistema_origem": sistema, "tabela": tabela, "id_origem": _id(chave, r), "dados": r, "hash": h,
+                "execucao_id": execucao_id, "atualizado_origem_em": _data(d)}
         ids = [k[0] for k in linhas]
         existentes = set(db.scalars(select(RegistroBronze.id_origem).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,

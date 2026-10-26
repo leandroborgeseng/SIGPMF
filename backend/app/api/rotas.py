@@ -6,12 +6,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CargaIn, LoginIn, RevelarIn, SistemaIn, TabelaIn, UsuarioIn
+from app.api.schemas import CargaIn, ConfirmaObitoIn, LoginIn, RevelarIn, SistemaIn, TabelaIn, UsuarioIn
 from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
+from app.connectors.sqlserver.politicas import TabelaRecusada, politica
 from app.core.audit import audita
 from app.core.config import VERSION, get_settings
 from app.core.db import get_db
 from app.core.security import ADMIN, CARGA, confere_senha, cria_token, hash_senha, usuario_atual
+from app.gold import visao
 from app.identity.cpf import mascara, normaliza
 from app.models.camadas import (
     Cidadao,
@@ -24,8 +26,9 @@ from app.models.camadas import (
     RegistroBronze,
     Vinculo,
 )
-from app.models.controle import Auditoria, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.models.controle import Auditoria, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
 from app.services.pipeline import executar_demo
+from app.silver import processamento
 
 publico = APIRouter()
 api = APIRouter(dependencies=[Depends(usuario_atual)])
@@ -118,6 +121,13 @@ def altera_sistema(sid: int, dados: SistemaIn, req: Request, u: Usuario = Depend
 @api.post("/catalogo/sistemas/{sid}/tabelas", status_code=201)
 def cria_tabela(sid: int, dados: TabelaIn, req: Request, u: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
     s = db.get(Sistema, sid) or _404()
+    pol = politica(s.codigo)
+    if pol is not None:
+        try:
+            pol.autoriza(dados.nome)
+        except TabelaRecusada as exc:
+            audita(db, u.email, "tabela_recusada", f"{s.codigo}.{dados.nome}", {"motivo": str(exc)}, _ip(req))
+            raise HTTPException(422, str(exc)) from None
     t = TabelaCatalogo(sistema_id=sid, **dados.model_dump())
     db.add(t)
     try:
@@ -164,7 +174,7 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     if completa and u.perfil != "admin":
         audita(db, u.email, "carga_completa_negada", "conector:demo", ip=_ip(req))
         raise HTTPException(403, "Carga acima do limite de amostra exige perfil admin")
-    return _exec(executar_demo(db, u.email, completa=completa))
+    return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
 @api.get("/execucoes/{eid}/logs")
@@ -204,7 +214,7 @@ def exporta_csv(db: Session = Depends(get_db)):
 @api.get("/silver/pendencias")
 def pendencias(db: Session = Depends(get_db)):
     return [{"id": p.id, "sistema": p.sistema, "tabela": p.tabela, "chave_origem": p.chave_origem, "motivo": p.motivo,
-             "nome": p.nome, "candidatos": p.candidatos, "status": p.status}
+             "nome": p.nome, "candidatos": p.candidatos, "detalhe": p.detalhe, "status": p.status}
             for p in db.scalars(select(CorrelacaoPendente).order_by(CorrelacaoPendente.id))]
 
 
@@ -247,6 +257,36 @@ def revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: Usuario =
         _404()
     audita(db, u.email, "revelar_cpf", f"cidadao:{cid}", {"motivo": motivo}, _ip(req))
     return {"cidadao_id": cid, "cpf": cpf, "remascarar_em_segundos": get_settings().revelar_cpf_segundos}
+
+
+MOTIVOS_OBITO = ("obito_revisao", "obito_ambiguo")
+PERFIL_CONFIRMA_OBITO = "admin_lgpd"  # decisão do TL: fixo
+
+
+@api.post("/silver/pendencias/{pid}/confirmar-obito")
+def confirmar_obito(pid: int, dados: ConfirmaObitoIn, req: Request, u: Usuario = Depends(usuario_atual),
+                    db: Session = Depends(get_db)):
+    """CM7: só o admin_lgpd confirma; motivo obrigatório; auditado. Nenhum candidato vem pré-selecionado."""
+    if u.perfil != PERFIL_CONFIRMA_OBITO:
+        audita(db, u.email, "confirmar_obito_negado", f"pendencia:{pid}", ip=_ip(req))
+        raise HTTPException(403, "Só o perfil admin_lgpd confirma óbito")
+    motivo = (dados.motivo or "").strip()
+    if len(motivo) < get_settings().revelar_motivo_min:
+        raise HTTPException(400, "Informe o motivo para confirmar o óbito.")
+    p = db.get(CorrelacaoPendente, pid) or _404()
+    if p.motivo not in MOTIVOS_OBITO:
+        raise HTTPException(422, "Pendência não é de óbito com candidato")
+    if dados.cidadao_id not in (p.candidatos or []):
+        raise HTTPException(422, "Cidadão não está entre os candidatos")
+    db.add(ConfirmacaoObito(sistema=p.sistema, tabela=p.tabela, chave_origem=p.chave_origem, cidadao_id=dados.cidadao_id,
+                            usuario=u.email, motivo=motivo))
+    audita(db, u.email, "confirmar_obito", f"cidadao:{dados.cidadao_id}",
+           {"motivo": motivo, "origem": f"{p.sistema}.{p.tabela}:{p.chave_origem}"}, _ip(req), commit=False)
+    db.flush()
+    processamento.reconstruir(db)
+    visao.reconstruir(db)
+    db.commit()
+    return {"cidadao_id": dados.cidadao_id, "falecido": True}
 
 
 # ---------- Usuários e auditoria (somente leitura) ----------

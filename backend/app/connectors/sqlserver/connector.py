@@ -85,9 +85,16 @@ class SqlServerConnector:
             return f"Falha ao conectar em {nome}: servidor não respondeu. Verifique a configuração do ambiente."
         return f"Falha ao conectar em {nome}: servidor não respondeu ou recusou a conexão. Verifique a configuração do ambiente."
 
+    def montar_select_politica(self, politica, tabela: str, limite: int | None = None) -> str:
+        """SELECT só com as colunas permitidas pela política do sistema (recusa tabela fora da lista)."""
+        return self.montar_select(f"dbo.{tabela.split('.')[-1]}", list(politica.colunas_select(tabela)) or None, limite=limite)
+
     def ler_amostra(self, tabela: str, campo_incremental: str | None = None,
-                    desde: datetime | None = None) -> list[dict[str, Any]]:
-        sql = self.montar_select(tabela, campo_incremental=campo_incremental if desde else None)
+                    desde: datetime | None = None, politica=None) -> list[dict[str, Any]]:
+        if politica is not None:
+            sql = self.montar_select_politica(politica, tabela)
+        else:
+            sql = self.montar_select(tabela, campo_incremental=campo_incremental if desde else None)
         conn = self._conectar()
         try:
             cur = conn.cursor(as_dict=True)

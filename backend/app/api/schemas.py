@@ -44,3 +44,9 @@ class RevelarIn(BaseModel):
 
 class CargaIn(BaseModel):
     completa: bool = False
+    conjunto: str = Field("base", pattern=r"^(base|saude|cemiterio|saude\+cemiterio)$")
+
+
+class ConfirmaObitoIn(BaseModel):
+    cidadao_id: str = Field(min_length=1, max_length=36)
+    motivo: str | None = None
