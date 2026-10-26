@@ -30,6 +30,24 @@ def limite_nulos_pct() -> float:
         return 1.0
 
 
+class ChaveNulaAcimaDoLimite(RuntimeError):
+    """CC9.3: nulos acima do limite % e do mínimo. A mensagem só tem contagens (sem dado pessoal) e vai para a execução."""
+
+
+def limite_nulos_min() -> int:
+    """SIGPMF_CARGA_NULOS_LIMITE_MIN (mesmo nome do CC9 genérico); padrão 10 linhas."""
+    import os
+    try:
+        return max(int(os.environ.get("SIGPMF_CARGA_NULOS_LIMITE_MIN", "10")), 0)
+    except ValueError:
+        return 10
+
+
+def bloqueia_nulos(nulos: int, total: int) -> bool:
+    """CC9: só bloqueia se os nulos passarem do limite % E do mínimo absoluto (tabela pequena não para)."""
+    return bool(nulos) and 100.0 * nulos / max(total, 1) > limite_nulos_pct() and nulos > limite_nulos_min()
+
+
 def chave_nula(linha: dict) -> list[str]:
     """Campos da chave CC9 nulos/vazios. Linha sem a coluna (fixtures antigas) não é avaliada."""
     from app.identity import documento as docmod
@@ -61,7 +79,7 @@ def ler_nulos(connector) -> tuple[int | None, int, list[dict]]:
             total, nulos = int(total or 0), int(nulos or 0)
         except (IndexError, TypeError, ValueError):
             return None, 0, []  # contagem indisponível: segue sem reconciliação (nunca inventa números)
-        if not nulos or 100.0 * nulos / max(total, 1) > limite_nulos_pct():
+        if not nulos or bloqueia_nulos(nulos, total):
             return total, nulos, []
         _, q2 = _sql_nulos(nulos)
         return total, nulos, executa_somente_leitura(conn, q2, limite=nulos)
@@ -169,9 +187,11 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         n_nulos = total_nulos if total_nulos is not None else len(quar)
         if n_nulos and (total_origem is not None or total_nulos is not None):
             base = total_origem if total_origem is not None else len(linhas) + len(quar)
-            if 100.0 * n_nulos / max(base, 1) > limite_nulos_pct():  # CC9.3: problema de origem -> DBA
-                raise RuntimeError(f"Chave nula em {n_nulos} de {base} linha(s) de {TABELA}, acima do limite de "
-                                   f"{limite_nulos_pct():g}%: corrigir na origem (DBA).")
+            if bloqueia_nulos(n_nulos, base):  # CC9.3: problema de origem -> DBA
+                pct = 100.0 * n_nulos / max(base, 1)
+                raise ChaveNulaAcimaDoLimite(f"Chave nula em {n_nulos} de {base} linha(s) de {TABELA} ({pct:.2f}%), acima do "
+                                   f"limite de {limite_nulos_pct():g}% e do mínimo de {limite_nulos_min()} linha(s): "
+                                   "corrigir na origem (DBA).")
         if not linhas and not quar:  # 0 linhas lidas: nunca "sem_novidades"
             ex.status, ex.mensagem = ORIGEM_VAZIA, MSG_ORIGEM_VAZIA
             ex.finalizado_em = datetime.now(UTC)
@@ -225,7 +245,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         ex = db.get(Execucao, ex.id)
         ex.status = "falha"
         ex.registra_erro(exc)
-        ex.mensagem = f"Falha: {type(exc).__name__}"
+        ex.mensagem = str(exc) if isinstance(exc, ChaveNulaAcimaDoLimite) else f"Falha: {type(exc).__name__}"
     ex.finalizado_em = datetime.now(UTC)
     audita(db, usuario, "carga_executada", f"execucao:{ex.id}",
            {"status": ex.status, "sistema": "ISS", "tabela": TABELA, "lidos": ex.lidos, "novos": ex.novos,
