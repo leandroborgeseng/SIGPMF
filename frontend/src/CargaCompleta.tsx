@@ -23,8 +23,10 @@ export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
   camadas: { bronze: number; prata: number; pendencias: number }
-  reconciliacao: Record<string, { origem: number | null; bronze: number; ok: boolean }> | null
+  reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string }> | null
+  quarentena?: number
 }
+type LinhaQuarentena = { id: number; tabela: string; motivo: string; campos_nulos: string[]; referencia: string; extraido_em: string | null }
 type Estimativa = { tabelas: Record<string, number>; total: number }
 
 export const INTERVALO_MS = 5000
@@ -52,6 +54,17 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   const [toast, setToast] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [erroPoll, setErroPoll] = useState('')
+  const [quar, setQuar] = useState<LinhaQuarentena[] | null>(null)
+  const [quarErro, setQuarErro] = useState('')
+  const verQuarentena = async () => {
+    if (quar) { setQuar(null); return }
+    setQuarErro('')
+    try {
+      setQuar((await api<{ linhas: LinhaQuarentena[] }>(`/conectores/${conector}/completa/quarentena`)).linhas)
+    } catch (e) {
+      setQuarErro(e instanceof ApiErro && e.message ? e.message : 'Não foi possível carregar a quarentena.')
+    }
+  }
   const anterior = useRef<string | null>(null)
   const cancelarModal = useRef<HTMLButtonElement>(null)
 
@@ -209,9 +222,29 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
             <div><dt>Prata</dt><dd>{milhar(sit.camadas.prata)}</dd></div>
             <div><dt>Pendências</dt><dd>{milhar(sit.camadas.pendencias)}</dd></div>
           </dl>
+          {(sit.quarentena ?? 0) > 0 && (
+            <div className="aviso-ambar" role="status">
+              <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena (chave nula)</p>
+              <button className="link-btn" aria-expanded={quar !== null} onClick={verQuarentena}>
+                {quar ? 'Ocultar detalhes da quarentena' : 'Ver detalhes da quarentena'}
+              </button>
+              {quarErro && <p className="erro-texto">{quarErro}</p>}
+              {quar && (
+                <table className="tabela-quarentena">
+                  <caption className="sr-only">Linhas em quarentena de {nome}</caption>
+                  <thead><tr><th scope="col">Tabela</th><th scope="col">Motivo</th><th scope="col">Campos nulos</th><th scope="col">Referência</th></tr></thead>
+                  <tbody>{quar.map((l) => (
+                    <tr key={l.id}><td>{l.tabela}</td><td>{l.motivo}</td><td>{l.campos_nulos.join(', ')}</td><td><code>{l.referencia}</code></td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
           {sit.reconciliacao && (
             Object.values(sit.reconciliacao).every((r) => r.ok)
-              ? <p><span className="selo pronto"><i aria-hidden="true" />Bronze bate com a origem</span></p>
+              ? <p><span className="selo pronto"><i aria-hidden="true" />
+                {Object.values(sit.reconciliacao).some((r) => (r.quarentena ?? 0) > 0)
+                  ? 'Bronze + quarentena batem com a origem (ok com pendências)' : 'Bronze bate com a origem'}</span></p>
               : <p className="aviso-ambar">Bronze diferente da origem em: {Object.entries(sit.reconciliacao).filter(([, r]) => !r.ok)
                 .map(([t, r]) => `${t} (origem ${milhar(r.origem)}, bronze ${milhar(r.bronze)})`).join('; ')}</p>
           )}

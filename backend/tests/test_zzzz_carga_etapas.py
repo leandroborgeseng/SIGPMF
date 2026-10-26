@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.core.sql_guard import garante_somente_leitura
 from app.models.camadas import RegistroBronze, Vinculo
 from app.models.controle import CheckpointCarga, Execucao, Log
 from app.services import carga_completa as ccomp
@@ -57,8 +58,10 @@ def test_cc7_api_etapas_e_logs_de_inicio_e_fim(client, tokens, origem, db):  # n
         ex = _carga_ok(client, tokens, db)
     finally:
         ccomp.sinal_de_vida = original
-    assert vistos and all(v[0] == "prata" and v[3] and v[4] == "em_andamento" for v in vistos)
-    assert vistos[-1][1] == vistos[-1][2] > 0  # contador da etapa chega ao total
+    prata = [v for v in vistos if v[0] == "prata"]
+    assert prata and all(v[3] and v[4] == "em_andamento" for v in vistos)
+    assert prata[-1][1] == prata[-1][2] > 0  # contador da prata chega ao total
+    assert vistos[-1][0] == "ouro"  # etapa do ouro visível por outra conexão durante a transação
     s = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()["execucao"]
     for k in ("etapa", "processadas_etapa", "total_etapa", "atualizado_em"):
         assert k in s
@@ -199,10 +202,160 @@ def test_regressao_indice_igual_ao_linear_no_fixture(db):
 
 def test_regressao_indice_igual_ao_linear_sintetico_com_colisoes(db):
     try:
-        sintetico_prata.gera(db, 1500)
+        sintetico_prata.gera(db, 5000)  # CC8.1: ~5 mil sem CPF
         antigo, novo = _compara(db)
         assert any(p[3] == "revisao" for p in antigo["pendentes"])  # há colisões de verdade
         assert any(v[4] == "novo_sem_cpf" and 0 < v[5] < 0.85 for v in antigo["vinculos"])  # melhor parcial gravado
         assert antigo == novo
     finally:
         db.rollback()
+
+
+# ---------- CC8.4 / CC8.5: retomada idempotente; queda no meio devolve prata/ouro ao estado anterior ----------
+def _camadas_snapshot(db):
+    db.expire_all()
+    s = sintetico_prata.snapshot(db)
+    s["gold"] = db.scalar(text("select md5(coalesce(string_agg(cidadao_id || campo || valor, ',' order by cidadao_id, campo, "
+                               "valor), '')) from gold.cidadao_dados"))
+    return s
+
+
+def test_cc8_4_retomar_duas_vezes_mesmo_resultado(client, tokens, origem, db):  # noqa: F811
+    ex = _carga_ok(client, tokens, db)
+    resultados = []
+    for _ in range(2):
+        e = _ultima(db, "SAUDE")
+        e.status = "interrompida"
+        db.commit()
+        assert client.post("/api/conectores/saude/completa/retomar-camadas", headers=tokens["admin"]).status_code == 202
+        assert _ultima(db, "SAUDE").status == "sucesso"
+        resultados.append((_camadas_snapshot(db), _bronze_assinatura(db, "SAUDE")))
+    assert resultados[0] == resultados[1] and ex.id < _ultima(db, "SAUDE").id
+
+
+def test_cc8_5_queda_no_ouro_bronze_intacta_e_prata_ouro_voltam(client, tokens, origem, db, monkeypatch):  # noqa: F811
+    _carga_ok(client, tokens, db)
+    e = _ultima(db, "SAUDE")
+    e.status = "interrompida"
+    db.commit()
+    antes, bronze = _camadas_snapshot(db), _bronze_assinatura(db, "SAUDE")
+    from app.gold import visao
+
+    def cai(_db):
+        raise MemoryError("queda sintética no ouro")
+    monkeypatch.setattr(visao, "reconstruir", cai)
+    assert client.post("/api/conectores/saude/completa/retomar-camadas", headers=tokens["admin"]).status_code == 202
+    ex = _ultima(db, "SAUDE")
+    assert ex.status == "falha"
+    assert _camadas_snapshot(db) == antes and _bronze_assinatura(db, "SAUDE") == bronze
+
+
+# ---------- CC9: quarentena de chave nula ----------
+@pytest.fixture
+def limite_50(monkeypatch):
+    monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_PCT", "50")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_cc9_chave_nula_vai_para_quarentena_e_reconcilia_com_pendencias(client, tokens, origem, db, limite_50):  # noqa: F811
+    from app.connectors.sqlserver.politicas import politica
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
+    nome_sint = "PESSOA SINTETICA QUARENTENA"
+    o.extras["Obitos"] = [{**base[0], "SEPULTURA": "S-NULA", "GAVETA": None, "NOME": nome_sint}]
+    try:
+        for rodada in range(2):  # 2ª rodada: a linha em quarentena não duplica
+            o.sqls.clear()
+            o.nulos_lidos = 0
+            assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+            ex = _ultima(db, "CEMITERIO")
+            assert ex.status == "sucesso", ex.mensagem
+            assert "1 linha(s) em quarentena (chave nula)" in ex.mensagem
+            assert o.nulos_lidos == 1  # SELECT separado só na tabela com nulos
+            nulas = [x for x, _ in o.sqls if "TOP (" in x and "IS NULL" in x and "IS NOT NULL" not in x]
+            assert len(nulas) == 1 and nulas[0].startswith("SELECT TOP (1) ") and garante_somente_leitura(nulas[0])
+            paginas = [x for x, _ in o.sqls if "TOP (" in x and x not in nulas]
+            assert paginas and all("IS NOT NULL" in x for x in paginas)  # lotes só com chave completa
+            q = list(db.scalars(select(RegistroBronze).where(RegistroBronze.sistema_origem == "CEMITERIO",
+                                                               RegistroBronze.quarentena.is_not(None))))
+            assert len(q) == 1 and q[0].tabela == "Obitos" and q[0].quarentena == "chave_nula"
+            assert q[0].quarentena_campos == ["GAVETA"] and nome_sint not in q[0].id_origem
+            # prata/ouro ignoram a linha em quarentena
+            assert db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.bronze_id == q[0].id)) == 0
+            s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()
+            assert s["quarentena"] == 1
+            # o banco de teste pode ter bronze de outros módulos (bronze >= origem); igualdade exata no teste isolado
+            for t, r in s["reconciliacao"].items():
+                assert r["origem"] == len(o.linhas(t)) and r["bronze"] + r["quarentena"] >= r["origem"], (rodada, t, r)
+                assert r["quarentena"] == (1 if t == "Obitos" else 0)
+                assert r["status"] == (("ok_com_pendencias" if r["quarentena"] else "ok") if r["ok"] else "divergente")
+            # keyset: nenhuma linha de chave completa perdida nem repetida (todas as chaves completas na bronze)
+            ord_o = ccomp.ordem("CEMITERIO", "Obitos")
+            from app.bronze.ingestao import _id
+            from app.ingestion.mapeamentos import MAPEAMENTOS
+            from app.services.diagnostico import linha_json
+            cols = politica("CEMITERIO").colunas_select("Obitos")
+            completas = {_id(MAPEAMENTOS[("CEMITERIO", "Obitos")]["chave"], linha_json(x, cols)) for x in o.linhas("Obitos")
+                         if all(x.get(c) is not None for c in ord_o)}
+            ids = set(db.scalars(select(RegistroBronze.id_origem).where(
+                RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos",
+                RegistroBronze.quarentena.is_(None))))
+            assert len(completas) == len(o.linhas("Obitos")) - 1 and completas <= ids
+        # detalhe só admin, sem valores da linha
+        assert client.get("/api/conectores/cemiterio/completa/quarentena", headers=tokens["operador"]).status_code == 403
+        r = client.get("/api/conectores/cemiterio/completa/quarentena", headers=tokens["admin"])
+        assert r.status_code == 200
+        linhas = r.json()["linhas"]
+        assert [(x["tabela"], x["motivo"], x["campos_nulos"]) for x in linhas] == [("Obitos", "Chave nula na origem", ["GAVETA"])]
+        corpo = r.text
+        assert nome_sint not in corpo and "S-NULA" not in corpo and "cpf" not in corpo.lower()
+    finally:
+        o.extras.clear()
+
+
+def test_cc9_3_acima_do_limite_para_com_a_mensagem_atual(client, tokens, origem, db, monkeypatch):  # noqa: F811
+    from app.connectors.sqlserver.politicas import politica
+    monkeypatch.setenv("SIGPMF_CARGA_NULOS_LIMITE_PCT", "1")
+    get_settings.cache_clear()
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    base = o.mock.ler("CEMITERIO", "Obitos", None, politica("CEMITERIO").colunas_select("Obitos"))
+    o.extras["Obitos"] = [{**base[0], "SEPULTURA": "S-NULA", "GAVETA": None}]  # 1 em poucas linhas: > 1%
+    try:
+        o.sqls.clear()
+        assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+        ex = _ultima(db, "CEMITERIO")
+        assert ex.status == "falha" and "a carga completa exige chave sem NULL" in ex.mensagem
+        assert not [x for x, _ in o.sqls if "TOP (" in x]
+    finally:
+        o.extras.clear()
+        get_settings.cache_clear()
+
+
+def test_cc9_reconciliacao_isolada_bronze_mais_quarentena_igual_origem(db):
+    sis = "TESTE_QUARENTENA"
+    ex = Execucao(tipo=ccomp.TIPO, sistema=sis, status="sucesso", usuario="t")
+    db.add(ex)
+    db.flush()
+    db.add_all([CheckpointCarga(sistema=sis, tabela=t, posicao=4, total_origem=4, concluida=True, execucao_id=ex.id)
+                for t in ("com_pendencia", "faltando")])
+    for t, n, q in (("com_pendencia", 3, 1), ("faltando", 2, 1)):
+        for i in range(n):
+            db.add(RegistroBronze(sistema_origem=sis, tabela=t, id_origem=str(i), dados={"i": i}, hash=f"h{i}", execucao_id=ex.id))
+        for i in range(q):
+            db.add(RegistroBronze(sistema_origem=sis, tabela=t, id_origem=f"chave_nula:q{i}", dados={}, hash=f"q{i}",
+                                  execucao_id=ex.id, quarentena="chave_nula", quarentena_campos=["k"]))
+    db.commit()
+    r = ccomp.reconciliacao(db, sis)
+    assert r["com_pendencia"] == {"origem": 4, "bronze": 3, "quarentena": 1, "ok": True, "status": "ok_com_pendencias"}
+    assert r["faltando"] == {"origem": 4, "bronze": 2, "quarentena": 1, "ok": False, "status": "divergente"}
+
+
+def test_cc9_limite_proporcional():
+    v = {"total": 1000, "nulos": 10, "distintas": 990}
+    assert ccomp.problema_chave("T", ("a",), v) is None  # 1,0%: no limite, quarentena
+    assert "exige chave sem NULL" in ccomp.problema_chave("T", ("a",), {**v, "nulos": 11, "distintas": 989})
+    assert "não é única" in ccomp.problema_chave("T", ("a",), {**v, "distintas": 989})

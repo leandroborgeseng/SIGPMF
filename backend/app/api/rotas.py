@@ -386,6 +386,12 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     return ccomp.situacao(db, conector)
 
 
+@api.get("/conectores/{conector}/completa/quarentena")
+def completa_quarentena(conector: str, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """CC9.2: linhas em quarentena (chave nula), só admin, sem valores da linha."""
+    return {"linhas": ccomp.quarentena(db, _conector_completa(db, conector))}
+
+
 @api.post("/conectores/{conector}/completa/retomar-camadas", status_code=202)
 def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(admin_auditado),
                              db: Session = Depends(get_db)):

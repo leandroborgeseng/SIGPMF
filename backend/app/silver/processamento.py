@@ -49,7 +49,7 @@ def parametros(db: Session) -> corr.Parametros:
 
 
 def _ultimas_versoes(db: Session) -> list[RegistroBronze]:
-    sub = select(func.max(RegistroBronze.id)).group_by(
+    sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None)).group_by(  # CC9
         RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
     return list(db.scalars(select(RegistroBronze).where(RegistroBronze.id.in_(sub)).order_by(RegistroBronze.id)))
 

@@ -21,6 +21,9 @@ class RegistroBronze(Base):
     execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))
     atualizado_origem_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     extraido_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # CC9 (0009): linha guardada em quarentena (ex.: "chave_nula"); prata e ouro ignoram
+    quarentena: Mapped[str | None] = mapped_column(String(40))
+    quarentena_campos: Mapped[list | None] = mapped_column(JSONType)
 
 
 SV = {"schema": "silver"}

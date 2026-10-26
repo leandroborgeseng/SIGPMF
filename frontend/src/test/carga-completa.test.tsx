@@ -267,6 +267,31 @@ describe('indicador de progresso (CC7)', () => {
   })
 })
 
+describe('quarentena de chave nula (CC9)', () => {
+  it('card: "Concluída com N linha(s) em quarentena (chave nula)", ok com pendências e detalhe sem valores da linha', async () => {
+    const FIM = { ...EX, status: 'sucesso', lidos: 8, gravados: 7, processados: 8, finalizado_em: '2026-10-26T18:40:00Z' }
+    const f = mock((u) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/quarentena')) return [200, { linhas: [{ id: 9, tabela: 'Leilao', motivo: 'Chave nula na origem',
+        campos_nulos: ['DataVenda'], referencia: 'chave_nula:abc123', extraido_em: null }] }]
+      return [200, sit({ execucao: FIM, quarentena: 1,
+        reconciliacao: { Leilao: { origem: 8, bronze: 7, quarentena: 1, ok: true, status: 'ok_com_pendencias' } } })]
+    })
+    const { container } = montar('admin')
+    const c = await cartao()
+    const fim = await within(c).findByLabelText('Resultado da carga completa de Saúde')
+    expect(within(fim).getByText('Concluída com 1 linha(s) em quarentena (chave nula)')).toBeInTheDocument()
+    expect(within(fim).getByText('Bronze + quarentena batem com a origem (ok com pendências)')).toBeInTheDocument()
+    expect(within(fim).queryByText(/ignorad/i)).toBeNull()
+    await userEvent.click(within(fim).getByRole('button', { name: 'Ver detalhes da quarentena' }))
+    const tab = await within(fim).findByRole('table', { name: 'Linhas em quarentena de Saúde' })
+    expect(within(tab).getByText('DataVenda')).toBeInTheDocument()
+    expect(within(tab).queryByText(/cpf/i)).toBeNull()
+    expect(f.mock.calls.some(([u]) => String(u).endsWith('/conectores/saude/completa/quarentena'))).toBe(true)
+    expect((await axe.run(container, { runOnly: ['wcag2a', 'wcag2aa'] })).violations).toEqual([])
+  })
+})
+
 describe('recursos do servidor (RS1/RS2/RS5)', () => {
   const R = { lido_em: '2026-10-26T16:05:00Z', faixas: { amarelo: 70, vermelho: 85 }, limites: { inicio_carga: 85, pausa_carga: 90 },
     disco: { total_gb: 100, livre_gb: 12, usado_pct: 88, status: 'critico' },

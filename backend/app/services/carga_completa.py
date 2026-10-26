@@ -73,26 +73,52 @@ class ChaveInvalida(RuntimeError):
 
 
 def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
+    """CC9: chave nula até SIGPMF_CARGA_NULOS_LIMITE_PCT (padrão 1%) vai para a quarentena; acima, a carga para."""
     chave = ", ".join(ordem_)
-    if v["nulos"]:
+    limite = get_settings().carga_nulos_limite_pct
+    if v["nulos"] and (not v["total"] or 100.0 * v["nulos"] / v["total"] > limite):
         return f"Tabela {tabela}: {v['nulos']} linha(s) com chave ({chave}) nula na origem; a carga completa exige chave sem NULL."
-    if v["distintas"] != v["total"]:
+    if v["distintas"] != v["total"] - v["nulos"]:
         return (f"Tabela {tabela}: chave ({chave}) não é única na origem ({v['total']} linhas, {v['distintas']} chaves "
                 "distintas); a carga completa exige chave única.")
     return None
 
 
-def verificar_chaves(leitor, conn, sistema: str, pol) -> dict[str, int]:
+def verificar_chaves(leitor, conn, sistema: str, pol, detalhe: bool = False) -> dict:
     """Antes de qualquer leitura: COUNT(*) x COUNT(DISTINCT chave) e NULLs, pelo guard. Recusa a tabela inválida."""
-    totais = {}
+    totais, det = {}, {}
     for t in cc.tabelas_do_conector(sistema):
         o = ordem(sistema, t)
         v = leitor.verificar_chave(conn, t, pol, o)
         erro = problema_chave(t, o, v)
         if erro:
             raise ChaveInvalida(erro)
-        totais[t] = v["total"]
-    return totais
+        totais[t], det[t] = v["total"], v
+    return det if detalhe else totais
+
+
+MOTIVO_CHAVE_NULA = "chave_nula"
+
+
+def _quarentena(db: Session, ex: Execucao, sistema: str, tabela: str, linhas: list[dict], ord_: tuple[str, ...]) -> int:
+    """CC9: linhas com chave nula entram na bronze marcadas (quarentena), com os campos nulos; id = hash da linha
+    (nenhum valor da linha no id). Idempotente: a mesma linha não duplica. Prata e ouro ignoram."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.bronze.ingestao import hash_registro
+    vals = {}
+    for r in linhas:
+        h = hash_registro(r)
+        vals[h] = {"sistema_origem": sistema, "tabela": tabela, "id_origem": f"{MOTIVO_CHAVE_NULA}:{h[:32]}", "dados": r,
+                   "hash": h, "execucao_id": ex.id, "quarentena": MOTIVO_CHAVE_NULA,
+                   "quarentena_campos": [c for c in ord_ if r.get(c) is None]}
+    if not vals:
+        return 0
+    db.execute(insert(RegistroBronze).values(list(vals.values())).on_conflict_do_nothing(
+        index_elements=["sistema_origem", "tabela", "id_origem", "hash"]))
+    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"{sistema}.{tabela}: {len(linhas)} linha(s) em quarentena "
+                                                         f"(chave nula: {sorted({c for v in vals.values() for c in v['quarentena_campos']})})"))
+    return len(linhas)
 
 
 class Bloqueado(RuntimeError):
@@ -317,9 +343,9 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     db.commit()
     conn = leitor.abrir()
     try:
-        totais = verificar_chaves(leitor, conn, sistema, pol)  # chave repetida/NULL: falha com motivo claro
+        det = verificar_chaves(leitor, conn, sistema, pol, detalhe=True)  # repetida/NULL acima do limite: falha
         for t, cp in cps.items():
-            cp.total_origem = totais[t]
+            cp.total_origem = det[t]["total"]
         ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
         retoma = sum(c.posicao for c in cps.values())
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
@@ -336,6 +362,11 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
             cols = pol.colunas_select(t)
             ord_ = ordem(sistema, t)
             ex.tabela_atual = t
+            if cp.posicao == 0 and det[t]["nulos"]:  # CC9: SELECT separado e limitado das chaves nulas
+                q = _quarentena(db, ex, sistema, t, [linha_json(r, cols) for r in
+                                                    leitor.ler_nulos(conn, t, pol, ord_, det[t]["nulos"])], ord_)
+                cp.posicao += q
+                ex.lidos = (ex.lidos or 0) + q
             db.commit()
             while True:
                 db.refresh(ex)
@@ -388,26 +419,44 @@ def _fim_etapa(db: Session, ex: Execucao, etapa: str, t0: float, res: dict) -> N
     log.info("carga completa %s: etapa %s fim em %.1fs", ex.id, etapa, seg)
 
 
+def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) -> None:
+    """Log de início (t0 None) ou fim de etapa numa conexão separada (commit próprio)."""
+    if t0 is None:
+        msg = f"Etapa {NOME_ETAPA[etapa]}: início"
+    else:
+        msg = f"Etapa {NOME_ETAPA[etapa]}: fim em {time.monotonic() - t0:.1f}s {res}"
+    with get_engine().begin() as c:
+        c.execute(Log.__table__.insert().values(execucao_id=ex_id, nivel="INFO", mensagem=msg))
+    log.info("carga completa %s: %s", ex_id, msg)
+
+
 def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
     """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada."""
     total = int(db.scalar(select(func.count(func.distinct(func.concat(
-        RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))) or 0)
+        RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
+        .where(RegistroBronze.quarentena.is_(None))) or 0)
     t0 = _inicio_etapa(db, ex, "prata", total)
+    # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
+    # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
     sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
-    _fim_etapa(db, ex, "prata", t0, sres)
-    db.commit()  # prata confirmada antes do ouro (já com o resultado novo visível)
-    t1 = _inicio_etapa(db, ex, "ouro", sres["vinculos"])
+    _log_separado(ex.id, "prata", t0, sres)
+    sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+    _log_separado(ex.id, "ouro", None, None)
+    t1 = time.monotonic()
     gres = visao.reconstruir(db)
-    _fim_etapa(db, ex, "ouro", t1, gres)
+    _log_separado(ex.id, "ouro", t1, gres)
     ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
     rec = reconciliacao(db, sistema)
     ok = all(r["ok"] for r in rec.values())
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
                mensagem="Reconciliação bronze x origem: " + "; ".join(
-                   f"{t} origem={r['origem']} bronze={r['bronze']}" for t, r in rec.items())))
+                   f"{t} origem={r['origem']} bronze={r['bronze']} quarentena={r['quarentena']}" for t, r in rec.items())))
+    quar = sum(r["quarentena"] for r in rec.values())
+    res_rec = ("ok com pendências" if quar else "ok") if ok else "divergente"
     _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: lidos={ex.lidos} novos={ex.novos} "
                                  f"atualizados={ex.atualizados} ignorados={ex.ignorados} silver={sres} gold={gres} "
-                                 f"reconciliacao={'ok' if ok else 'divergente'}")
+                                 f"reconciliacao={res_rec}"
+                                 + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else ""))
 
 
 def _valores_chave(r, ord_: tuple[str, ...], cols: tuple[str, ...]) -> tuple:
@@ -450,10 +499,26 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
     (bronze acima = registro que saiu da origem ou chave antiga; bronze abaixo = faltou linha)."""
     out = {}
     for cp in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema).order_by(CheckpointCarga.id)):
-        b = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
-            RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela)) or 0)
-        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "ok": cp.total_origem is not None and b == cp.total_origem}
+        def conta(quar: bool) -> int:
+            return int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
+                RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
+                RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))) or 0)
+        b, q = conta(False), conta(True)
+        ok = cp.total_origem is not None and b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
+        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ok": ok,
+                          "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
     return out
+
+
+def quarentena(db: Session, conector: str) -> list[dict]:
+    """CC9.2: detalhe só para admin, sem valores da linha (nem CPF): tabela, motivo, campos nulos, id (hash), data."""
+    sistema = _sistema(conector)
+    q = select(RegistroBronze.id, RegistroBronze.tabela, RegistroBronze.quarentena, RegistroBronze.quarentena_campos,
+               RegistroBronze.id_origem, RegistroBronze.extraido_em).where(
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None)).order_by(RegistroBronze.id)
+    return [{"id": r.id, "tabela": r.tabela, "motivo": "Chave nula na origem" if r.quarentena == MOTIVO_CHAVE_NULA
+             else r.quarentena, "campos_nulos": r.quarentena_campos or [], "referencia": r.id_origem,
+             "extraido_em": r.extraido_em} for r in db.execute(q.limit(1000))]
 
 
 def situacao(db: Session, conector: str) -> dict:
@@ -494,4 +559,6 @@ def situacao(db: Session, conector: str) -> dict:
             "pendencias": int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
                 CorrelacaoPendente.sistema == sistema, CorrelacaoPendente.status == "pendente")) or 0)},
         "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
+        "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
+            RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
     }

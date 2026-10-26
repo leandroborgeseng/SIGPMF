@@ -202,9 +202,26 @@ class SqlServerConnector:
         if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
             raise ValueError(f"Lote inválido: {limite!r}")
         where, params = self.filtro_keyset(ordem, ultima)
+        completa = "(" + " AND ".join(f"{_ident(c)} IS NOT NULL" for c in ordem) + ")"  # CC9: só chave completa
+        where = f"{where} AND {completa}" if where else f" WHERE {completa}"
         sql = (f"SELECT TOP ({int(limite)}) {', '.join(_ident(c) for c in cols)} "
                f"FROM {_ident('dbo.' + tabela.split('.')[-1])}{where} ORDER BY {', '.join(_ident(c) for c in ordem)}")
         return garante_somente_leitura(sql), params
+
+    def montar_nulos(self, politica, tabela: str, ordem: tuple[str, ...], limite: int) -> str:
+        """CC9: SELECT separado e limitado das linhas com algum campo da chave nulo (vão para a quarentena)."""
+        cols = list(politica.colunas_select(tabela))
+        if not ordem or any(c not in cols for c in ordem):
+            raise TabelaRecusada("Chave da carga completa fora das colunas da política.")
+        if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
+            raise ValueError(f"Limite inválido: {limite!r}")
+        nulos = " OR ".join(f"{_ident(c)} IS NULL" for c in ordem)
+        return garante_somente_leitura(
+            f"SELECT TOP ({int(limite)}) {', '.join(_ident(c) for c in cols)} FROM {_ident('dbo.' + tabela.split('.')[-1])} "
+            f"WHERE ({nulos}) ORDER BY {', '.join(_ident(c) for c in cols)}")
+
+    def ler_nulos(self, conn, tabela: str, politica, ordem: tuple[str, ...], limite: int) -> list[dict]:
+        return executa_somente_leitura(conn, self.montar_nulos(politica, tabela, ordem, limite), limite=limite)
 
     def montar_contagem(self, politica, tabela: str) -> str:
         politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
@@ -218,7 +235,9 @@ class SqlServerConnector:
         t = _ident("dbo." + tabela.split(".")[-1])
         nulos = " OR ".join(f"{_ident(c)} IS NULL" for c in ordem)
         q1 = f"SELECT COUNT(*), SUM(CASE WHEN {nulos} THEN 1 ELSE 0 END) FROM {t}"
-        q2 = f"SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(_ident(c) for c in ordem)} FROM {t}) AS chaves"
+        completa = " AND ".join(f"{_ident(c)} IS NOT NULL" for c in ordem)  # unicidade entre as chaves completas
+        q2 = (f"SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(_ident(c) for c in ordem)} FROM {t} "
+              f"WHERE {completa}) AS chaves")
         return garante_somente_leitura(q1), garante_somente_leitura(q2)
 
     def verificar_chave(self, conn, tabela: str, politica, ordem: tuple[str, ...]) -> dict:

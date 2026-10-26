@@ -65,11 +65,15 @@ if __name__ == "__main__":  # benchmark: TEST_DATABASE_URL obrigatório (banco d
     try:
         gera(db, n)
         res = {}
-        for indexado in (False, True):
+        modos = (True,) if "--so-indexado" in sys.argv else (False, True)
+        for indexado in modos:
             t = time.monotonic()
             processamento.reconstruir(db, indexado=indexado)
             res[indexado] = (time.monotonic() - t, snapshot(db))
-        print(f"N={n} linear={res[False][0]:.1f}s indexado={res[True][0]:.1f}s igual={res[False][1] == res[True][1]}")
+        if False in res:
+            print(f"N={n} linear={res[False][0]:.1f}s indexado={res[True][0]:.1f}s igual={res[False][1] == res[True][1]}")
+        else:
+            print(f"N={n} indexado={res[True][0]:.1f}s")
     finally:
         db.rollback()
         db.close()
