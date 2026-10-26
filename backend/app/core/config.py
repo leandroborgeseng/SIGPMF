@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
     sqlserver_port: int = Field(1433, alias="SQLSERVER_PORT")
     sqlserver_database: str | None = Field(None, alias="SQLSERVER_DATABASE")
+    # Banco por conector (cai no SQLSERVER_DATABASE quando vazio; o fallback fica registrado no controle).
+    sqlserver_database_saude: str | None = Field(None, alias="SQLSERVER_DATABASE_SAUDE")
+    sqlserver_database_cemiterio: str | None = Field(None, alias="SQLSERVER_DATABASE_CEMITERIO")
+    sqlserver_database_iss: str | None = Field(None, alias="SQLSERVER_DATABASE_ISS")
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
     sqlserver_password: str | None = Field(None, alias="SQLSERVER_PASSWORD")
     sqlserver_timeout: int = Field(5, alias="SQLSERVER_TIMEOUT")

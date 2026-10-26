@@ -21,7 +21,7 @@ def _ident(nome: str) -> str:
     return ".".join(f"[{p}]" for p in partes)
 
 
-@dataclass
+@dataclass(repr=False)
 class ConfigSqlServer:
     host: str | None
     port: int
@@ -35,6 +35,23 @@ class ConfigSqlServer:
     def do_ambiente(cls, s: Settings) -> "ConfigSqlServer":
         return cls(s.sqlserver_host, s.sqlserver_port, s.sqlserver_database, s.sqlserver_user,
                    s.sqlserver_password, s.sqlserver_timeout, s.amostra_limite)
+
+    def __repr__(self) -> str:  # nunca expõe host, usuário nem senha (logs, tracebacks)
+        return (f"ConfigSqlServer(host=***, port={self.port}, database={self.database!r}, user=***, password=***, "
+                f"timeout={self.timeout}, amostra_limite={self.amostra_limite})")
+
+    __str__ = __repr__
+
+    @classmethod
+    def para_conector(cls, s: Settings, conector: str) -> tuple["ConfigSqlServer", bool]:
+        """Banco específico do conector (SQLSERVER_DATABASE_<CONECTOR>); sem ele, usa SQLSERVER_DATABASE.
+        Retorna (config, usou_fallback)."""
+        especifico = getattr(s, f"sqlserver_database_{conector.lower()}", None)
+        base = cls.do_ambiente(s)
+        if especifico:
+            base.database = especifico
+            return base, False
+        return base, True
 
     def resumo_publico(self) -> dict[str, Any]:
         """Sem senha nem usuário."""
