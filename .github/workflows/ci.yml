@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "factory/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # Credenciais SINTÉTICAS, somente para o banco efêmero do CI.
+          POSTGRES_DB: sigpmf_test
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-somente-teste
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d sigpmf_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://ci:ci-somente-teste@localhost:5432/sigpmf_test
+      APP_ENV: test
+      # JWT_SECRET de teste vem do conftest.py (setdefault); nada sensível aqui.
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+
+  frontend:
+    name: Frontend (eslint + tsc + vitest + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc -b
+      - run: npm test
+      - run: npm run build
+
+  docker:
+    name: Docker compose build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gera .env sintético a partir do exemplo
+        run: cp .env.example .env
+      - name: Valores de teste gerados em runtime (sem segredos literais)
+        run: |
+          {
+            echo "HTTP_PORT=18088"
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "ADMIN_PASSWORD=Ci-$(openssl rand -hex 12)"
+          } >> .env
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - name: Sobe o compose e espera healthchecks
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Todos os serviços healthy
+        run: |
+          docker compose ps --format json | python3 -c '
+          import sys, json
+          raw = sys.stdin.read().strip()
+          svcs = json.loads(raw) if raw.startswith("[") else [json.loads(l) for l in raw.splitlines() if l.strip()]
+          ruins = [s["Service"] for s in svcs if s.get("Health") != "healthy"]
+          print({s["Service"]: s.get("Health") for s in svcs})
+          assert len(svcs) == 3 and not ruins, f"não healthy: {ruins}"'
+      - name: Postgres sem porta publicada
+        run: |
+          pub=$(docker compose ps postgres --format json | python3 -c '
+          import sys, json
+          raw = sys.stdin.read().strip()
+          s = json.loads(raw) if raw.startswith("[") else json.loads(raw.splitlines()[0])
+          s = s[0] if isinstance(s, list) else s
+          print(sum(1 for p in s.get("Publishers") or [] if p.get("PublishedPort")))')
+          echo "portas publicadas do postgres: $pub"
+          test "$pub" = "0"
+          porta=$(docker compose port postgres 5432 2>/dev/null || true)
+          echo "docker compose port postgres 5432 -> '${porta}'"
+          case "$porta" in ""|*:0) echo "ok: sem porta no host" ;; *) echo "postgres publica 5432"; exit 1 ;; esac
+      - name: alembic current = 0002 (head)
+        run: |
+          out=$(docker compose exec -T backend alembic current 2>&1)
+          echo "$out"
+          echo "$out" | grep -q '0002 (head)'
+      - name: Smoke HTTP (dados sintéticos)
+        run: |
+          set -euo pipefail
+          set -a; . ./.env; set +a
+          B=http://localhost:${HTTP_PORT}
+          API=$B/api
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code $API/health)" = 200 && echo "health 200"
+          d=$(code $API/docs); echo "docs -> $d"; test "$d" != 200
+          test "$(code $B/dashboard)" = 200 && echo "front 200"
+          w=$(code -X POST $API/auth/login -H 'Content-Type: application/json' -d "{\"usuario\":\"$ADMIN_EMAIL\",\"senha\":\"errada\"}")
+          echo "login errado -> $w"; test "$w" = 401
+          TA=$(curl -sf -X POST $API/auth/login -H 'Content-Type: application/json' -d "{\"usuario\":\"$ADMIN_EMAIL\",\"senha\":\"$ADMIN_PASSWORD\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+          echo "::add-mask::$TA"
+          test "$(code $API/dashboard -H "Authorization: Bearer $TA")" = 200 && echo "dashboard 200"
+          s=$(code $API/dashboard); echo "dashboard sem token -> $s"; test "$s" = 401 -o "$s" = 403
+      - name: Logs do compose (em falha)
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Derruba o compose
+        if: always()
+        run: docker compose down
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (CLI, sem licença)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
+          ./gitleaks git --redact --verbose --exit-code 1 .
