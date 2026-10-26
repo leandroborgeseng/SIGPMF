@@ -151,6 +151,26 @@ describe('carga completa (CC1-CC6)', () => {
     expect(f.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false)
   })
 
+  it('UX: estimativa 409 mostra o motivo; outra falha mostra a mensagem genérica', async () => {
+    const motivo = 'Tabela pacientes: chave (Matricula) não é única na origem (8 linhas, 7 chaves distintas); a carga completa exige chave única.'
+    let resposta: [number, unknown] = [409, { detail: motivo }]
+    mock((u) => (u.endsWith('/conectores') ? [200, resp({})] : u.endsWith('/estimativa') ? resposta : [200, sit()]))
+    montar('admin')
+    const c = await cartao()
+    const b = within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    await waitFor(() => expect(b).toBeEnabled())
+    await userEvent.click(b)
+    let d = await screen.findByRole('dialog')
+    expect(await within(d).findByText(motivo)).toBeInTheDocument()
+    expect(within(d).getByRole('button', { name: 'Iniciar carga completa' })).toBeDisabled()
+    await userEvent.click(within(d).getByRole('button', { name: 'Cancelar' }))
+    resposta = [502, { detail: 'Não foi possível contar as linhas da origem: timeout' }]
+    await userEvent.click(b)
+    d = await screen.findByRole('dialog')
+    expect(await within(d).findByText('Não foi possível estimar as linhas da origem. Feche e tente de novo.')).toBeInTheDocument()
+    expect(within(d).queryByText(/timeout/)).toBeNull()
+  })
+
   it('UX: pausa sem motivo mostra só "Carga pausada"', async () => {
     mock((u) => [200, u.endsWith('/conectores') ? resp({}) : sit({ execucao: { ...EX, status: 'pausada', pausa_motivo: null } })])
     montar('admin')

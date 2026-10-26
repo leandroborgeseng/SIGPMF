@@ -544,3 +544,26 @@ def test_rs5_sem_leitura_do_disco_durante_a_carga_pausa(client, tokens, origem, 
     leitura["ok"] = True
     assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 202
     assert _ultima(db, "SAUDE").status == "sucesso"
+
+
+def test_reconciliacao_unitaria_isolada_igual_ok_menor_e_maior_divergem(db):
+    """Isolado: sistema sintético próprio (sem bronze de outros módulos), chama reconciliacao() direto."""
+    sis = "TESTE_RECONCILIACAO"
+    ex = Execucao(tipo=ccomp.TIPO, sistema=sis, status="sucesso", usuario="t")
+    db.add(ex)
+    db.flush()
+    db.add_all([CheckpointCarga(sistema=sis, tabela=t, posicao=n, total_origem=n, concluida=True, execucao_id=ex.id)
+                for t, n in (("igual", 3), ("menor", 3), ("maior", 3))])
+    linhas = {"igual": 3, "menor": 2, "maior": 4}
+    for t, n in linhas.items():
+        for i in range(n):
+            db.add(RegistroBronze(sistema_origem=sis, tabela=t, id_origem=str(i), dados={"i": i}, hash=f"h{i}",
+                                  execucao_id=ex.id))
+    # histórico: mesma chave com outro hash conta uma vez só
+    db.add(RegistroBronze(sistema_origem=sis, tabela="igual", id_origem="0", dados={"i": 0, "v": 2}, hash="h0v2",
+                          execucao_id=ex.id))
+    db.commit()
+    r = ccomp.reconciliacao(db, sis)
+    assert r["igual"] == {"origem": 3, "bronze": 3, "ok": True}
+    assert r["menor"] == {"origem": 3, "bronze": 2, "ok": False}
+    assert r["maior"] == {"origem": 3, "bronze": 4, "ok": False}

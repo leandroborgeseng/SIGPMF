@@ -18,6 +18,7 @@ export type Situacao = {
 type Estimativa = { tabelas: Record<string, number>; total: number }
 
 export const INTERVALO_MS = 2000
+export const ESTIMATIVA_FALHOU = 'Não foi possível estimar as linhas da origem. Feche e tente de novo.'
 
 /** Carga completa REAL por conector (CC1-CC6): confirmação com estimativa, progresso, cancelar, card final. */
 export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
@@ -77,7 +78,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim }: {
     try {
       setEst(await api<Estimativa>(`/conectores/${conector}/completa/estimativa`))
     } catch (e) {
-      setEstErro(e instanceof ApiErro ? e.message : 'Não foi possível estimar as linhas da origem.')
+      setEstErro(e instanceof ApiErro && e.status === 409 && e.message ? e.message : ESTIMATIVA_FALHOU)
     }
   }
   const disparar = async () => {
