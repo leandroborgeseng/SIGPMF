@@ -559,7 +559,7 @@ def saude_ids(client):
     did = db.execute(text(ins), {"t": "ESUS_Cadastro_Domiciliar", "io": "ZZD1", "e": eid, "h": "zzd1",
                                  "d": _j.dumps({"Codigo_Cadastro": "ZZT888002", "UUID": "ZZT-UUID-0003", "Nu_INE": "42"})}).scalar()
     fid = db.execute(text(ins), {"t": "ESUS_Cadastro_Domiciliar_Familia", "io": "ZZF1", "e": eid, "h": "zzf1",
-                                 "d": _j.dumps({"Codigo_Cadastro_Domiciliar": "ZZT999004", "Data_Mudanca": "2026-01-02"})}).scalar()
+                                 "d": _j.dumps({"Codigo_Cadastro_Domiciliar": "ZZT999004", "Codigo_Domicilio_Familia": "ZZT555005", "Data_Mudanca": "2026-01-02"})}).scalar()
     cid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "zzteste-saude"))
     db.execute(text("INSERT INTO silver.cidadaos (cidadao_id, nome) VALUES (:c, 'ZZTESTE Saude')"), {"c": cid})
     db.execute(text("INSERT INTO silver.vinculos (cidadao_id, sistema, tabela, chave_origem, bronze_id, metodo, confianca, atributos) "
@@ -570,7 +570,7 @@ def saude_ids(client):
 
 
 def test_tl_matricula_uuid_codigo_cadastro_mascarados_admin_e_lgpd_revela(client, tokens, saude_ids):
-    vals = ("ZZT777001", "ZZT888002", "ZZT-UUID-0003", "ZZT999004")
+    vals = ("ZZT777001", "ZZT888002", "ZZT-UUID-0003", "ZZT999004", "ZZT555005")
     h = tokens["admin"]
     a = client.post("/api/explorar/amostra", json={"conector": "SAUDE", "camada": "bronze", "tabela": "pacientes",
                                                     "filtros": {"id": str(saude_ids["pid"])}}, headers=h)
@@ -582,7 +582,7 @@ def test_tl_matricula_uuid_codigo_cadastro_mascarados_admin_e_lgpd_revela(client
     fam = client.post("/api/explorar/amostra", json={"conector": "SAUDE", "camada": "bronze", "tabela": "ESUS_Cadastro_Domiciliar_Familia",
                                                       "filtros": {"id": str(saude_ids["fid"])}}, headers=h)
     f0 = fam.json()["linhas"][0]
-    assert f0["Codigo_Cadastro_Domiciliar"] == "••• (oculto)" and f0["Data_Mudanca"] == "2026-01-02"
+    assert f0["Codigo_Cadastro_Domiciliar"] == f0["Codigo_Domicilio_Familia"] == "••• (oculto)" and f0["Data_Mudanca"] == "2026-01-02"
     assert not any(v in fam.text for v in vals)
     lin = client.post("/api/explorar/linhagem", json={"cidadao_id": saude_ids["cid"]}, headers=h)
     assert lin.json()["prata"][0]["bronze"]["dados"]["Matricula"] == "••• (oculto)"
@@ -592,7 +592,8 @@ def test_tl_matricula_uuid_codigo_cadastro_mascarados_admin_e_lgpd_revela(client
     for tab, lid, col, val in (("pacientes", saude_ids["pid"], "Matricula", vals[0]),
                                ("ESUS_Cadastro_Domiciliar", saude_ids["did"], "Codigo_Cadastro", vals[1]),
                                ("ESUS_Cadastro_Domiciliar", saude_ids["did"], "UUID", vals[2]),
-                               ("ESUS_Cadastro_Domiciliar_Familia", saude_ids["fid"], "Codigo_Cadastro_Domiciliar", vals[3])):
+                               ("ESUS_Cadastro_Domiciliar_Familia", saude_ids["fid"], "Codigo_Cadastro_Domiciliar", vals[3]),
+                               ("ESUS_Cadastro_Domiciliar_Familia", saude_ids["fid"], "Codigo_Domicilio_Familia", vals[4])):
         corpo = {"conector": "SAUDE", "camada": "bronze", "tabela": tab, "linha_id": lid, "coluna": col, "motivo": MOT}
         assert client.post("/api/explorar/revelar", json=corpo, headers=h).status_code == 403
         r = client.post("/api/explorar/revelar", json=corpo, headers=lg)
