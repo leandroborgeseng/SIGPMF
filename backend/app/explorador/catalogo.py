@@ -1,0 +1,80 @@
+"""Lista FECHADA (allowlist) de tabelas e colunas que o explorador lê. Nada fora daqui vira SQL (EX3).
+
+Prata/ouro: tabelas e colunas vêm dos modelos SQLAlchemy (nomes fixos no código). Bronze: as "tabelas" são valores
+de bronze.registros.tabela e as "colunas" são chaves do JSON `dados`; ambos só entram na consulta como PARÂMETRO
+(bind), nunca como identificador SQL, e precisam existir nos dados do próprio conector.
+"""
+from dataclasses import dataclass, field
+
+from sqlalchemy import Table
+
+from app.models.camadas import (
+    Cidadao,
+    CidadaoSistemas,
+    CorrelacaoPendente,
+    DadoGold,
+    Endereco,
+    Identificador,
+    Inconsistencia,
+    Municipe,
+    MunicipePendencia,
+    MunicipeVersao,
+    Vinculo,
+)
+
+CAMADAS = ("bronze", "prata", "ouro")
+
+
+@dataclass(frozen=True)
+class Spec:
+    nome: str
+    tabela: Table
+    id_col: str
+    # como filtrar pelo conector: coluna "sistema", via vinculos (cidadao_id), json array, ou só um sistema fixo
+    filtro: str
+    sistema_fixo: str | None = None
+    rotulo_col: str | None = None   # tabela chave/valor: a sensibilidade de valor_col depende do rótulo
+    valor_col: str | None = None
+    cidadao_col: str | None = None  # EX5: permite abrir a linhagem
+    ocultas: tuple[str, ...] = field(default=())  # colunas nunca exibidas (ex.: hash)
+
+    @property
+    def colunas(self) -> list[str]:
+        return [c.name for c in self.tabela.columns if c.name not in self.ocultas]
+
+    def tipo(self, col: str) -> str:
+        try:
+            return str(self.tabela.columns[col].type).lower()
+        except Exception:  # noqa: BLE001
+            return "?"
+
+
+def _t(m) -> Table:
+    return m.__table__
+
+
+PRATA: dict[str, Spec] = {s.nome: s for s in (
+    Spec("vinculos", _t(Vinculo), "id", "sistema", cidadao_col="cidadao_id"),
+    Spec("cidadaos", _t(Cidadao), "cidadao_id", "vinculos", cidadao_col="cidadao_id"),
+    Spec("identificadores", _t(Identificador), "id", "vinculos", rotulo_col="tipo", valor_col="valor",
+         cidadao_col="cidadao_id"),
+    Spec("enderecos", _t(Endereco), "id", "sistema", cidadao_col="cidadao_id"),
+    Spec("correlacoes_pendentes", _t(CorrelacaoPendente), "id", "sistema"),
+    Spec("inconsistencias", _t(Inconsistencia), "id", "sistema", cidadao_col="cidadao_id"),
+    Spec("municipes", _t(Municipe), "documento", "fixo", sistema_fixo="ISS", cidadao_col="cidadao_id",
+         ocultas=("hash",)),
+    Spec("municipes_versoes", _t(MunicipeVersao), "id", "fixo", sistema_fixo="ISS", ocultas=("hash",)),
+    Spec("municipes_pendencias", _t(MunicipePendencia), "chave", "fixo", sistema_fixo="ISS"),
+)}
+
+OURO: dict[str, Spec] = {s.nome: s for s in (
+    Spec("cidadao_dados", _t(DadoGold), "id", "sistema", rotulo_col="campo", valor_col="valor", cidadao_col="cidadao_id"),
+    Spec("cidadao_sistemas", _t(CidadaoSistemas), "cidadao_id", "json_array", cidadao_col="cidadao_id"),
+)}
+
+POR_CAMADA = {"prata": PRATA, "ouro": OURO}
+
+# Colunas de bronze.registros exibidas ao lado das chaves do JSON
+BRONZE_META = ("id", "id_origem", "extraido_em", "atualizado_origem_em")
+BRONZE_AMOSTRA_CHAVES = 2000  # linhas lidas para descobrir as chaves do JSON
+MAX_LINHAS = 50

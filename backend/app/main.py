@@ -9,6 +9,7 @@ from app.api.rotas import api, publico
 from app.core.config import VERSION, get_settings
 from app.core.db import SessionLocal
 from app.core.security import hash_senha
+from app.explorador.rotas import explorador
 from app.models.controle import Usuario
 
 log = logging.getLogger("sigpmf")
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(publico)
     app.include_router(publico, prefix="/api")
     app.include_router(api, prefix="/api")
+    app.include_router(explorador, prefix="/api")  # EX1–EX7
 
     return app
 

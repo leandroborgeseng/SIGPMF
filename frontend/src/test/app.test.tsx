@@ -40,12 +40,12 @@ describe('acesso', () => {
     expect(f).not.toHaveBeenCalled()
   })
 
-  it('navegação com 3 itens e aria-current (UX-S1)', async () => {
+  it('navegação com aria-current (UX-S1); admin ganha Explorar dados (EX6)', async () => {
     mockFetch(() => [200, DASH_VAZIO])
     montar('/dashboard', 'admin')
     const nav = await screen.findByRole('navigation', { name: 'Navegação principal' })
     const links = within(nav).getAllByRole('link')
-    expect(links.map((l) => l.textContent)).toEqual(['Dashboard', 'Conectores', 'Simulador do Cidadão'])
+    expect(links.map((l) => l.textContent)).toEqual(['Dashboard', 'Conectores', 'Simulador do Cidadão', 'Explorar dados'])
     expect(links[0]).toHaveAttribute('aria-current', 'page')
   })
 

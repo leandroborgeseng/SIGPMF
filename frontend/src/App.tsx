@@ -4,6 +4,7 @@ import { useAuth } from './auth'
 import Layout from './Layout'
 import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
+import ExplorarDados from './pages/ExplorarDados'
 import Login from './pages/Login'
 import Simulador from './pages/Simulador'
 
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/conectores" element={<Conectores />} />
         <Route path="/simulador" element={<Simulador />} />
+        <Route path="/explorar" element={<ExplorarDados />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
