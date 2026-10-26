@@ -93,13 +93,18 @@ class ChaveInvalida(RuntimeError):
 
 def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
     """CC9: chave nula vai para a quarentena; a carga só para se os nulos passarem de SIGPMF_CARGA_NULOS_LIMITE_PCT
-    (padrão 1%) E de SIGPMF_CARGA_NULOS_LIMITE_MIN linhas (padrão 10). Tabela pequena com poucas nulas não bloqueia."""
+    (padrão 1%) E de SIGPMF_CARGA_NULOS_LIMITE_MIN linhas (padrão 10). Tabela pequena com poucas nulas não bloqueia,
+    mas 100% de nulos (total > 0) sempre bloqueia."""
     chave = ", ".join(ordem_)
     s = get_settings()
     limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
     nulos, total = v["nulos"], v["total"]
     if nulos:
         pct = 100.0 * nulos / total if total else 100.0
+        if total > 0 and nulos >= total:  # ressalva do Tester no #17: tabela inteira com chave nula sempre para
+            return (f"Tabela {tabela}: todas as {total} linha(s) têm chave ({chave}) nula na origem (100%); "
+                    "nada poderia ir para a bronze, então a carga completa para mesmo abaixo do mínimo de "
+                    f"{minimo} linha(s). Corrigir na origem (DBA) ou rever a chave do mapeamento.")
         if pct > limite and nulos > minimo:
             return (f"Tabela {tabela}: {nulos} linha(s) com chave ({chave}) nula na origem ({pct:.2f}% de {total}); "
                     f"acima do limite de {limite:g}% e do mínimo de {minimo} linha(s), a carga completa para. "

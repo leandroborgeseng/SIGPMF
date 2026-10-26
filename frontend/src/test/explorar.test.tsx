@@ -102,6 +102,18 @@ describe('Explorar dados', () => {
     expect(screen.queryByText(/csv|exportar/i)).toBeNull()
   })
 
+  it('UX: cabeçalho da coluna quarentena da Amostra é "Quarentena"', async () => {
+    mock({ amostra: () => [200, { tabela: 'Leilao', colunas: ['id', 'id_origem', 'quarentena'], id_coluna: 'id', cidadao_coluna: null, colunas_sensiveis: [],
+      linhas: [{ id: 1, id_origem: 'Z1', quarentena: 'chave_nula' }], pagina: 1, por_pagina: 50, tem_anterior: false, tem_proxima: false }] })
+    montar('admin')
+    const u = userEvent.setup()
+    await abaAmostra(u)
+    expect(await screen.findByRole('columnheader', { name: 'Quarentena' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'quarentena' })).toBeNull()
+    expect(screen.getByRole('cell', { name: 'Chave nula na origem' })).toBeInTheDocument()
+    expect(screen.queryByText('chave_nula')).toBeNull()
+  })
+
   it('UX-E9: abas de camada navegam com as setas', async () => {
     mock()
     montar('admin')
@@ -126,12 +138,12 @@ describe('Explorar dados', () => {
     await screen.findByText('P100')
     expect(screen.getByRole('button', { name: 'Próxima' })).toBeDisabled()
     const form = screen.getByRole('form', { name: 'Filtros' })
-    const campo = within(form).getByLabelText('id_origem')
+    const campo = within(form).getByLabelText('id')  // na bronze, id é o único filtro livre do admin comum (P1)
     expect(campo).toHaveAttribute('placeholder', 'valor exato')
-    await u.type(campo, 'P7')
+    await u.type(campo, '77')
     await u.click(within(form).getByRole('button', { name: 'Filtrar' }))
-    await waitFor(() => expect(ch.some((c) => (c.corpo.filtros as Record<string, string>)?.id_origem === 'P7')).toBe(true))
-    expect(ch.every((c) => !c.url.includes('?') && !c.url.includes('P7'))).toBe(true)
+    await waitFor(() => expect(ch.some((c) => (c.corpo.filtros as Record<string, string>)?.id === '77')).toBe(true))
+    expect(ch.every((c) => !c.url.includes('?') && !c.url.includes('77'))).toBe(true)
   })
 
   it('filtro em coluna pessoal: admin vê campo desabilitado com cadeado e tooltip LGPD', async () => {
@@ -144,10 +156,13 @@ describe('Explorar dados', () => {
     expect(cpf).toHaveAttribute('aria-disabled', 'true')
     expect(cpf).toHaveAttribute('readonly')
     expect(cpf).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
-    expect(within(form).getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(3) // visível: cpf, nome, email
+    expect(screen.getAllByText('Filtro disponível só para o perfil LGPD')).toHaveLength(1) // aviso único acima dos filtros
+    expect(within(form).queryByText('Filtro disponível só para o perfil LGPD')).toBeNull()  // nos campos, só o cadeado
+    for (const c of [/^id_origem/, /^nome/, /^email/]) expect(within(form).getByLabelText(c)).toHaveAccessibleDescription('Filtro disponível só para o perfil LGPD')
     await userEvent.setup().type(cpf, '123')
     expect(cpf).toHaveValue('')
-    expect(within(form).getByLabelText('id_origem')).not.toHaveAttribute('aria-disabled')
+    expect(within(form).getByLabelText(/^id_origem/)).toHaveAttribute('aria-disabled', 'true')  // P1: bronze, além de id
+    expect(within(form).getByLabelText('id')).not.toHaveAttribute('aria-disabled')
     expect(screen.queryByRole('button', { name: /Revelar/ })).toBeNull()
   })
 
@@ -217,7 +232,10 @@ describe('Explorar dados', () => {
     const uuid = await screen.findByText('400d13f0…')
     expect(uuid).toHaveAttribute('title', CID)
     expect(screen.getByRole('button', { name: 'Copiar identificador' })).toBeInTheDocument()
-    expect(screen.getByText('••• (oculto)')).toBeInTheDocument()
+    const m = document.querySelector('.mascara')!
+    expect(m).toHaveTextContent('••• oculto')  // visível só "•••"; "oculto" é sr-only
+    expect(m.querySelector('.sr-only')).toHaveTextContent('oculto')
+    expect(screen.queryByText('••• (oculto)')).toBeNull()
     await u.click(screen.getByRole('button', { name: 'origem' }))
     const ver = await screen.findByRole('button', { name: 'Ver linha na Bronze' })
     expect(screen.getByRole('table', { name: 'Veio de' })).toBeInTheDocument()
@@ -225,15 +243,19 @@ describe('Explorar dados', () => {
     await waitFor(() => expect(ch.some((c) => c.corpo.conector === 'EXSINT' && c.corpo.camada === 'bronze' && (c.corpo.filtros as Record<string, string>)?.id === '7')).toBe(true))
   })
 
-  it('UX-E7: camada vazia e faixa "Processando… etapa X de 3 · parciais"', async () => {
+  it('UX-E7: camada vazia; faixa "Processando… etapa X de 3 · parciais" só no funil, não repetida na camada', async () => {
+    const PROC = { ...EST, processando: true, etapa: 'prata', etapa_num: 2, etapas_total: 3, atualizado_em: new Date(Date.now() - 5000).toISOString() }
     mock({ tabelas: (c) => c.camada === 'ouro'
-      ? [200, { ...TAB('ouro', 'cidadao_dados', 0), estado: { ...EST, processando: true, etapa: 'prata', etapa_num: 2, etapas_total: 3, atualizado_em: new Date(Date.now() - 5000).toISOString() } }]
-      : [200, TAB(String(c.camada))] })
+      ? [200, { ...TAB('ouro', 'cidadao_dados', 0), estado: PROC }]
+      : [200, { ...TAB(String(c.camada)), estado: PROC }],
+    funil: () => [200, { bronze: 120, bronze_unicos: 120, quarentena: 0, prata: 1, prata_cidadaos: 1, ouro: 1, estado: PROC, quarentena_disponivel: false,
+      reconciliacao: null, descartes: [] }] })
     montar('admin')
     const u = userEvent.setup()
     await u.click(await screen.findByRole('tab', { name: /Ouro/ }))
     expect(await screen.findByText('Esta camada ainda não foi processada para esta tabela.')).toBeInTheDocument()
-    expect(screen.getByText(/Processando… etapa 2 de 3 · atualizado há \d+s · números parciais/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByText(/Processando… etapa 2 de 3 · atualizado há \d+s · números parciais/)).toHaveLength(1))
+    expect(within(screen.getByLabelText('Funil de qualidade')).getByText(/Processando… etapa 2 de 3/)).toBeInTheDocument()
   })
 
   it('formatação: datas dd/mm/aaaa [HH:mm], Sim/Não e plural', () => {

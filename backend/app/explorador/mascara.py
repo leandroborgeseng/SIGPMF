@@ -119,3 +119,14 @@ def mascara_linha(linha: dict, rotulo_col: str | None = None, valor_col: str | N
         rot = str(linha.get(rotulo_col))
         out[valor_col] = mascara_valor(tipo_sensivel(rot) or "documento", linha[valor_col])
     return out
+
+
+def mascara_restrita(coluna: str, v: Any, livres=frozenset()) -> Any:
+    """Bronze (P1): coluna fora da allowlist do conector nunca sai em claro. Nome pessoal -> máscara do tipo;
+    qualquer outro nome (NU_INSCR, Ident...) -> oculto. Coluna livre -> máscara normal (nome + conteúdo)."""
+    if coluna in livres:
+        return mascara_campo(coluna, v)
+    if v is None or v == "":
+        return v
+    t = tipo_sensivel(coluna)
+    return mascara_valor(t, v) if t and not isinstance(v, (dict, list)) else OCULTO
