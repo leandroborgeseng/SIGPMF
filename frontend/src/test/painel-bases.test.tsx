@@ -157,4 +157,21 @@ describe('painel de bases', () => {
     await cartao('Saude')
     expect(screen.getByRole('button', { name: 'Executar carga (demo)' })).toBeDisabled()
   })
+
+  it('falha mostra o motivo e "Ver detalhes"; origem vazia em âmbar', async () => {
+    const erro = { classe: 'ProgrammingError', numero: 207, tabela: 'Titulares', objeto: 'Endereco', local: 'connector.py:120 in ler_amostra', motivo: 'Coluna inexistente na origem: Endereco (tabela Titulares). Ajustar a lista de colunas da política.' }
+    mock(() => [200, { ...RESP, bases: [
+      base({ id: 2, nome: 'Cemiterio', status: 'implementado', tem_conector: true, pode_carregar: true, motivo_bloqueio: null, com_erro: true, ultima_carga: { ...ULT, tipo: 'amostra_conector', status: 'falha', erro } }),
+      base({ id: 3, nome: 'ISS', status: 'implementado', tem_conector: true, pode_carregar: true, motivo_bloqueio: null, origem_vazia: true, ultima_carga: { ...ULT, tipo: 'carga_municipe_amostra', status: 'origem_vazia', lidos: 0 } }),
+    ] }])
+    montar('admin')
+    const cem = await cartao('Cemiterio')
+    expect(within(cem).getByText(/Motivo: Coluna inexistente na origem: Endereco/)).toBeInTheDocument()
+    await userEvent.click(within(cem).getByText('Ver detalhes'))
+    expect(within(cem).getByText(/SQL Server 207/)).toBeInTheDocument()
+    expect(within(cem).getByText('connector.py:120 in ler_amostra')).toBeInTheDocument()
+    const iss = await cartao('ISS')
+    expect(within(iss).getByRole('status')).toHaveTextContent('Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.')
+    expect(within(iss).queryByText(/sem_novidades/)).toBeNull()
+  })
 })

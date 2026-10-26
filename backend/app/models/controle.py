@@ -53,6 +53,26 @@ class Execucao(Base):
     duplicados: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     pendentes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     mensagem: Mapped[str | None] = mapped_column(Text)
+    # Motivo seguro da falha (0007): sem valores, host, usuário ou senha
+    erro_classe: Mapped[str | None] = mapped_column(String(80))
+    erro_numero: Mapped[int | None] = mapped_column(Integer)
+    erro_tabela: Mapped[str | None] = mapped_column(String(200))
+    erro_objeto: Mapped[str | None] = mapped_column(String(200))
+    erro_local: Mapped[str | None] = mapped_column(String(200))
+
+    def registra_erro(self, exc: BaseException) -> None:
+        from app.services.diagnostico import categoria
+        c = categoria(exc)
+        self.erro_classe, self.erro_numero, self.erro_tabela = c["classe"], c["numero"], c["tabela"]
+        self.erro_objeto, self.erro_local = c["objeto"], c["local"]
+
+    def erro_publico(self) -> dict | None:
+        if self.status != "falha" or not self.erro_classe:
+            return None
+        from app.services.diagnostico import motivo
+        return {"classe": self.erro_classe, "numero": self.erro_numero, "tabela": self.erro_tabela,
+                "objeto": self.erro_objeto, "local": self.erro_local,
+                "motivo": motivo(self.erro_classe, self.erro_numero, self.erro_tabela, self.erro_objeto)}
 
 
 class Log(Base):

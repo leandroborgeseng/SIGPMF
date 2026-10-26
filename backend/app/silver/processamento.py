@@ -99,6 +99,8 @@ def reconstruir(db: Session) -> dict[str, int]:
     regs = []
     for r in _ultimas_versoes(db):
         m = MAPEAMENTOS.get((r.sistema_origem, r.tabela), {})
+        if not m:  # bronze sem mapeamento para a silver (ex.: ISS.Municipes, que tem silver própria): não correlaciona
+            continue
         regs.append((r, canonico(r.sistema_origem, r.tabela, r.dados), m.get("papel", "pessoa"), m))
     por_papel = defaultdict(list)
     for x in regs:

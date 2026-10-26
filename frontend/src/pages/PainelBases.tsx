@@ -3,10 +3,11 @@ import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
-export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null }
+export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
+export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null }
 export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
-  tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean
+  tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
 type Modo = 'amostra' | 'completa' | 'reprocessar'
@@ -22,7 +23,7 @@ const FILTROS = [
   { id: 'todas', rotulo: 'Todas' }, { id: 'implementado', rotulo: 'Prontas' }, { id: 'mapeado', rotulo: 'Mapeadas' },
   { id: 'triado', rotulo: 'Só triadas' }, { id: 'erro', rotulo: 'Com erro' }, { id: 'excluido', rotulo: 'Descartadas' },
 ] as const
-const TIPO: Record<string, string> = { carga_demo_amostra: 'Amostra', carga_demo_completa: 'Completa', reprocessamento: 'Reprocessamento' }
+const TIPO: Record<string, string> = { carga_demo_amostra: 'Amostra', amostra_conector: 'Amostra', carga_municipe_amostra: 'Amostra', carga_demo_completa: 'Completa', reprocessamento: 'Reprocessamento' }
 const ROTULO_MODO: Record<Modo, string> = { amostra: 'Puxar amostra', completa: 'Puxar carga completa', reprocessar: 'Reprocessar' }
 
 export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
@@ -32,6 +33,7 @@ export function perda(de: number, para: number): number | null {
 }
 
 export const CARGA_EM_PREPARACAO = 'Carga real em preparação'
+export const MSG_ORIGEM_VAZIA = 'Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.'
 
 export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false }: {
   bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean; cargaHabilitada?: boolean
@@ -134,7 +136,22 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
         {b.com_erro && <> <span className="selo falha">Última carga falhou</span></>}
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
-      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status}` : 'Nunca carregado'}</p>
+      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
+      {u?.status === 'origem_vazia' && <p className="aviso-ambar" role="status">{MSG_ORIGEM_VAZIA}</p>}
+      {u?.status === 'falha' && u.erro && (
+        <div className="motivo-falha">
+          <p title={u.erro.motivo}>Motivo: {u.erro.motivo}</p>
+          <details>
+            <summary>Ver detalhes</summary>
+            <dl>
+              <dt>Erro</dt><dd>{u.erro.classe}{u.erro.numero != null ? ` · SQL Server ${u.erro.numero}` : ''}</dd>
+              {u.erro.tabela && <><dt>Tabela</dt><dd>{u.erro.tabela}</dd></>}
+              {u.erro.objeto && <><dt>Objeto</dt><dd>{u.erro.objeto}</dd></>}
+              {u.erro.local && <><dt>Onde</dt><dd><code>{u.erro.local}</code></dd></>}
+            </dl>
+          </details>
+        </div>
+      )}
       <dl className="camadas">
         <div><dt>Bronze</dt><dd>{n(c.bronze)}</dd></div>
         <div><dt>Prata</dt><dd>{n(c.prata)}</dd></div>
