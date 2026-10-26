@@ -34,6 +34,13 @@ class Cursor:
         tabela = _FROM.search(sql).group(1)
         linhas = self.o.linhas(tabela)
         chave = ccomp.ordem(self.o.sistema, tabela)
+        nula = [r for r in linhas if any(r.get(c) is None for c in chave)]
+        if "IS NOT NULL" in sql and "SUM(CASE" not in sql:  # páginas e unicidade: só chave completa (CC9)
+            linhas = [r for r in linhas if r not in nula]
+        elif "IS NULL" in sql and "TOP (" in sql:  # CC9: SELECT separado e limitado das chaves nulas
+            self.o.nulos_lidos += 1
+            self.res = nula[:int(re.search(r"TOP \((\d+)\)", sql).group(1))]
+            return
         if "SELECT DISTINCT" in sql:  # combinações distintas da chave
             self.res = [(len({tuple(r.get(c) for c in chave) for r in linhas}),)]
             return
@@ -79,7 +86,7 @@ class Origem(SqlServerConnector):
         super().__init__(ConfigSqlServer(None, 1433, "Sintetico", None, None, 5, 100), nome="sintetico")
         self.sistema, self.mock = sistema, OrigemMock(conjunto="saude+cemiterio")
         self.sqls, self.rollbacks, self.paginas, self.falha_na_pagina, self.ao_ler = [], 0, 0, None, None
-        self.ultima, self.extras = None, {}
+        self.ultima, self.extras, self.nulos_lidos = None, {}, 0
 
     def linhas(self, tabela):
         pol = politica(self.sistema)
@@ -107,8 +114,8 @@ def origem(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr(ccomp, "leitor_padrao", lambda conector, db: o[cc.CONECTORES[conector][0]])
 
-    def sincrono(ex_id, conector, trava):
-        ccomp.rodar(ex_id, conector, trava, leitor=o[cc.CONECTORES[conector][0]])
+    def sincrono(ex_id, conector, trava, somente_camadas=False):
+        ccomp.rodar(ex_id, conector, trava, leitor=o[cc.CONECTORES[conector][0]], somente_camadas=somente_camadas)
     monkeypatch.setattr(ccomp, "disparar", sincrono)
     yield o
     get_settings.cache_clear()
@@ -197,7 +204,8 @@ def test_cc3_cc4_cc6_carga_completa_em_lotes(client, tokens, origem, db):
         sqls_t = [(s, p) for s, p in paginas if f"[dbo].[{t}]" in s]
         chave = ", ".join(f"[{c}]" for c in ccomp.ordem("SAUDE", t))
         assert sqls_t and all(s.endswith(f"ORDER BY {chave}") for s, _ in sqls_t)
-        assert "WHERE" not in sqls_t[0][0] and all("WHERE" in s for s, _ in sqls_t[1:])  # keyset a partir da 2ª página
+        assert "%s" not in sqls_t[0][0] and not sqls_t[0][1]  # 1ª página sem keyset; todas só com chave completa (CC9)
+        assert all("IS NOT NULL" in s for s, _ in sqls_t) and all(" > %s" in s for s, _ in sqls_t[1:])
         assert all("%s" in s and p for s, p in sqls_t[1:])  # sempre parametrizado
     assert o.rollbacks == len(o.sqls)  # toda consulta termina em ROLLBACK
     # CC6: card final e reconciliação bronze x COUNT(*)
@@ -402,9 +410,9 @@ def test_keyset_chave_simples_e_composta_parametrizado():
     c = SqlServerConnector(ConfigSqlServer(None, 1433, "x", None, None, 5, 100))
     pol = politica("SAUDE")
     sql, p = c.montar_pagina(pol, "pacientes", ("Matricula",), 500)
-    assert sql.endswith("FROM [dbo].[pacientes] ORDER BY [Matricula]") and p == () and sql.startswith("SELECT TOP (500) ")
+    assert sql.endswith("FROM [dbo].[pacientes] WHERE ([Matricula] IS NOT NULL) ORDER BY [Matricula]") and p == () and sql.startswith("SELECT TOP (500) ")
     sql, p = c.montar_pagina(pol, "pacientes", ("Matricula",), 500, ("M9",))
-    assert "WHERE (([Matricula] > %s)) ORDER BY [Matricula]" in sql and p == ("M9",) and garante_somente_leitura(sql)
+    assert "WHERE (([Matricula] > %s)) AND ([Matricula] IS NOT NULL) ORDER BY [Matricula]" in sql and p == ("M9",) and garante_somente_leitura(sql)
     sql, p = c.montar_pagina(pol, "Pacientes_CNS", ("Matricula", "Cartao_Sus"), 10, ("M1", "700"))
     assert "WHERE (([Matricula] > %s) OR ([Matricula] = %s AND [Cartao_Sus] > %s))" in sql and p == ("M1", "M1", "700")
     w, p = SqlServerConnector.filtro_keyset(("a", "b", "c"), (1, None, 3))
@@ -491,7 +499,8 @@ def test_keyset_recusa_chave_repetida(client, tokens, origem, db):
         r = client.get("/api/conectores/saude/completa/estimativa", headers=tokens["admin"])
         assert r.status_code == 409 and "pacientes" in r.json()["detail"] and "não é única" in r.json()["detail"]
         q = [x for x, _ in o.sqls if "SELECT DISTINCT" in x][-1]
-        assert q == "SELECT COUNT(*) FROM (SELECT DISTINCT [Matricula] FROM [dbo].[pacientes]) AS chaves"
+        assert q == ("SELECT COUNT(*) FROM (SELECT DISTINCT [Matricula] FROM [dbo].[pacientes] "
+                     "WHERE [Matricula] IS NOT NULL) AS chaves")
     finally:
         o.extras.clear()
 
@@ -564,6 +573,6 @@ def test_reconciliacao_unitaria_isolada_igual_ok_menor_e_maior_divergem(db):
                           execucao_id=ex.id))
     db.commit()
     r = ccomp.reconciliacao(db, sis)
-    assert r["igual"] == {"origem": 3, "bronze": 3, "ok": True}
-    assert r["menor"] == {"origem": 3, "bronze": 2, "ok": False}
-    assert r["maior"] == {"origem": 3, "bronze": 4, "ok": False}
+    assert r["igual"] == {"origem": 3, "bronze": 3, "quarentena": 0, "ok": True, "status": "ok"}
+    assert r["menor"] == {"origem": 3, "bronze": 2, "quarentena": 0, "ok": False, "status": "divergente"}
+    assert r["maior"] == {"origem": 3, "bronze": 4, "quarentena": 0, "ok": False, "status": "divergente"}
