@@ -67,13 +67,17 @@ def test_m3_juridica_em_bronze_e_silver_sem_cidadao(client, db):
 @pytest.mark.parametrize("nome", ["Senha", "SENHA", "senha_web", "SenhaAntiga", "Visualiz_Senha", "UserPassword",
                                   "PASSWORD_HASH", "remember_token", "ApiToken", "CID", "Cod_CID", "CID10", "cid_10",
                                   "Renda", "RendaFamiliar", "renda_per_capita", "CTPS", "Título_Eleitor", "Reservista",
-                                  "CNH", "Raça", "Cor", "Secret_Key", "Deficiência"])
+                                  "CNH", "Raça", "Cor", "Secret_Key", "Deficiência", "secret",
+                                  "client_secret", "ClientSecret", "pwd", "user_pwd", "UserPwd", "renda",
+                                  "renda_familiar", "RENDA-MENSAL"])
 def test_r2_detecta_variantes(nome):
     assert coluna_proibida(nome)
 
 
 @pytest.mark.parametrize("nome", ["Cidade", "Cidadao", "Nome", "Nome_Mae", "Data_Alteracao", "Pis_Pasep", "CPF",
-                                  "Documento_SoNumeros", "Corpo", "Codigo", "Tipo_Pessoa", "Data_Nascimento"])
+                                  "Documento_SoNumeros", "Corpo", "Codigo", "Tipo_Pessoa", "Data_Nascimento",
+                                  "Secretaria", "Cod_Secretaria", "SecretariaOrigem", "Secretário", "Prenda",
+                                  "Rendimento_Escolar"])
 def test_r2_nao_pega_colunas_legitimas(nome):
     assert not coluna_proibida(nome)
 

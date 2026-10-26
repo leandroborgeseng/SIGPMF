@@ -14,11 +14,12 @@ class TabelaRecusada(ValueError):
 # R2 do QA do #6 + ressalva 2 do Tester: nomes sensíveis reconhecidos de forma robusta, não só pelo nome exato.
 # O nome é normalizado (sem acento, minúsculo, camelCase/espaço/hífen/ponto viram "_") e comparado por
 # (a) trecho sensível em qualquer posição (prefixo/sufixo: Senha_Web, UserPassword, api_token...) e
-# (b) tokens curtos só como palavra inteira (CID, CID10, Cod_CID, Cor, Renda...), para não pegar Cidade/Cidadao/Corpo.
-_TRECHOS_PROIBIDOS = ("senha", "password", "passwd", "pwd", "token", "secret", "segredo", "hash_senha", "ctps",
-                      "titulo_eleitor", "tituloeleitor", "reservista", "cnh", "renda", "salario", "deficien",
+# (b) tokens curtos só como palavra inteira (CID, CID10, Cod_CID, Cor, Renda, Secret, Pwd...), para não pegar
+#     Cidade/Cidadao/Corpo/Secretaria.
+_TRECHOS_PROIBIDOS = ("senha", "password", "passwd", "token", "segredo", "hash_senha", "ctps",
+                      "titulo_eleitor", "tituloeleitor", "reservista", "cnh", "salario", "deficien",
                       "religi", "etnia", "biometri", "remember")
-_TOKENS_PROIBIDOS = re.compile(r"^(?:cid\d*|cor|raca|pin|titulo|cnh|renda)$")
+_TOKENS_PROIBIDOS = re.compile(r"^(?:cid\d*|cor|raca|pin|titulo|cnh|renda|secret|secrets|pwd)$")
 
 
 def normaliza_coluna(nome: str) -> str:
