@@ -26,6 +26,8 @@ const FILTROS = [
 const TIPO: Record<string, string> = { carga_demo_amostra: 'Amostra', amostra_conector: 'Amostra', carga_municipe_amostra: 'Amostra', carga_demo_completa: 'Completa', reprocessamento: 'Reprocessamento' }
 const ROTULO_MODO: Record<Modo, string> = { amostra: 'Puxar amostra', completa: 'Puxar carga completa', reprocessar: 'Reprocessar' }
 
+/** Contagem com concordância: 1 → singular; 0 ou ≥ 2 → plural. */
+export const plural = (n: number, um: string, varios: string) => `${new Intl.NumberFormat('pt-BR').format(n)} ${n === 1 ? um : varios}`
 export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
 export function perda(de: number, para: number): number | null {
   if (de <= 0 || para >= de) return null
@@ -85,7 +87,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
         : bases.length === 0 ? <p className="vazio">Nenhuma base cadastrada.</p>
         : (
           <>
-            <p className="subtitulo">{todas.length} bases cadastradas · {conta('implementado')} prontas · {conta('mapeado')} mapeadas · {conta('triado')} triadas · {conta('excluido')} descartadas</p>
+            <p className="subtitulo">{plural(todas.length, 'base cadastrada', 'bases cadastradas')} · {plural(conta('implementado'), 'pronta', 'prontas')} · {plural(conta('mapeado'), 'mapeada', 'mapeadas')} · {plural(conta('triado'), 'triada', 'triadas')} · {plural(conta('excluido'), 'descartada', 'descartadas')}</p>
             <ul className="totais" aria-label="Totais por camada das bases visíveis">
               <li className="cartao"><span className="cartao-rotulo">Bronze</span> <span className="cartao-valor">{milhar(tot.bronze)}</span></li>
               <li className="cartao"><span className="cartao-rotulo">Prata</span> <span className="cartao-valor">{milhar(tot.prata)}</span></li>
@@ -132,8 +134,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
     <li className="cartao base" aria-labelledby={`b-${b.id}`}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
       <p>
-        <span className={`selo ${st.classe}`}>{st.rotulo}</span>
-        {b.com_erro && <> <span className="selo falha">Última carga falhou</span></>}
+        <span className={`selo ${st.classe}`}><i aria-hidden="true" />{st.rotulo}</span>
+        {b.com_erro && <> <span className="selo falha"><i aria-hidden="true" />Última carga falhou</span></>}
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
       <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
@@ -173,10 +175,10 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao }: { b: Base; ehAd
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
           <details className="menu-acoes">
             <summary>Mais ações de {b.nome}</summary>
-            <button className="btn secundario" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar || !b.tem_amostra} aria-label={`Puxar carga completa de ${b.nome}`} onClick={() => onAcao(b, 'completa')}>Carga completa</button>
             {!habilitada ? <span className="sutil"> {CARGA_EM_PREPARACAO}</span>
               : !b.tem_amostra && <span className="sutil"> Libera depois da conferência da amostra</span>}
-            <button className="btn secundario" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
           </details>
         </div>
       )}

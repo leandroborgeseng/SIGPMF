@@ -50,7 +50,11 @@ export default function Conectores() {
 
   return (
     <section aria-labelledby="t-con">
-      <h1 id="t-con">Conectores</h1>
+      <header className="page-head">
+        <p className="kicker">Dados</p>
+        <h1 id="t-con">Conectores</h1>
+        <p className="sutil">Bases municipais, camadas de dados e histórico de cargas.</p>
+      </header>
       <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
@@ -74,7 +78,7 @@ export default function Conectores() {
               {d.conectores.map((c) => (
                 <li key={c.id} className="cartao">
                   <h2>{c.nome} ({c.codigo})</h2>
-                  <p>Status: <strong>{c.status}</strong></p>
+                  <p>Status: <span className="selo mapeado"><i aria-hidden="true" />{c.status}</span></p>
                   <p>Última execução: {c.ultima_execucao ? `${dataHoraBR(c.ultima_execucao.iniciado_em)} · ${c.ultima_execucao.lidos} lidos e ${c.ultima_execucao.novos} novos` : '—'}</p>
                   <p>Credencial: {c.credencial} · Amostra: {c.amostra_limite} linhas</p>
                   <button className="btn secundario" onClick={() => testar(c)}>Testar conexão</button>

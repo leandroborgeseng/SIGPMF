@@ -55,7 +55,7 @@ describe('painel de bases', () => {
     expect(within(totais).getByText('1.500')).toBeInTheDocument()
     expect(within(totais).getByText('1.330')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Puxar amostra/ })).toBeNull()
-    expect(screen.getByText(/5 bases cadastradas · 2 prontas · 1 mapeadas · 1 triadas · 1 descartadas/)).toBeInTheDocument()
+    expect(screen.getByText(/5 bases cadastradas · 2 prontas · 1 mapeada · 1 triada · 1 descartada/)).toBeInTheDocument()
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')).toEqual([])
   })
