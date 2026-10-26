@@ -2,7 +2,8 @@
 
 O usuário SQL das origens NÃO é garantidamente somente leitura. Por isso:
 - só passa um único SELECT/WITH, sem DML, DDL, EXEC/procedures, tabelas temporárias, SELECT INTO,
-  OPENROWSET/OPENQUERY, comentários ou múltiplos comandos;
+  OPENROWSET/OPENQUERY, comentários, múltiplos comandos,
+  hints de lock (UPDLOCK, HOLDLOCK, XLOCK...) nem `*` na lista de colunas (exceto COUNT(*));
 - `executa_somente_leitura` é o ÚNICO ponto que chama cursor.execute contra a origem: roda dentro de uma
   transação que termina SEMPRE em ROLLBACK (mesmo com sucesso ou erro), com timeout de consulta.
 """
@@ -16,6 +17,12 @@ COMANDOS_PROIBIDOS = ("INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "EXEC",
 PROIBIDO_RE = re.compile(r"\b(" + "|".join(COMANDOS_PROIBIDOS) + r")\b", re.IGNORECASE)
 SELECT_INTO_RE = re.compile(r"\bSELECT\b[\s\S]*\bINTO\b", re.IGNORECASE)
 EXTRA_RE = re.compile(r"#|--|/\*|\b(sp|xp)_\w+", re.IGNORECASE)  # temp tables, comentários, procedures
+# Hints de lock seguram travas na origem até o ROLLBACK: recusados (ressalva 3 do QA do PR #3).
+HINTS_LOCK = ("UPDLOCK", "HOLDLOCK", "XLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE",
+              "REPEATABLEREAD")
+HINT_LOCK_RE = re.compile(r"\b(" + "|".join(HINTS_LOCK) + r")\b", re.IGNORECASE)
+# `*` na lista de colunas é recusado (ressalva 1); só COUNT(*) é aceito.
+COUNT_STAR_RE = re.compile(r"\bCOUNT\s*\(\s*\*\s*\)", re.IGNORECASE)
 
 
 class ComandoProibido(ValueError):
@@ -26,7 +33,7 @@ def garante_somente_leitura(sql: str) -> str:
     texto = sql.strip()
     inicio = texto.split(None, 1)[0].upper() if texto else ""
     if inicio not in ("SELECT", "WITH") or ";" in texto or PROIBIDO_RE.search(texto) or SELECT_INTO_RE.search(texto) \
-            or EXTRA_RE.search(texto):
+            or EXTRA_RE.search(texto) or HINT_LOCK_RE.search(texto) or "*" in COUNT_STAR_RE.sub("", texto):
         raise ComandoProibido("O conector só executa um único SELECT.")
     return texto
 

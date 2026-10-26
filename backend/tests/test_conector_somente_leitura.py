@@ -56,7 +56,7 @@ def _con(limite=100):
 def test_somente_leitura_select_gerado_e_amostra_padrao():
     sql = _con().montar_select("dbo.pacientes", ["Matricula", "Nome"])
     assert sql.startswith("SELECT TOP (100) ")
-    assert _con(20).montar_select("dbo.pacientes", limite=500).startswith("SELECT TOP (20) ")
+    assert _con(20).montar_select("dbo.pacientes", ["Nome"], limite=500).startswith("SELECT TOP (20) ")
 
 
 def test_somente_leitura_consultas_capturadas_em_mock():

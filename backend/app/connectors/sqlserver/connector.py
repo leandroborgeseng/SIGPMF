@@ -50,8 +50,14 @@ class SqlServerConnector:
 
     def montar_select(self, tabela: str, colunas: list[str] | None = None, campo_incremental: str | None = None,
                       limite: int | None = None) -> str:
-        n = min(limite or self.config.amostra_limite, self.config.amostra_limite)
-        cols = ", ".join(_ident(c) for c in colunas) if colunas else "*"
+        maximo = int(self.config.amostra_limite)
+        n = maximo if limite is None else limite
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise ValueError(f"Limite inválido: {limite!r} (mínimo 1).")
+        n = min(n, maximo)  # acima do máximo configurado: trunca no máximo
+        if not colunas:
+            raise ValueError(f"Lista de colunas obrigatória para {tabela!r}: SELECT * não é permitido.")
+        cols = ", ".join(_ident(c) for c in colunas)
         sql = f"SELECT TOP ({int(n)}) {cols} FROM {_ident(tabela)}"
         if campo_incremental:
             sql += f" WHERE {_ident(campo_incremental)} > %s ORDER BY {_ident(campo_incremental)}"
@@ -86,7 +92,7 @@ class SqlServerConnector:
 
     def montar_select_politica(self, politica, tabela: str, limite: int | None = None) -> str:
         """SELECT só com as colunas permitidas pela política do sistema (recusa tabela fora da lista)."""
-        return self.montar_select(f"dbo.{tabela.split('.')[-1]}", list(politica.colunas_select(tabela)) or None, limite=limite)
+        return self.montar_select(f"dbo.{tabela.split('.')[-1]}", list(politica.colunas_select(tabela)), limite=limite)
 
     def ler_amostra(self, tabela: str, campo_incremental: str | None = None,
                     desde: datetime | None = None, politica=None) -> list[dict[str, Any]]:
