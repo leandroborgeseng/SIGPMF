@@ -19,7 +19,7 @@ from app.connectors.sqlserver.politicas import politica
 from app.core.config import get_settings
 from app.gold import visao
 from app.ingestion.mapeamentos import MAPEAMENTOS, NOMES_SISTEMAS
-from app.models.controle import Execucao, Log, Sistema, TabelaCatalogo
+from app.models.controle import BaseCatalogo, Execucao, Log, Sistema, TabelaCatalogo
 from app.silver import processamento
 
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
@@ -50,8 +50,23 @@ def tabelas_do_conector(sistema: str) -> list[str]:
     return [t for t in pol.colunas if (sistema, t) in MAPEAMENTOS]
 
 
-def config_do_conector(conector: str) -> tuple[ConfigSqlServer, bool]:
-    return ConfigSqlServer.para_conector(get_settings(), conector)
+def banco_do_catalogo(db: Session | None, conector: str) -> str | None:
+    """PB12: nome do banco de origem da base do catálogo (controle.bases_catalogo.nome) ligada ao conector."""
+    if db is None:
+        return None
+    b = db.scalar(select(BaseCatalogo).where(BaseCatalogo.conjunto == conector, BaseCatalogo.status == "implementado"))
+    return b.nome if b else None
+
+
+def config_do_conector(conector: str, db: Session | None = None) -> tuple[ConfigSqlServer, bool]:
+    """Ordem: SQLSERVER_DATABASE_<CONECTOR> (override explícito) > catálogo (PB12) > SQLSERVER_DATABASE (fallback)."""
+    cfg, fallback = ConfigSqlServer.para_conector(get_settings(), conector)
+    if fallback:
+        nome = banco_do_catalogo(db, conector)
+        if nome:
+            cfg.database = nome
+            return cfg, False
+    return cfg, fallback
 
 
 def _garante_catalogo(db: Session, sistema: str, tabelas: list[str]) -> None:
@@ -99,8 +114,10 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
         if db.scalar(select(Execucao.id).where(Execucao.tipo.in_(TIPOS_AMOSTRA), Execucao.sistema == sistema,
                                                Execucao.status == "em_andamento")):
             raise Conflito(f"Já existe uma amostra de {conector} em andamento.")
-        cfg, fallback = config_do_conector(conector)
-        origem_banco = "SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
+        cfg, fallback = config_do_conector(conector, db)
+        especifico = getattr(get_settings(), f"sqlserver_database_{conector}", None)
+        origem_banco = ("SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
+                        if especifico else "catálogo (controle.bases_catalogo)")
         if sistema == "ISS":
             return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor)
         ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario)

@@ -50,6 +50,16 @@ def linhas_iss():
              "Nome": "TIPO R", "Data_Alteracao": "2026-01-01T10:00:00"}]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _reaplica_0006(banco):
+    """Outros testes (#7) re-semeiam o catálogo (ISS volta a 'mapeado'); reaplica a 0006 como em produção."""
+    from alembic import command
+
+    from tests.conftest import alembic_cfg
+    command.downgrade(alembic_cfg(), "0005")
+    command.upgrade(alembic_cfg(), "head")
+
+
 @pytest.fixture
 def leitor(monkeypatch):
     estado = {"falha_em": None}
@@ -179,7 +189,7 @@ def test_demo_bloqueada_fora_de_dev_test(client, tokens, monkeypatch, db, ambien
     get_settings.cache_clear()
     antes = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "carga_demo_negada"))
     try:
-        assert client.post("/api/conectores/demo/executar", headers=tokens["admin"]).status_code == 403
+        assert client.post("/api/conectores/demo/executar", headers=tokens["admin"]).status_code == 404
         db.expire_all()
         depois = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "carga_demo_negada"))
         assert depois == antes + 1
@@ -246,7 +256,7 @@ def test_iss_amostra_usa_politica_do_municipe(client, tokens, leitor, db):
     assert db.scalar(select(func.count()).select_from(Municipe)) == n and r2.json()["novos"] == 0
     assert client.post("/api/conectores/iss/completa", headers=tokens["admin"]).status_code == 501
     logs = " ".join(x.mensagem for x in db.scalars(select(Log).where(Log.execucao_id == ex.id)))
-    assert "fallback" in logs and HOST not in logs and USER not in logs and PWD not in logs
+    assert "catálogo" in logs and HOST not in logs and USER not in logs and PWD not in logs
 
 
 def test_amostra_reconciliada_exige_contagens(db):
@@ -297,3 +307,70 @@ def test_rota_antiga_iss_409_concorrente(client, tokens, leitor, db):
         for e in db.scalars(select(Execucao).where(Execucao.usuario == "outro-iss@aion.local")):
             e.status = "falha"
         db.commit()
+
+
+# ---------- Depois do merge do #7: catálogo (PB12), id numérico, prod, migração 0006 ----------
+def _base(db, nome):
+    from app.models.controle import BaseCatalogo
+    return db.scalar(select(BaseCatalogo).where(BaseCatalogo.nome == nome))
+
+
+def test_0006_iss_pronto_no_catalogo(db):
+    b = _base(db, "ISS")
+    assert b.status == "implementado" and b.conjunto == "iss" and b.sistemas == ["ISS"]
+
+
+def test_banco_vem_do_catalogo_sem_variavel_do_conector(leitor, db, monkeypatch):
+    monkeypatch.delenv("SQLSERVER_DATABASE_CEMITERIO", raising=False)
+    c, fb = cc.config_do_conector("cemiterio", db)
+    assert c.database == "Cemiterio" and fb is False  # PB12: nome da base no catálogo
+    c, fb = cc.config_do_conector("saude", db)
+    assert c.database == "Saude" and fb is False       # override explícito por variável continua valendo
+
+
+def test_amostra_pelo_id_numerico_da_base(client, tokens, leitor, db):
+    b = _base(db, "Cemiterio")
+    r = client.post(f"/api/conectores/{b.id}/amostra", headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["tipo"] == cc.TIPO_AMOSTRA, r.text
+    logs = " ".join(x.mensagem for x in db.scalars(select(Log).where(Log.execucao_id == r.json()["id"])))
+    assert "catálogo" in logs
+    bases = client.get("/api/conectores", headers=tokens["admin"]).json()["bases"]
+    cem = next(x for x in bases if x["nome"] == "Cemiterio")
+    assert cem["conector_id"] == "cemiterio" and cem["tem_amostra"] is True
+
+
+@pytest.mark.parametrize("ambiente", ["prod", None])
+def test_amostra_real_liberada_em_prod_e_sintetico_404(client, tokens, leitor, monkeypatch, ambiente):
+    from app.core.config import get_settings
+    if ambiente is None:
+        monkeypatch.delenv("APP_ENV", raising=False)
+    else:
+        monkeypatch.setenv("APP_ENV", ambiente)
+    get_settings.cache_clear()
+    try:
+        r = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
+        assert r.status_code == 200, r.text
+        d = client.get("/api/conectores", headers=tokens["admin"]).json()
+        assert d["carga_habilitada"] is False
+        iss = next(x for x in d["bases"] if x["nome"] == "ISS")
+        assert iss["pode_carregar"] is True
+        assert client.post(f"/api/conectores/{iss['id']}/executar", headers=tokens["admin"]).status_code == 404
+        assert client.post("/api/conectores/demo/executar", headers=tokens["admin"]).status_code == 404
+    finally:
+        monkeypatch.setenv("APP_ENV", "test")
+        get_settings.cache_clear()
+
+
+def test_0006_downgrade_e_upgrade_idempotentes(db):
+    from alembic import command
+
+    from tests.conftest import alembic_cfg
+    cfg = alembic_cfg()
+    command.downgrade(cfg, "0005")
+    db.expire_all()
+    b = _base(db, "ISS")
+    assert b.status == "mapeado" and b.conjunto is None
+    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "head")  # sem efeito na segunda vez
+    db.expire_all()
+    assert _base(db, "ISS").status == "implementado"
