@@ -254,6 +254,18 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     return _exec(ex)
 
 
+@api.get("/conectores/sil/status")
+def sil_status(u: Usuario = Depends(admin_auditado)):
+    """Conector SIL (somente leitura): se está ligado e quais consultas estão mapeadas. Nunca devolve URL, id ou
+    segredo; não chama a SIL."""
+    from app.connectors.sil.cliente import GET_PERMITIDOS
+    from app.connectors.sil.config import ConfigSil
+    from app.connectors.sil.endpoints import ENDPOINTS
+    return {**ConfigSil.do_ambiente().resumo_publico(), "rotas_permitidas": sorted(GET_PERMITIDOS),
+            "endpoints": {n: {"caminho": e.caminho, "parametro": e.parametro, "paginado": e.paginado}
+                          for n, e in ENDPOINTS.items()}}
+
+
 @api.get("/conectores/{conector}/bloqueio")
 def bloqueio_conector(conector: str, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """CC12: execução (amostra ou completa) que segura o conector: tipo, início, última atividade e se é interrompível."""
