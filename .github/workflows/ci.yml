@@ -81,6 +81,8 @@ jobs:
             echo "ADMIN_PASSWORD=Ci-$(openssl rand -hex 12)"
           } >> .env
       - run: docker compose config --quiet
+      - name: Compose de produção sem porta publicada no Postgres (estático)
+        run: python3 scripts/check_compose_postgres.py
       - run: docker compose build
       - name: Sobe o compose e espera healthchecks
         run: docker compose up -d --wait --wait-timeout 180
