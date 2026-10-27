@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ApiErro, dataHoraBR } from './api'
+import { api, ApiErro } from './api'
 
 type ExecAg = { id: number; status: string; etapa: string | null; iniciado_em: string | null; finalizado_em: string | null
   lidos: number; gravados: number; processadas_etapa: number | null; total_etapa: number | null }
@@ -31,6 +31,8 @@ const hora = (iso: string | null) => iso
   ? new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso))
   : '—'
 const n = (v: number) => new Intl.NumberFormat('pt-BR').format(v)
+const curta = (iso: string) => new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit',
+  hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)).replace(',', '')
 
 /** AG1–AG6: agenda das cargas completas (todos veem; só admin altera e executa agora). Atualiza a cada 30 s. */
 export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
@@ -95,9 +97,10 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
           Coolify e reinicie o backend. Os horários abaixo já podem ser preparados.</p>
       )}
 
+      <div className="agenda-rolagem">
       <table className="tabela agenda-tabela">
         <caption className="sr-only">Agenda das cargas completas</caption>
-        <thead><tr><th scope="col">Conector</th><th scope="col">Horário</th><th scope="col">Agenda</th><th scope="col">Próxima</th><th scope="col">Última carga</th>{ehAdmin && <th scope="col"><span className="sr-only">Ações</span></th>}</tr></thead>
+        <thead><tr><th scope="col">Conector</th><th scope="col">Horário</th><th scope="col">Próxima</th><th scope="col">Última carga</th>{ehAdmin && <th scope="col"><span className="sr-only">Ações</span></th>}</tr></thead>
         <tbody>
           {d.itens.map((i) => {
             const rodando = i.em_andamento
@@ -106,23 +109,23 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
               <tr key={i.conector}>
                 <th scope="row" data-rotulo="Conector">{i.nome}</th>
                 <td data-rotulo="Horário">
-                  {ehAdmin
-                    ? <input type="time" className="agenda-hora" aria-label={`Horário da carga de ${i.nome}`} defaultValue={i.horario}
-                        key={`${i.conector}-${i.horario}`} disabled={ocupado}
-                        onBlur={(e) => { if (e.target.value && e.target.value !== i.horario) alterar(i, { horario: e.target.value }) }} />
-                    : <span className="num">{i.horario}</span>}
-                  {i.horario_fora_da_janela && !d.dia_todo && <span className="agenda-nota">fora da janela</span>}
+                  <div className="agenda-horario">
+                    {ehAdmin
+                      ? <input type="time" className="agenda-hora" aria-label={`Horário da carga de ${i.nome}`} defaultValue={i.horario}
+                          key={`${i.conector}-${i.horario}`} disabled={ocupado}
+                          onBlur={(e) => { if (e.target.value && e.target.value !== i.horario) alterar(i, { horario: e.target.value }) }} />
+                      : <span className="num">{i.horario}</span>}
+                    {ehAdmin
+                      ? <label className="agenda-chave">
+                          <input type="checkbox" checked={i.ativo} disabled={ocupado} onChange={(e) => alterar(i, { ativo: e.target.checked })} />
+                          <span>{i.ativo ? 'Ligada' : 'Desligada'}</span>
+                          <span className="sr-only"> para {i.nome}</span>
+                        </label>
+                      : <span className="sutil">{i.ativo ? 'Ligada' : 'Desligada'}</span>}
+                    {i.horario_fora_da_janela && !d.dia_todo && <span className="agenda-nota">fora da janela</span>}
+                  </div>
                 </td>
-                <td data-rotulo="Agenda">
-                  {ehAdmin
-                    ? <label className="agenda-chave">
-                        <input type="checkbox" checked={i.ativo} disabled={ocupado} onChange={(e) => alterar(i, { ativo: e.target.checked })} />
-                        <span>{i.ativo ? 'Ligada' : 'Desligada'}</span>
-                        <span className="sr-only"> para {i.nome}</span>
-                      </label>
-                    : <span>{i.ativo ? 'Ligada' : 'Desligada'}</span>}
-                </td>
-                <td data-rotulo="Próxima">{i.forcar ? 'Em até 1 minuto' : i.proxima_em && d.habilitada ? dataHoraBR(i.proxima_em) : '—'}</td>
+                <td data-rotulo="Próxima">{i.forcar ? 'Em até 1 minuto' : i.proxima_em && d.habilitada ? curta(i.proxima_em) : '—'}</td>
                 <td data-rotulo="Última carga">
                   {rodando
                     ? <div className="agenda-ultima">
@@ -132,7 +135,7 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
                     : i.ultimo_status
                       ? <div className="agenda-ultima">
                           <span className={`selo ${classeStatus(i.ultimo_status)}`}><i aria-hidden="true" />{i.ultimo_status_texto}</span>
-                          <span className="sutil">{dataHoraBR(i.ultimo_fim_em ?? i.ultimo_inicio_em)}{i.tentativas > 0 ? ` · tentativa ${i.tentativas}` : ''}</span>
+                          <span className="sutil">{curta(i.ultimo_fim_em ?? i.ultimo_inicio_em ?? d.agora)}{i.tentativas > 0 ? ` · tentativa ${i.tentativas}` : ''}</span>
                           {i.ultima_mensagem && <span className="agenda-msg">{i.ultima_mensagem}</span>}
                         </div>
                       : <span className="sutil">Ainda não rodou</span>}
@@ -150,6 +153,7 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
           })}
         </tbody>
       </table>
+      </div>
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
       <LinhaDoTempo d={d} />
     </section>
