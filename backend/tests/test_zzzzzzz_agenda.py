@@ -88,9 +88,11 @@ def _esperar(db, ex_id, parar=None):
 
 
 def _zera_agenda(db, ativo=True):
-    db.execute(update(Agendamento).values(ativo=ativo, forcar=False, ultima_data=None, tentativas=0,
+    """Liga (ou desliga) só Saúde e Cemitério; os conectores tributários ficam desligados nestes testes."""
+    db.execute(update(Agendamento).values(ativo=False, forcar=False, ultima_data=None, tentativas=0,
                                           proxima_tentativa_em=None, ultimo_status=None, ultima_mensagem=None,
                                           assinatura_origem=None, ultima_execucao_id=None))
+    db.execute(update(Agendamento).where(Agendamento.conector.in_(("saude", "cemiterio"))).values(ativo=ativo))
     db.commit()
 
 
@@ -265,7 +267,8 @@ def test_ag1_api_estado_alterar_e_permissoes(client, tokens, db, origem):
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["habilitada"] is False and d["dia_todo"] is True
-    assert [i["conector"] for i in d["itens"]] == ["saude", "cemiterio"] and d["itens"][0]["horario"] == "01:00"
+    assert [i["conector"] for i in d["itens"]] == ["saude", "cemiterio", "iptu", "divida", "financeiro"]
+    assert d["itens"][0]["horario"] == "01:00"
     assert client.put("/api/agenda/saude", json={"ativo": True}, headers=tokens["operador"]).status_code == 403
     negado = db.scalar(select(Auditoria).where(Auditoria.acao == "acesso_negado", Auditoria.alvo == "/api/agenda/saude")
                        .order_by(Auditoria.id.desc()))

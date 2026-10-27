@@ -1,9 +1,9 @@
 """Origens simuladas com fixtures sintéticas. Mesma interface de leitura do conector SQL Server:
 lê no máximo `limite` linhas, só as colunas permitidas pela política do sistema, e registra as consultas."""
-from app.ingestion import fixture_saude_cemiterio
+from app.ingestion import fixture_saude_cemiterio, fixture_tributario
 from app.ingestion.fixture_sintetica import SEED, gerar
 
-CONJUNTOS = ("base", "saude", "cemiterio", "saude+cemiterio")
+CONJUNTOS = ("base", "saude", "cemiterio", "saude+cemiterio", "tributario", "saude+tributario", "saude+cemiterio+tributario")
 
 
 class OrigemMock:
@@ -15,6 +15,7 @@ class OrigemMock:
             dados.update({k: [ln["dados"] for ln in v] for k, v in gerar(seed).items()})
         else:
             fx = fixture_saude_cemiterio.gerar()
+            fx["tributario"] = fixture_tributario.gerar(fx["saude"][("SAUDE", "pacientes")][0]["Cpf"])
             for parte in conjunto.split("+"):
                 dados.update(fx[parte])
         self._dados = dados

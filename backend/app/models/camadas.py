@@ -2,7 +2,20 @@
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -180,3 +193,79 @@ class MunicipePendencia(Base):
     documento_mascarado: Mapped[str | None] = mapped_column(String(20))  # M10: só a máscara, nunca em claro
     status: Mapped[str] = mapped_column(String(20), default="pendente")
     execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id"))
+
+
+# ---------------- Tributário (onda 2, TR4): fatos da prata, reconstruídos de forma determinística da bronze ----------
+# cidadao_id só quando o CPF bate com um cidadão já correlacionado (nunca cria cidadão); documento fica mascarável.
+TR = {"schema": "silver"}
+
+
+class Imovel(Base):
+    __tablename__ = "imoveis"
+    __table_args__ = TR
+    codi: Mapped[str] = mapped_column(String(22), primary_key=True)
+    inscricao: Mapped[str | None] = mapped_column(String(30))
+    numero: Mapped[str | None] = mapped_column(String(20))
+    complemento: Mapped[str | None] = mapped_column(String(200))
+    cd_bairro: Mapped[int | None] = mapped_column(Integer)
+    quadra: Mapped[str | None] = mapped_column(String(200))
+    lote: Mapped[str | None] = mapped_column(String(200))
+    area_terreno: Mapped[float | None] = mapped_column(Float)
+    iptu_anual: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    situacao: Mapped[str | None] = mapped_column(String(20))
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ImovelPossuidor(Base):
+    __tablename__ = "imovel_possuidores"
+    __table_args__ = (Index("ix_silver_possuidor_cidadao", "cidadao_id"), Index("ix_silver_possuidor_codi", "codi"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    codi: Mapped[str] = mapped_column(String(22))
+    documento: Mapped[str] = mapped_column(String(20))  # só dígitos
+    tipo_pessoa: Mapped[str] = mapped_column(String(2))  # PF / PJ
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    tipo_posse: Mapped[int | None] = mapped_column(Integer)
+    desde: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ativo: Mapped[bool] = mapped_column(Boolean)
+
+
+class Lancamento(Base):
+    __tablename__ = "lancamentos"
+    __table_args__ = (Index("ix_silver_lancamento_cidadao", "cidadao_id"), Index("ix_silver_lancamento_venc", "vencimento"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
+    exercicio: Mapped[int] = mapped_column(Integer)
+    tributo: Mapped[str | None] = mapped_column(String(10))
+    receita: Mapped[str | None] = mapped_column(String(10))
+    parcela: Mapped[int | None] = mapped_column(Integer)
+    contribuinte: Mapped[str | None] = mapped_column(String(20))
+    codi: Mapped[str | None] = mapped_column(String(22))  # quando o contribuinte é uma inscrição imobiliária
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    vencimento: Mapped[date | None] = mapped_column(Date)
+    valor: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    valor_pago: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    pagamento: Mapped[date | None] = mapped_column(Date)
+    pago: Mapped[bool] = mapped_column(Boolean)
+    status: Mapped[str | None] = mapped_column(String(50))
+
+
+class DividaAtiva(Base):
+    __tablename__ = "dividas"
+    __table_args__ = (Index("ix_silver_divida_cidadao", "cidadao_id"), Index("ix_silver_divida_codi", "codi"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
+    codi: Mapped[str] = mapped_column(String(22))
+    ano: Mapped[int | None] = mapped_column(Integer)
+    natureza: Mapped[int | None] = mapped_column(Integer)
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    inscricao: Mapped[date | None] = mapped_column(Date)
+    vencimento: Mapped[date | None] = mapped_column(Date)
+    valor_origem: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    saldo: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    pago_total: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    status: Mapped[str | None] = mapped_column(String(5))
+    situacao: Mapped[int | None] = mapped_column(Integer)
+    protestos: Mapped[int | None] = mapped_column(Integer)
+    processo: Mapped[str | None] = mapped_column(String(30))
+    extinta: Mapped[bool] = mapped_column(Boolean)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
+import ImpostosCidadao from '../ImpostosCidadao'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
 type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
@@ -117,6 +118,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
           </dl>
         </section>
       ))}
+      <ImpostosCidadao id={id} />
       {dialogo && <DialogoRevelar id={id} fechar={() => { setDialogo(false); btnRevelar.current?.focus() }} aoRevelar={revelado} />}
     </article>
   )

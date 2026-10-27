@@ -61,13 +61,30 @@ class ConfigSqlServer:
                 "amostra_limite": self.amostra_limite}
 
 
+def _recorte(politica, tabela: str) -> str:
+    """TR1: recorte fixo da política (ex.: exercícios recentes) ou "" — só coluna da política e inteiro."""
+    f = getattr(politica, "filtro_fixo", None)
+    return f(tabela) if f else ""
+
+
+def _onde(politica, tabela: str) -> str:
+    r = _recorte(politica, tabela)
+    return f" WHERE {r}" if r else ""
+
+
+def _e(politica, tabela: str) -> str:
+    r = _recorte(politica, tabela)
+    return f" AND {r}" if r else ""
+
+
 class SqlServerConnector:
     def __init__(self, config: ConfigSqlServer, nome: str | None = None):
         self.config = config
         self.nome = nome
 
     def montar_select(self, tabela: str, colunas: list[str] | None = None, campo_incremental: str | None = None,
-                      limite: int | None = None, ordem: list[str] | tuple[str, ...] | None = None) -> str:
+                      limite: int | None = None, ordem: list[str] | tuple[str, ...] | None = None,
+                      recorte: str = "") -> str:
         maximo = int(self.config.amostra_limite)
         n = maximo if limite is None else limite
         if isinstance(n, bool) or not isinstance(n, int) or n < 1:
@@ -78,9 +95,13 @@ class SqlServerConnector:
         cols = ", ".join(_ident(c) for c in colunas)
         sql = f"SELECT TOP ({int(n)}) {cols} FROM {_ident(tabela)}"
         if campo_incremental:
-            sql += f" WHERE {_ident(campo_incremental)} > %s ORDER BY {_ident(campo_incremental)}"
-        elif ordem:
-            sql += " ORDER BY " + ", ".join(_ident(c) for c in ordem)
+            sql += f" WHERE {_ident(campo_incremental)} > %s" + (f" AND {recorte}" if recorte else "")
+            sql += f" ORDER BY {_ident(campo_incremental)}"
+        else:
+            if recorte:
+                sql += f" WHERE {recorte}"
+            if ordem:
+                sql += " ORDER BY " + ", ".join(_ident(c) for c in ordem)
         return garante_somente_leitura(sql)
 
     def _conectar(self):
@@ -164,7 +185,7 @@ class SqlServerConnector:
             raise ValueError(f"Campo incremental {campo_incremental!r} fora das colunas da política.")
         ordem = politica.ordem_amostra(tabela) if hasattr(politica, "ordem_amostra") else ()
         return self.montar_select(f"dbo.{tabela.split('.')[-1]}", cols, campo_incremental=campo_incremental,
-                                  limite=limite, ordem=ordem)
+                                  limite=limite, ordem=ordem, recorte=_recorte(politica, tabela))
 
     @staticmethod
     def filtro_keyset(ordem: tuple[str, ...], ultima: tuple | None) -> tuple[str, tuple]:
@@ -205,6 +226,8 @@ class SqlServerConnector:
         where, params = self.filtro_keyset(ordem, ultima)
         completa = "(" + " AND ".join(f"{_ident(c)} IS NOT NULL" for c in ordem) + ")"  # CC9: só chave completa
         where = f"{where} AND {completa}" if where else f" WHERE {completa}"
+        if _recorte(politica, tabela):
+            where = f"{where} AND {_recorte(politica, tabela)}"
         if desde is not None:
             campo, valor = desde
             if campo not in cols:
@@ -225,22 +248,22 @@ class SqlServerConnector:
         nulos = " OR ".join(f"{_ident(c)} IS NULL" for c in ordem)
         return garante_somente_leitura(
             f"SELECT TOP ({int(limite)}) {', '.join(_ident(c) for c in cols)} FROM {_ident('dbo.' + tabela.split('.')[-1])} "
-            f"WHERE ({nulos}) ORDER BY {', '.join(_ident(c) for c in cols)}")
+            f"WHERE ({nulos}){_e(politica, tabela)} ORDER BY {', '.join(_ident(c) for c in cols)}")
 
     def ler_nulos(self, conn, tabela: str, politica, ordem: tuple[str, ...], limite: int) -> list[dict]:
         return executa_somente_leitura(conn, self.montar_nulos(politica, tabela, ordem, limite), limite=limite)
 
     def montar_contagem(self, politica, tabela: str) -> str:
         politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
-        return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}")
+        return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}{_onde(politica, tabela)}")
 
     def montar_assinatura(self, politica, tabela: str, campo_incremental: str | None) -> str:
         """AG3: COUNT(*) e MAX(campo incremental) — uma linha por tabela, sem ler nenhum registro."""
         cols = politica.colunas_select(tabela)
         t = _ident("dbo." + tabela.split(".")[-1])
         if campo_incremental and campo_incremental in cols:
-            return garante_somente_leitura(f"SELECT COUNT(*), MAX({_ident(campo_incremental)}) FROM {t}")
-        return garante_somente_leitura(f"SELECT COUNT(*), NULL FROM {t}")
+            return garante_somente_leitura(f"SELECT COUNT(*), MAX({_ident(campo_incremental)}) FROM {t}{_onde(politica, tabela)}")
+        return garante_somente_leitura(f"SELECT COUNT(*), NULL FROM {t}{_onde(politica, tabela)}")
 
     def assinatura(self, conn, tabela: str, politica, campo_incremental: str | None) -> list:
         total, maximo = executa_somente_leitura(conn, self.montar_assinatura(politica, tabela, campo_incremental),
@@ -254,10 +277,10 @@ class SqlServerConnector:
             raise TabelaRecusada("Chave da carga completa fora das colunas da política.")
         t = _ident("dbo." + tabela.split(".")[-1])
         nulos = " OR ".join(f"{_ident(c)} IS NULL" for c in ordem)
-        q1 = f"SELECT COUNT(*), SUM(CASE WHEN {nulos} THEN 1 ELSE 0 END) FROM {t}"
+        q1 = f"SELECT COUNT(*), SUM(CASE WHEN {nulos} THEN 1 ELSE 0 END) FROM {t}{_onde(politica, tabela)}"
         completa = " AND ".join(f"{_ident(c)} IS NOT NULL" for c in ordem)  # unicidade entre as chaves completas
         q2 = (f"SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(_ident(c) for c in ordem)} FROM {t} "
-              f"WHERE {completa}) AS chaves")
+              f"WHERE {completa}{_e(politica, tabela)}) AS chaves")
         return garante_somente_leitura(q1), garante_somente_leitura(q2)
 
     def verificar_chave(self, conn, tabela: str, politica, ordem: tuple[str, ...]) -> dict:

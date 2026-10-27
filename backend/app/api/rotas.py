@@ -595,6 +595,51 @@ def simulador(cid: str, db: Session = Depends(get_db)):
                            "mais_recente": e.mais_recente} for e in ends]}
 
 
+@api.get("/gold/cidadaos/{cid}/tributario")
+def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """TR7: imóveis (posse ativa e histórica), lançamentos e dívida ativa ligados ao cidadão (prata tributária).
+    Documento de outros possuidores sai mascarado; a consulta é auditada (dado pessoal + fiscal)."""
+    from datetime import date as _date
+
+    from app.models.camadas import DividaAtiva, Imovel, ImovelPossuidor, Lancamento
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
+                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
+    imoveis = {i.codi: i for i in db.scalars(select(Imovel).where(Imovel.codi.in_([p.codi for p in posses])))} if posses else {}
+    lancs = list(db.scalars(select(Lancamento).where(Lancamento.cidadao_id == cid)
+                            .order_by(Lancamento.vencimento.desc().nulls_last()).limit(200)))
+    divs = list(db.scalars(select(DividaAtiva).where(DividaAtiva.cidadao_id == cid).order_by(DividaAtiva.ano.desc())))
+    hoje = _date.today()
+    f = lambda v: None if v is None else float(v)  # noqa: E731
+    em_aberto = [x for x in lancs if not x.pago]
+    vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
+    ativa = [d for d in divs if not d.extinta]
+    audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
+                                                                  "dividas": len(divs)}, _ip(req))
+    return {
+        "cidadao_id": cid,
+        "totais": {"imoveis": len({p.codi for p in posses if p.ativo}),
+                   "em_aberto": round(sum(f(x.valor) or 0 for x in em_aberto), 2), "parcelas_em_aberto": len(em_aberto),
+                   "vencido": round(sum(f(x.valor) or 0 for x in vencido), 2), "parcelas_vencidas": len(vencido),
+                   "divida_ativa": round(sum(f(d.saldo) or 0 for d in ativa), 2), "inscricoes_divida": len(ativa),
+                   "protestada": any((d.protestos or 0) > 0 for d in ativa)},
+        "imoveis": [{"codi": p.codi, "inscricao": getattr(imoveis.get(p.codi), "inscricao", None),
+                     "numero": getattr(imoveis.get(p.codi), "numero", None),
+                     "complemento": getattr(imoveis.get(p.codi), "complemento", None),
+                     "cd_bairro": getattr(imoveis.get(p.codi), "cd_bairro", None),
+                     "iptu_anual": f(getattr(imoveis.get(p.codi), "iptu_anual", None)),
+                     "tipo_posse": p.tipo_posse, "desde": p.desde, "ate": p.ate, "ativo": p.ativo} for p in posses],
+        "lancamentos": [{"exercicio": x.exercicio, "tributo": x.tributo, "parcela": x.parcela, "codi": x.codi,
+                         "vencimento": x.vencimento, "valor": f(x.valor), "valor_pago": f(x.valor_pago),
+                         "pagamento": x.pagamento, "pago": x.pago,
+                         "situacao": "pago" if x.pago else ("vencido" if x.vencimento and x.vencimento < hoje else "a_vencer")}
+                        for x in lancs],
+        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "inscricao": d.inscricao, "saldo": f(d.saldo),
+                     "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
+                    for d in divs],
+    }
+
+
 @api.get("/gold/cidadaos/{cid}/sistemas")
 def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()

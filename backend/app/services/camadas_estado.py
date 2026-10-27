@@ -21,7 +21,7 @@ from app.models.camadas import RegistroBronze
 from app.models.controle import CamadasEstado, ConfirmacaoObito, Parametro
 
 APP = Path(__file__).resolve().parent.parent
-REGRAS = ("silver/processamento.py", "gold/visao.py", "ingestion/mapeamentos.py", "identity/correlacao.py",
+REGRAS = ("silver/processamento.py", "silver/tributario.py", "gold/visao.py", "ingestion/mapeamentos.py", "identity/correlacao.py",
           "identity/cns.py", "identity/cpf.py", "connectors/sqlserver/politicas.py")
 
 

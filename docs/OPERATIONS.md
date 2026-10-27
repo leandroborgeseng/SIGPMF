@@ -13,6 +13,8 @@
 | REVELAR_MOTIVO_MIN / REVELAR_CPF_SEGUNDOS | motivo mínimo (10) e tempo até remascarar (60 s) |
 | AMOSTRA_LIMITE / LOTE_TAMANHO | linhas por tabela na amostra (100) e tamanho do lote |
 | SQLSERVER_HOST/PORT/DATABASE/USER/PASSWORD/TIMEOUT | origem SQL Server (somente leitura) |
+| SQLSERVER_DATABASE_IPTU / _DIVIDA / _FINANCEIRO | banco de origem de cada conector tributário (vazio = SQLSERVER_DATABASE) |
+| FINANCEIRO_EXERCICIO_MIN | `Financeiro_Exercicio` só a partir deste exercício (vazio = atual e anterior); o recorte entra em toda consulta, contagem e conferência |
 | AGENDA_HABILITADA | `true` liga a agenda das cargas completas no backend (padrão `false`; nunca roda com `APP_ENV=test`) |
 | AGENDA_JANELA | horário em que a agenda pode **iniciar** cargas, `HH:MM-HH:MM` no fuso da agenda (padrão `00:00-06:00`; `00:00-24:00` = o dia todo; `22:00-06:00` atravessa a meia-noite). Uma carga iniciada na janela termina mesmo depois dela |
 | AGENDA_FUSO | fuso dos horários (padrão `America/Sao_Paulo`) |
@@ -57,3 +59,11 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   reconstrução bem-sucedida (`controle.camadas_estado`). Igual = reconstrução pulada ("Nada mudou nas entradas da prata
   e do ouro"). A reconciliação da carga completa roda do mesmo jeito. "Retomar prata e ouro" sempre reconstrói.
 - Um deploy que muda as regras (correlação, mapeamentos, ouro) muda o hash e força a próxima reconstrução.
+
+## Tributário (onda 2, TR1–TR8)
+- Conectores `iptu` (Cadastro, Cadastro_Possuidor), `divida` (Divida) e `financeiro` (Financeiro_Exercicio, com recorte
+  de exercício). Mesma rotina das outras bases: amostra com sucesso → carga completa → agenda.
+- São **fatos**: não entram na correlação de pessoas e nunca criam cidadão. A prata tributária (`silver.imoveis`,
+  `imovel_possuidores`, `lancamentos`, `dividas`) liga o fato ao cidadão só pelo CPF já correlacionado; o lançamento e a
+  dívida vão para o possuidor principal ativo do imóvel. PJ e CPF sem cidadão ficam só com o documento.
+- Ficha: `GET /api/gold/cidadaos/{id}/tributario` (todos os perfis autenticados, auditado como `consulta_tributario`).

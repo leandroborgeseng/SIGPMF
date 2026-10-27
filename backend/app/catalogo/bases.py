@@ -29,8 +29,9 @@ BASES: list[tuple] = [
     ("CadastroUnico", _P, _A, _M, 4, [], None, "Cadastro multi-secretaria; núcleo cad_CadastroSimples"),
     ("Protocolo_WEB", _P, _A, _M, 5, [], None, "Protocolo web: users e protocols (sem password/remember_token)"),
     ("Labor", _P, _A, _M, 6, [], None, "Laboratório: Cliente (sem CID nem senhas)"),
-    ("IPTU", _P, _A, _M, 7, [], None, "Cadastro imobiliário/contribuinte do IPTU"),
-    ("Divida", _P, _A, _M, 8, [], None, "Dívida ativa (débitos do cidadão no painel)"),
+    ("IPTU", _P, _A, _I, 7, ["IPTU"], "iptu", "Cadastro imobiliário e possuidores do IPTU (fatos, sem criar cidadão)"),
+    ("Divida", _P, _A, _I, 8, ["DIVIDA"], "divida", "Dívida ativa (débitos do cidadão no painel)"),
+    ("Financeiro", _P, _A, _I, 9, ["FINANCEIRO"], "financeiro", "Lançamentos tributários do exercício atual e anterior"),
     ("Alvara", _B, _A, _T, 9, [], None, "Alvarás (sem CPF); indicador de licenciamento"),
     ("IntegracaoJuridicoDivida", _P, _A, _T, 10, [], None, "Dívida ativa judicial: cadastros, CDAs, acordos (painel)"),
     # ---- analisados, sem fila ----
@@ -68,7 +69,7 @@ BASES: list[tuple] = [
     *[(n, _P, _N, _T, None, [], None, "Pré-triagem pelo nome") for n in ("Bibliotecario", "Concursos")],
     *[(n, _B, _N, _T, None, [], None, "Pré-triagem pelo nome (indicadores)") for n in (
         "ArquivoHistorico", "Baixas", "Cert_Emit", "ConselhosMunicipais", "Controle_Despesa", "Controle_Documentacao",
-        "Estoque", "Financeiro", "Fiscalizacao_Rendas")],
+        "Estoque", "Fiscalizacao_Rendas")],
     *[(n, _C, _N, _X, None, [], None, "Descartável (pré-triagem pelo nome)") for n in (
         "API_Email", "API_Usuario", "Baixas_Ant", "CAL", "Central", "Correios", "DbPPrioritariosIdentityMunicipios",
         "DBSENIOR", "DBSENIOR_EDOCS", "DBSENIOR_ESOCIAL", "DBSENIOR_PORTAL", "Divida_Anteriores", "DWConfiguration",

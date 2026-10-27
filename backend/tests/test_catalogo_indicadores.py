@@ -47,10 +47,12 @@ def carregado(client, tokens):
 def test_catalogo_tem_todas_as_bases_da_triagem(client, tokens):
     b = _bases(client, tokens["leitura"])
     assert len(b) == len(BASES) == 73
-    assert sum(1 for x in BASES if x[2] == "schema") == 38
-    assert {n for n, x in b.items() if x["status"] == "implementado"} == {"Saude", "Cemiterio", "ISS"}  # ISS: 0006 (#8)
+    assert sum(1 for x in BASES if x[2] == "schema") == 39  # Financeiro analisado pelo schema na onda 2
+    # ISS: 0006 (#8); IPTU, Divida e Financeiro: 0013 (onda 2, tributário)
+    assert {n for n, x in b.items() if x["status"] == "implementado"} == {"Saude", "Cemiterio", "ISS", "IPTU", "Divida",
+                                                                           "Financeiro"}
     fila = sorted((x["prioridade"], n) for n, x in b.items() if x["status"] == "mapeado")
-    assert [n for _, n in fila] == ["CadastroUnico", "Protocolo_WEB", "Labor", "IPTU", "Divida"]
+    assert [n for _, n in fila] == ["CadastroUnico", "Protocolo_WEB", "Labor"]
     for n in ("Senhas", "API_Usuario", "DBSENIOR", "LogSistemas", "Geral"):
         assert b[n]["status"] == "excluido"
     assert b["Alvara"]["prioridade"] and b["IntegracaoJuridicoDivida"]["prioridade"]
