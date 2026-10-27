@@ -380,3 +380,104 @@ def test_rota_status_sem_segredo(client, tokens, monkeypatch):
     assert SEGREDO_SINTETICO not in r.text and ID_SINTETICO not in r.text and "127.0.0.1" not in r.text
     assert set(r.json()["endpoints"]) == {"imoveis", "empresas", "atividade", "empresas_lote"}
     assert client.get("/api/conectores/sil/status", headers=tokens["leitura"]).status_code == 403
+
+
+# ---------- SIL9 / TL 27/10: disparo pela API (admin, auditado, 202 + background, um lote) ----------
+@pytest.fixture
+def sil_env(mock, monkeypatch):
+    estado, url = mock
+    monkeypatch.setenv("SIL_BASE_URL", url)
+    monkeypatch.delenv("SIL_BASE_URL_SANDBOX", raising=False)
+    monkeypatch.setenv("SIL_CLIENT_ID", ID_SINTETICO)
+    monkeypatch.setenv("SIL_CLIENT_SECRET", SEGREDO_SINTETICO)
+    monkeypatch.setenv("SIL_REQ_POR_S", "20")
+    monkeypatch.setenv("SIL_CONSULTARLOTE_MAX_LOTES", "5")  # a rota força 1 lote mesmo assim
+    return estado
+
+
+@pytest.fixture
+def sil_sincrono(monkeypatch):
+    from app.services import amostra_sil as servico
+    monkeypatch.setattr(servico, "disparar", lambda ex_id, usuario, nome, trava: servico.rodar(ex_id, usuario, nome, trava))
+
+
+def _auditoria(db, acao, alvo=None):
+    from sqlalchemy import select
+
+    from app.models.controle import Auditoria
+    db.expire_all()
+    q = select(Auditoria).where(Auditoria.acao == acao)
+    if alvo:
+        q = q.where(Auditoria.alvo == alvo)
+    return list(db.scalars(q.order_by(Auditoria.id)))
+
+
+def test_amostra_sil_403_para_quem_nao_e_admin(client, tokens, db, sil_env, sil_sincrono):
+    assert client.post("/api/conectores/sil/amostra").status_code == 401
+    antes = len(_auditoria(db, "acesso_negado", "/api/conectores/sil/amostra"))
+    for perfil in ("leitura", "operador", "admin_lgpd"):
+        assert client.post("/api/conectores/sil/amostra", headers=tokens[perfil]).status_code == 403
+    assert len(_auditoria(db, "acesso_negado", "/api/conectores/sil/amostra")) == antes + 3
+    assert sil_env.req == []  # nenhuma chamada à SIL
+
+
+def test_amostra_sil_admin_um_lote_e_auditoria(client, tokens, db, sil_env, sil_sincrono):
+    from app.models.controle import Execucao
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    j = r.json()
+    assert j["status"] in ("sucesso", "sem_novidades") and j["lotes"] == 1 and j["lidos"] == sil_env.tamanho_lote
+    lotes = [p for m, c, p in sil_env.req if c == "/franca/empresa/consultarlote"]
+    assert len(lotes) == 1 and lotes[0]["Sequencia"] == "0" and lotes[0]["Status"] == "Ativo"
+    ex = db.get(Execucao, j["id"])
+    assert ex.usuario == "admin@aion.local" and ex.finalizado_em and ex.etapa == "concluida"
+    alvo = f"execucao:{j['id']}"
+    ini, fim = _auditoria(db, "amostra_sil_iniciada", alvo), _auditoria(db, "amostra_sil_executada", alvo)
+    assert len(ini) == 1 and len(fim) == 1
+    for a in ini + fim + _auditoria(db, "amostra_sil_solicitada")[-1:]:
+        assert a.usuario == "admin@aion.local" and a.criado_em is not None
+        txt = f"{a.alvo} {a.detalhe}"
+        assert not re.search(r"\d{11}", txt) and SEGREDO_SINTETICO not in txt and "127.0.0.1" not in txt
+    assert fim[0].detalhe["lotes"] == 1 and fim[0].detalhe["status"] == j["status"]
+    s = client.get(f"/api/conectores/sil/amostra/{j['id']}", headers=tokens["admin"])
+    assert s.status_code == 200 and s.json()["em_andamento"] is False
+    assert client.get(f"/api/conectores/sil/amostra/{j['id']}", headers=tokens["operador"]).status_code == 403
+    assert client.get("/api/conectores/sil/amostra/999999", headers=tokens["admin"]).status_code == 404
+
+
+def test_amostra_sil_409_enquanto_roda(client, tokens, db, sil_env):
+    """Thread real: a SIL sintética demora; o 2º pedido recebe 409 e nada é interrompido; no fim a trava é solta."""
+    import time
+    sil_env.atraso_s = 1.5
+    t0 = time.monotonic()
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 202 and r.json()["em_andamento"] is True and time.monotonic() - t0 < 1.0
+    eid = r.json()["id"]
+    r2 = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r2.status_code == 409 and f"execução {eid}" in r2.json()["detail"]
+    assert _auditoria(db, "amostra_sil_conflito")[-1].usuario == "admin@aion.local"
+    for _ in range(100):
+        j = client.get(f"/api/conectores/sil/amostra/{eid}", headers=tokens["admin"]).json()
+        if not j["em_andamento"]:
+            break
+        time.sleep(0.1)
+    assert j["status"] in ("sucesso", "sem_novidades") and j["lotes"] == 1, j
+    sil_env.atraso_s = 0
+    for _ in range(20):  # a thread solta a trava logo depois de gravar
+        r3 = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+        if r3.status_code != 409:
+            break
+        time.sleep(0.1)
+    assert r3.status_code == 202
+    for _ in range(50):
+        if not client.get(f"/api/conectores/sil/amostra/{r3.json()['id']}", headers=tokens["admin"]).json()["em_andamento"]:
+            break
+        time.sleep(0.1)
+
+
+def test_amostra_sil_desligada_409_sem_chamar(client, tokens, monkeypatch, sil_sincrono, db):
+    for v in ("SIL_BASE_URL", "SIL_BASE_URL_SANDBOX", "SIL_CLIENT_ID", "SIL_CLIENT_SECRET"):
+        monkeypatch.delenv(v, raising=False)
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 409 and "desligado" in r.json()["detail"]
+    assert _auditoria(db, "amostra_sil_recusada")[-1].detalhe == {"motivo": "desligado"}

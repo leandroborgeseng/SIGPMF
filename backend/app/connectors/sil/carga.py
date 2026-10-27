@@ -131,7 +131,8 @@ def paginar_lote(cliente: ClienteSil, endpoint: EndpointSil, max_lotes: int | No
 
 
 def executar_enriquecimento(db: Session, usuario: str, endpoint: EndpointSil, chaves: list[str] | None = None,
-                            cliente: ClienteSil | None = None, config: ConfigSil | None = None) -> Execucao:
+                            cliente: ClienteSil | None = None, config: ConfigSil | None = None,
+                            execucao_id: int | None = None, max_lotes: int | None = None) -> Execucao:
     """Lote de até LIMITE_LOTE chaves -> bronze (transação única), controle com contagens. Só GET."""
     cfg = config or ConfigSil.do_ambiente()
     if cliente is None and not cfg.habilitado:
@@ -140,20 +141,23 @@ def executar_enriquecimento(db: Session, usuario: str, endpoint: EndpointSil, ch
     chaves = chaves or []
     if len(chaves) > LIMITE_LOTE:
         raise ValueError(f"lote acima de {LIMITE_LOTE} chaves (SIL4)")
-    ex = Execucao(tipo=TIPO_EXECUCAO, sistema=SISTEMA, status="em_andamento", usuario=usuario,
-                  atualizado_em=datetime.now(UTC))
-    db.add(ex)
-    db.commit()
+    ex = db.get(Execucao, execucao_id) if execucao_id is not None else None
+    if ex is None:  # execucao_id: já criada pela rota assíncrona (app.services.amostra_sil.iniciar_amostra)
+        ex = Execucao(tipo=TIPO_EXECUCAO, sistema=SISTEMA, status="em_andamento", usuario=usuario,
+                      atualizado_em=datetime.now(UTC))
+        db.add(ex)
+        db.commit()
     proprio = cliente is None
     cliente = cliente or ClienteSil(cfg)
     try:
-        r = paginar_lote(cliente, endpoint) if endpoint.paginado else consultar_lote(cliente, endpoint, chaves)
+        r = (paginar_lote(cliente, endpoint, max_lotes=max_lotes) if endpoint.paginado
+             else consultar_lote(cliente, endpoint, chaves))
         c = r["contagem"]
         if r["registros"]:
             b = ingere(db, SISTEMA, endpoint.tabela_bronze, "_id_sigpmf", None, r["registros"], ex.id,
                        confirmar=False)
             ex.novos, ex.atualizados, ex.ignorados = b["novos"], b["atualizados"], b["ignorados"]
-        ex.lidos = c["lidos"]
+        ex.lidos, ex.lotes = c["lidos"], c.get("lotes", 1)
         ex.status = "falha" if c["parou"] else ("sucesso" if r["registros"] else "sem_novidades")
         ex.mensagem = (f"endpoint={endpoint.nome} lidos={c['lidos']} localizados={c['localizados']} "
                        f"nao_localizados={c['nao_localizados']} erros={c['erros']}"
