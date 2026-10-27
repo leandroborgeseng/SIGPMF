@@ -54,3 +54,8 @@ class ConfirmaObitoIn(BaseModel):
 
 class ExecutarBaseIn(BaseModel):
     modo: str = Field("amostra", pattern=r"^(amostra|completa|reprocessar)$")
+
+
+class InterromperIn(BaseModel):
+    """CC12: motivo obrigatório (auditado). Sem dado pessoal."""
+    motivo: str = Field(min_length=5, max_length=300)

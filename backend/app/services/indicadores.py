@@ -65,6 +65,7 @@ def indicadores(db: Session) -> list[dict]:
             "pode_carregar": motivo is None, "motivo_bloqueio": motivo,
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
             **_completa(db, b),
+            "bloqueio": _bloqueio(db, b),
             "com_erro": ult is not None and ult.status == "falha",
             "origem_vazia": ult is not None and ult.status == "origem_vazia",
             "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
@@ -76,6 +77,18 @@ def indicadores(db: Session) -> list[dict]:
                 "erro": ult.erro_publico()},
         })
     return out
+
+
+def _bloqueio(db: Session, b: BaseCatalogo) -> dict | None:
+    """CC12: execução em andamento que segura o conector (aviso âmbar na tela). Sem PII."""
+    from app.services import carga_conector as cc
+    from app.services import trava as tv
+    if (b.conjunto or "") not in cc.CONECTORES or b.status != "implementado":
+        return None
+    sistema = cc.CONECTORES[b.conjunto][0]
+    if not tv.em_andamento(db, sistema):
+        return None
+    return tv.estado(db, sistema, tv.NOMES.get(b.conjunto, b.conjunto))
 
 
 def _completa(db: Session, b: BaseCatalogo) -> dict:

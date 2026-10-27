@@ -6,7 +6,17 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.schemas import CargaIn, ConfirmaObitoIn, ExecutarBaseIn, LoginIn, RevelarIn, SistemaIn, TabelaIn, UsuarioIn
+from app.api.schemas import (
+    CargaIn,
+    ConfirmaObitoIn,
+    ExecutarBaseIn,
+    InterromperIn,
+    LoginIn,
+    RevelarIn,
+    SistemaIn,
+    TabelaIn,
+    UsuarioIn,
+)
 from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
 from app.connectors.sqlserver.politicas import TabelaRecusada, politica
 from app.core.audit import audita
@@ -242,6 +252,44 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     audita(db, u.email, "amostra_conector_executada", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos},
            _ip(req))
     return _exec(ex)
+
+
+@api.get("/conectores/{conector}/bloqueio")
+def bloqueio_conector(conector: str, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """CC12: execução (amostra ou completa) que segura o conector: tipo, início, última atividade e se é interrompível."""
+    from app.services import trava as tv
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    est = tv.estado(db, cc.CONECTORES[conector][0], tv.NOMES.get(conector, conector))
+    if est is not None:
+        est["pode_interromper"] = u.perfil == "admin" and est["parada"]
+    return {"conector": conector, "bloqueio": est}
+
+
+@api.post("/conectores/{conector}/execucoes/{eid}/interromper")
+def interromper_execucao(conector: str, eid: int, dados: InterromperIn, req: Request,
+                         u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """CC12: admin interrompe a execução parada (sem processo vivo ou sem atividade além de SIGPMF_CARGA_ALERTA_MIN).
+    Motivo obrigatório, auditado. Nada é apagado; a próxima carga começa sem limpar a bronze."""
+    from app.services import trava as tv
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    sistema = cc.CONECTORES[conector][0]
+    ex = db.get(Execucao, eid)
+    if ex is None or ex.sistema != sistema or ex.tipo not in tv.TIPOS_CARGA:
+        _404()
+    if ex.status != "em_andamento":
+        raise HTTPException(409, "Esta execução não está em andamento.")
+    viva = not tv.trava_livre(db, sistema)
+    alerta = get_settings().carga_alerta_min
+    if viva and tv.parada_min(ex) <= alerta:
+        audita(db, u.email, "interromper_execucao_recusado", f"execucao:{eid}", {"motivo": "com_atividade"}, _ip(req))
+        raise HTTPException(409, f"A {tv.tipo_rotulo(ex)} tem atividade nos últimos {alerta} min; aguarde ou cancele.")
+    tv.interromper(db, ex, u.email, dados.motivo, automatico=False, ip=_ip(req))
+    db.commit()
+    return {"id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
 
 
 @api.post("/conectores/{base_id:int}/executar")

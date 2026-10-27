@@ -69,6 +69,24 @@ def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | 
             etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC)))
 
 
+class PrataInconsistente(RuntimeError):
+    """CC11: a prata gravada não bate com as chaves distintas esperadas; o ouro não roda."""
+
+
+def confere_prata(db: Session) -> None:
+    """CC11: linhas gravadas na prata == chaves distintas (sem duplicar por join/reprocesso). Só contagens."""
+    from app.models.camadas import CorrelacaoPendente as CP
+    problemas = []
+    for rotulo, m in (("vínculos", Vinculo), ("pendências", CP)):
+        linhas = int(db.scalar(select(func.count()).select_from(m)) or 0)
+        chaves = int(db.scalar(select(func.count(func.distinct(func.concat(m.sistema, "|", m.tabela, "|", m.chave_origem))))) or 0)
+        if linhas != chaves:
+            problemas.append(f"{rotulo}: {linhas} linhas para {chaves} chaves distintas")
+    if problemas:
+        raise PrataInconsistente("prata não bate com as chaves distintas (" + "; ".join(problemas)
+                                 + "); o ouro não foi gerado")
+
+
 class ChaveInvalida(RuntimeError):
     """Tabela cuja chave não serve para keyset (repetida ou com NULL na origem)."""
 
@@ -165,7 +183,9 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     if conector not in CONECTORES_COMPLETA:
         return "Carga completa ainda não disponível para este conector"
     sistema = _sistema(conector)
-    a = db.scalar(select(Execucao).where(Execucao.tipo.in_(cc.TIPOS_AMOSTRA), Execucao.sistema == sistema)
+    # CC12: amostra órfã (em andamento/interrompida) não apaga a última amostra concluída
+    a = db.scalar(select(Execucao).where(Execucao.tipo.in_(cc.TIPOS_AMOSTRA), Execucao.sistema == sistema,
+                                         Execucao.status.not_in(("em_andamento", "interrompida")))
                   .order_by(Execucao.id.desc()).limit(1))
     if a is None:
         return SEM_AMOSTRA
@@ -229,16 +249,39 @@ def _marca_interrompida(db: Session, ex: Execucao) -> None:
     db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"{INTERROMPIDA} (etapa: {ex.etapa or 'leitura'})"))
 
 
+PAUSADA_ORFA = "Carga pausada ({motivo}). Ao continuar, ela segue de onde parou pelos checkpoints."
+
+
+def marca_orfa(ex: Execucao, motivo: str) -> str:
+    """CC12 (TL/Designer): completa sem processo vivo. Leitura incompleta -> 'pausada' (continua pelos checkpoints,
+    "Continuar carga completa"); leitura concluída (prata/ouro) -> 'interrompida' ("Retomar prata e ouro").
+    Não grava log/auditoria (quem chama grava). Devolve o texto do log."""
+    agora = datetime.now(UTC)
+    if ex.etapa in ("prata", "ouro"):
+        ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", INTERROMPIDA, agora, None
+        return f"{INTERROMPIDA} (etapa: {ex.etapa}; {motivo})"
+    ex.status, ex.pausa_motivo, ex.finalizado_em, ex.tabela_atual = "pausada", PAUSADA_ORFA.format(motivo=motivo), agora, None
+    return f"Carga completa pausada: {motivo}. A bronze e os checkpoints foram mantidos."
+
+
+def _interrompe_orfa(db: Session, ex: Execucao, usuario: str, motivo: str) -> None:
+    """CC12: execução sem processo vivo (auditado): amostra interrompida; completa pausada/interrompida (marca_orfa)."""
+    from app.services import trava as tv
+    tv.interromper(db, ex, usuario, motivo, automatico=True)
+
+
 def interromper_orfas(db: Session) -> int:
-    """Startup: toda carga completa em_andamento sem processo vivo (trava livre) vira 'interrompida'."""
+    """Startup (CC7/CC12): toda amostra ou carga completa em_andamento sem processo vivo (trava livre) vira
+    'interrompida', auditado. A bronze e os checkpoints ficam."""
+    from app.services import trava as tv
     n = 0
-    for ex in list(db.scalars(select(Execucao).where(Execucao.tipo == TIPO, Execucao.status == "em_andamento"))):
-        if _trava_livre(db, ex.sistema):
-            _marca_interrompida(db, ex)
+    for ex in list(db.scalars(select(Execucao).where(Execucao.tipo.in_(tv.TIPOS_CARGA), Execucao.status == "em_andamento"))):
+        if ex.sistema and _trava_livre(db, ex.sistema):
+            _interrompe_orfa(db, ex, "sistema", "reinício do servidor")
             n += 1
     db.commit()
     if n:
-        log.warning("%d carga(s) completa(s) em andamento sem processo vivo marcadas como interrompidas", n)
+        log.warning("%d execução(ões) em andamento sem processo vivo marcadas como interrompidas", n)
     return n
 
 
@@ -256,12 +299,13 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
     trava = db.get_bind().connect()
     if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": _chave_lock(sistema)}).scalar():
         trava.close()
-        raise cc.Conflito(f"Já existe uma carga de {NOMES[conector]} em andamento.")
+        from app.services import trava as tv
+        raise cc.Conflito(tv.conflito(db, sistema, conector, usuario))
     try:
-        velha = ativa(db, sistema)
-        if velha is not None:  # temos a trava: ninguém roda; registro ficou de um reinício do servidor
-            velha.status, velha.pausa_motivo = "pausada", "Carga interrompida (reinício do servidor). Retome a carga."
-            velha.finalizado_em = datetime.now(UTC)
+        from app.services import trava as tv
+        for velha in tv.em_andamento(db, sistema):  # temos a trava: ninguém roda; sobrou de um reinício
+            # completa -> 'pausada' (retomável do checkpoint, como antes); amostra -> 'interrompida'. Auditado.
+            tv.interromper(db, velha, usuario, "sem processo vivo (trava livre)", automatico=True)
         ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
                       etapa="prata" if somente_camadas else "leitura", atualizado_em=datetime.now(UTC))
         if somente_camadas:  # leitura já concluída: total/contagens vêm da bronze, a origem não é lida
@@ -339,7 +383,7 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.status = "falha"
             ex.registra_erro(exc)
             ex.tabela_atual = None
-            motivo = str(exc) if isinstance(exc, ChaveInvalida) else ex.erro_publico()["motivo"]
+            motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente) else ex.erro_publico()["motivo"]
             _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
     finally:
@@ -393,6 +437,8 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 if disco:
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
+                # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
+                sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
                 brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
                 linhas = [linha_json(r, cols) for r in brutas]
                 if brutas:
@@ -454,6 +500,7 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
     # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
     # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
     sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
+    confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
     _log_separado(ex.id, "prata", t0, sres)
     sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
     _log_separado(ex.id, "ouro", None, None)
@@ -552,7 +599,7 @@ def situacao(db: Session, conector: str) -> dict:
             visto = visto.replace(tzinfo=UTC)
         sem_progresso = visto is not None and (datetime.now(UTC) - visto).total_seconds() > 60 * get_settings().carga_alerta_min
         if sem_progresso and _trava_livre(db, sistema):  # nenhum processo segura a trava: a thread morreu
-            _marca_interrompida(db, ex)
+            _interrompe_orfa(db, ex, "sistema", "thread da carga parou")
             db.commit()
             sem_progresso = False
     if ex is not None:
@@ -560,7 +607,9 @@ def situacao(db: Session, conector: str) -> dict:
             "id": ex.id, "status": ex.status, "usuario": ex.usuario, "iniciado_em": ex.iniciado_em,
             "finalizado_em": ex.finalizado_em, "lidos": ex.lidos, "novos": ex.novos, "atualizados": ex.atualizados,
             "ignorados": ex.ignorados, "lotes": ex.lotes, "gravados": ex.novos + ex.atualizados,
-            "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps), "tabela_atual": ex.tabela_atual,
+            "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps),
+            # CC12 (Designer): "X de N tabelas já lidas" no card da carga pausada
+            "tabelas_lidas": sum(1 for c in cps if c.concluida), "tabelas_total": len(cc.tabelas_do_conector(sistema)), "tabela_atual": ex.tabela_atual,
             "pausa_motivo": ex.pausa_motivo, "cancelamento_pedido": bool(ex.cancelar), "mensagem": ex.mensagem,
             "erro": ex.erro_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
@@ -572,7 +621,11 @@ def situacao(db: Session, conector: str) -> dict:
             "bronze": bronze_do_sistema(db, sistema),
             "prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema)) or 0),
             "pendencias": int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
-                CorrelacaoPendente.sistema == sistema, CorrelacaoPendente.status == "pendente")) or 0)},
+                CorrelacaoPendente.sistema == sistema, CorrelacaoPendente.status == "pendente")) or 0),
+            # CC11: "Registros gerados na prata" (vínculos + pendências), linha separada do contador da etapa
+            "gerados_prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema))
+                                 or 0) + int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
+                                     CorrelacaoPendente.sistema == sistema)) or 0)},
         "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
         "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
