@@ -95,7 +95,7 @@ describe('carga completa (CC1-CC6)', () => {
     expect(await screen.findByText(/Carga completa de Saúde concluída: 13 registros lidos/)).toBeInTheDocument()
   }, 15000)
 
-  it('erro ao iniciar mostra o motivo e "Tentar de novo"; pausa mostra motivo e "Retomar carga"', async () => {
+  it('erro ao iniciar mostra o motivo e "Tentar de novo"; pausa mostra motivo e "Continuar carga completa"', async () => {
     let posts = 0
     mock((u, init) => {
       if (u.endsWith('/conectores')) return [200, resp({})]
@@ -105,8 +105,8 @@ describe('carga completa (CC1-CC6)', () => {
     })
     montar('admin')
     const c = await cartao()
-    expect(await within(c).findByText(/Carga pausada: Disco do servidor com 95% usado/)).toBeInTheDocument()
-    await userEvent.click(within(c).getByRole('button', { name: 'Retomar carga' }))
+    expect(await within(c).findByText(/Disco do servidor com 95% usado/)).toBeInTheDocument()
+    await userEvent.click(within(c).getByRole('button', { name: 'Continuar carga completa' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Iniciar carga completa' }))
     const al = await within(c).findByRole('alert')
     expect(al).toHaveTextContent('88% usado')
@@ -171,12 +171,23 @@ describe('carga completa (CC1-CC6)', () => {
     expect(within(d).queryByText(/timeout/)).toBeNull()
   })
 
-  it('UX: pausa sem motivo mostra só "Carga pausada"', async () => {
-    mock((u) => [200, u.endsWith('/conectores') ? resp({}) : sit({ execucao: { ...EX, status: 'pausada', pausa_motivo: null } })])
+  it('CC12 (Designer): completa pausada mostra data/hora, "X de N tabelas já lidas" e "Continuar carga completa"', async () => {
+    let posts = 0
+    mock((u, init) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/estimativa')) return [200, { tabelas: { pacientes: 7 }, total: 7 }]
+      if (u.endsWith('/completa') && init?.method === 'POST') { posts++; return [202, sit({ execucao: { ...EX, status: 'em_andamento' } })] }
+      return [200, sit({ execucao: { ...EX, status: 'pausada', finalizado_em: '2026-10-26T19:30:00Z', tabelas_lidas: 2, tabelas_total: 5,
+        pausa_motivo: 'Carga pausada (reinício do servidor). Ao continuar, ela segue de onde parou pelos checkpoints.' } })]
+    })
     montar('admin')
     const c = await cartao()
-    const st = await within(c).findByText(/^Carga pausada/)
-    expect(st.textContent).toBe('Carga pausada')
+    const st = await within(c).findByText(/^Carga pausada em/)
+    expect(st.closest('p')).toHaveTextContent(/^Carga pausada em 26\/10\/2026 16:30\. Ao continuar, ela segue de onde parou \(2 de 5 tabelas já lidas\)\.$/)
+    expect(within(c).queryByRole('button', { name: 'Retomar prata e ouro' })).toBeNull()
+    await userEvent.click(within(c).getByRole('button', { name: 'Continuar carga completa' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Iniciar carga completa' }))
+    await waitFor(() => expect(posts).toBe(1))  // dispara a carga completa (retoma pelos checkpoints no servidor)
   })
 })
 

@@ -249,15 +249,25 @@ def _marca_interrompida(db: Session, ex: Execucao) -> None:
     db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"{INTERROMPIDA} (etapa: {ex.etapa or 'leitura'})"))
 
 
+PAUSADA_ORFA = "Carga pausada ({motivo}). Ao continuar, ela segue de onde parou pelos checkpoints."
+
+
+def marca_orfa(ex: Execucao, motivo: str) -> str:
+    """CC12 (TL/Designer): completa sem processo vivo. Leitura incompleta -> 'pausada' (continua pelos checkpoints,
+    "Continuar carga completa"); leitura concluída (prata/ouro) -> 'interrompida' ("Retomar prata e ouro").
+    Não grava log/auditoria (quem chama grava). Devolve o texto do log."""
+    agora = datetime.now(UTC)
+    if ex.etapa in ("prata", "ouro"):
+        ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", INTERROMPIDA, agora, None
+        return f"{INTERROMPIDA} (etapa: {ex.etapa}; {motivo})"
+    ex.status, ex.pausa_motivo, ex.finalizado_em, ex.tabela_atual = "pausada", PAUSADA_ORFA.format(motivo=motivo), agora, None
+    return f"Carga completa pausada: {motivo}. A bronze e os checkpoints foram mantidos."
+
+
 def _interrompe_orfa(db: Session, ex: Execucao, usuario: str, motivo: str) -> None:
-    """CC12: execução sem processo vivo vira 'interrompida' (auditado). Completa mantém a mensagem de retomada."""
+    """CC12: execução sem processo vivo (auditado): amostra interrompida; completa pausada/interrompida (marca_orfa)."""
     from app.services import trava as tv
-    if ex.tipo == TIPO:
-        _marca_interrompida(db, ex)
-        audita(db, usuario, "execucao_interrompida", f"execucao:{ex.id}",
-               {"tipo": ex.tipo, "sistema": ex.sistema, "motivo": motivo, "automatico": True}, commit=False)
-    else:
-        tv.interromper(db, ex, usuario, motivo, automatico=True)
+    tv.interromper(db, ex, usuario, motivo, automatico=True)
 
 
 def interromper_orfas(db: Session) -> int:
@@ -427,6 +437,8 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 if disco:
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
+                # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
+                sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
                 brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
                 linhas = [linha_json(r, cols) for r in brutas]
                 if brutas:
@@ -587,7 +599,7 @@ def situacao(db: Session, conector: str) -> dict:
             visto = visto.replace(tzinfo=UTC)
         sem_progresso = visto is not None and (datetime.now(UTC) - visto).total_seconds() > 60 * get_settings().carga_alerta_min
         if sem_progresso and _trava_livre(db, sistema):  # nenhum processo segura a trava: a thread morreu
-            _marca_interrompida(db, ex)
+            _interrompe_orfa(db, ex, "sistema", "thread da carga parou")
             db.commit()
             sem_progresso = False
     if ex is not None:
@@ -595,7 +607,9 @@ def situacao(db: Session, conector: str) -> dict:
             "id": ex.id, "status": ex.status, "usuario": ex.usuario, "iniciado_em": ex.iniciado_em,
             "finalizado_em": ex.finalizado_em, "lidos": ex.lidos, "novos": ex.novos, "atualizados": ex.atualizados,
             "ignorados": ex.ignorados, "lotes": ex.lotes, "gravados": ex.novos + ex.atualizados,
-            "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps), "tabela_atual": ex.tabela_atual,
+            "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps),
+            # CC12 (Designer): "X de N tabelas já lidas" no card da carga pausada
+            "tabelas_lidas": sum(1 for c in cps if c.concluida), "tabelas_total": len(cc.tabelas_do_conector(sistema)), "tabela_atual": ex.tabela_atual,
             "pausa_motivo": ex.pausa_motivo, "cancelamento_pedido": bool(ex.cancelar), "mensagem": ex.mensagem,
             "erro": ex.erro_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,

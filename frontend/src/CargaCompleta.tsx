@@ -10,6 +10,7 @@ export type ExecCompleta = {
   total_origem: number | null; processados: number; tabela_atual: string | null; pausa_motivo: string | null
   cancelamento_pedido: boolean; mensagem: string | null; erro: { motivo: string } | null
   status_texto?: string; etapa?: Etapa | null; etapa_nome?: string | null; processadas_etapa?: number | null
+  tabelas_lidas?: number | null; tabelas_total?: number | null
   total_etapa?: number | null; atualizado_em?: string | null; sem_progresso?: boolean; alerta_min?: number
   pode_retomar_camadas?: boolean
 }
@@ -229,9 +230,18 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           <button className="btn outlined" onClick={abrir} disabled={!ok}>Iniciar carga de novo</button>
         </div>
       )}
-      {ex && !rodando && (ex.status === 'pausada' || ex.status === 'cancelada') && (
+      {ex && !rodando && ex.status === 'pausada' && (
         <div className="aviso-ambar" role="status">
-          <p>{ex.status === 'pausada' ? (ex.pausa_motivo ? `Carga pausada: ${ex.pausa_motivo}` : 'Carga pausada') : ex.mensagem}</p>
+          {/* CC12 (Designer): segue pelos checkpoints de cada tabela, sem reler o que já foi lido */}
+          <p><strong>Carga pausada em {dataHoraBR(ex.finalizado_em ?? ex.atualizado_em ?? ex.iniciado_em)}.</strong> Ao continuar, ela segue de onde parou
+            {ex.tabelas_total != null && <> ({ex.tabelas_lidas ?? 0} de {ex.tabelas_total} tabelas já lidas)</>}.</p>
+          {ex.pausa_motivo && <p className="sutil">{ex.pausa_motivo}</p>}
+          <button className="btn" onClick={abrir} disabled={!ok}>Continuar carga completa</button>
+        </div>
+      )}
+      {ex && !rodando && ex.status === 'cancelada' && (
+        <div className="aviso-ambar" role="status">
+          <p>{ex.mensagem}</p>
           <button className="btn" onClick={abrir} disabled={!ok}>Retomar carga</button>
         </div>
       )}

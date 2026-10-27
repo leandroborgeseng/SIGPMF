@@ -358,4 +358,4 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
     if progresso:
         progresso(min(feitos[0], total), total)
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
-            "total_bronze": total}
+            "feitos": feitos[0], "total_bronze": total}

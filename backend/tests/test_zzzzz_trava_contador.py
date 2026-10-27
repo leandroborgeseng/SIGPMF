@@ -154,14 +154,18 @@ def test_cc12_viva_e_recente_409_diz_qual_e_desde_quando(client, tokens, db, loc
         _fecha(db)
 
 
-def test_cc12_viva_sem_atividade_alem_do_limite_vira_interrompida(client, tokens, db, lock_de_outro):
+def test_cc12_trava_ocupada_nunca_interrompe_sozinha_mesmo_parada(client, tokens, db, lock_de_outro):
+    """TL: com a trava ocupada (processo vivo), nem sem sinal de vida a execução é interrompida automaticamente."""
     ex = _exec(db, minutos=30)  # SIGPMF_CARGA_ALERTA_MIN padrão 5
     try:
         r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-        assert r.status_code == 409 and "marcada como interrompida" in r.json()["detail"]
+        d = r.json()["detail"]
+        assert r.status_code == 409 and "amostra de Saúde em andamento desde" in d and "um admin pode interrompê-la" in d
         db.expire_all()
         v = db.get(Execucao, ex.id)
-        assert v.status == "interrompida" and v.cancelar is True
+        assert v.status == "em_andamento" and not v.cancelar
+        assert db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida",
+                                                 Auditoria.alvo == f"execucao:{ex.id}")) is None
     finally:
         _fecha(db)
 
@@ -216,19 +220,87 @@ def test_cc12_completa_orfa_vira_pausada_auditada(client, tokens, origem, db):  
         assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
         db.expire_all()
         v = db.get(Execucao, velha.id)
-        assert v.status == "pausada" and "Retome a carga" in v.pausa_motivo and v.finalizado_em is not None
+        assert v.status == "pausada" and "segue de onde parou" in v.pausa_motivo and v.finalizado_em is not None
         a = db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida", Auditoria.alvo == f"execucao:{v.id}"))
         assert a is not None and a.detalhe["status_anterior"] == "em_andamento"
     finally:
         _fecha(db)
 
 
-def test_cc12_completa_viva_parada_vira_pausada(client, tokens, db, lock_de_outro):
+def test_cc12_completa_viva_parada_so_admin_pausa(client, tokens, db, lock_de_outro):
     ex = _exec(db, tipo=ccomp.TIPO, minutos=30)
     try:
-        r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-        assert r.status_code == 409 and "pausada (retomável do checkpoint)" in r.json()["detail"]
+        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 409
         db.expire_all()
-        assert db.get(Execucao, ex.id).status == "pausada" and db.get(Execucao, ex.id).cancelar is True
+        assert db.get(Execucao, ex.id).status == "em_andamento"  # trava ocupada: nada automático
+        r = client.post(f"/api/conectores/saude/execucoes/{ex.id}/interromper", headers=tokens["admin"],
+                        json={"motivo": "ZZTESTE completa travada"})
+        assert r.status_code == 200 and r.json()["status"] == "pausada"
     finally:
         _fecha(db)
+
+
+def test_cc11_feitos_igual_total_com_todos_os_papeis(db):
+    """TL: no fim do reconstruir, feitos == total (o min() não pode esconder contagem dupla nem registro esquecido)."""
+    from app.ingestion import fixture_saude_cemiterio as fx
+    from app.ingestion.mapeamentos import MAPEAMENTOS
+    _banco_teste(db)
+    ex = Execucao(tipo="zzteste_feitos", sistema="SAUDE", status="sucesso", usuario=USR)
+    db.add(ex)
+    db.flush()
+    sp = db.begin_nested()
+    db.execute(text("delete from bronze.registros"))  # banco de TESTE (conferido acima); volta no rollback
+    dados = {k: v for parte in fx.gerar().values() for k, v in parte.items()}
+    papeis = set()
+    for (sis, tab), linhas in dados.items():
+        if (sis, tab) not in MAPEAMENTOS:
+            continue
+        papeis.add(MAPEAMENTOS[(sis, tab)].get("papel", "pessoa"))
+        for i, r in enumerate(linhas):
+            db.add(RegistroBronze(sistema_origem=sis, tabela=tab, id_origem=f"ZZTESTE-{tab}-{i}",
+                                  dados={k: (str(v) if v is not None else None) for k, v in r.items()},
+                                  hash=f"zz-{tab}-{i}", execucao_id=ex.id))
+    db.flush()
+    assert {"pessoa", "terceiro", "cns_extra", "revisao", "obito"} <= papeis
+    r = processamento.reconstruir(db)
+    assert r["feitos"] == r["total_bronze"] > 0, r
+    sp.rollback()
+    db.rollback()
+
+
+def test_cc12_completa_parcial_pausada_no_restart_continua_do_checkpoint(client, tokens, origem, db):  # noqa: F811
+    """Restart no meio da leitura: completa vira 'pausada' (auditado) e a próxima segue do checkpoint, sem reler
+    o que já foi lido e sem duplicar a bronze."""
+    from app.models.controle import CheckpointCarga
+    from tests.test_zzzz_carga_etapas import _isola_bronze
+    _isola_bronze(db, "CEMITERIO")  # banco de TESTE (trava _test): só a bronze desta carga conta
+    _amostra(db, "cemiterio")
+    o = origem["CEMITERIO"]
+    o.paginas, o.falha_na_pagina = 0, 1  # 1ª página gravada; a 2ª "cai" (simula o processo morrendo)
+    assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+    ex = _ultima(db, "CEMITERIO")
+    ex.status, ex.etapa, ex.finalizado_em = "em_andamento", "leitura", None  # como estava quando o servidor parou
+    db.commit()
+    cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "CEMITERIO", CheckpointCarga.tabela == "Obitos"))
+    assert cp.posicao == 2 and not cp.concluida
+    ckpt = list(cp.ultima_chave)
+    bronze_antes = db.scalar(select(func.count()).select_from(RegistroBronze).where(
+        RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos"))
+    assert ccomp.interromper_orfas(db) == 1  # restart
+    db.expire_all()
+    v = db.get(Execucao, ex.id)
+    assert v.status == "pausada" and "segue de onde parou" in v.pausa_motivo
+    assert db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida", Auditoria.alvo == f"execucao:{ex.id}"))
+    s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()
+    assert s["execucao"]["status"] == "pausada" and s["execucao"]["tabelas_lidas"] < s["execucao"]["tabelas_total"]
+    o.falha_na_pagina, o.paginas = None, 0
+    o.sqls.clear()
+    assert client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"]).status_code == 202
+    ex2 = _ultima(db, "CEMITERIO")
+    assert ex2.id != ex.id and ex2.status == "sucesso", ex2.mensagem
+    obitos = [p for q, p in o.sqls if "TOP (" in q and "[dbo].[Obitos]" in q]
+    assert obitos and list(obitos[0])[-len(ckpt):] == ckpt  # 1ª página da retomada já parte do checkpoint
+    ids = list(db.scalars(select(RegistroBronze.id_origem).where(
+        RegistroBronze.sistema_origem == "CEMITERIO", RegistroBronze.tabela == "Obitos")))
+    assert len(ids) == len(set(ids)) == len(o.linhas("Obitos")) >= bronze_antes  # sem duplicar
+    assert all(r["ok"] for r in ccomp.reconciliacao(db, "CEMITERIO").values())

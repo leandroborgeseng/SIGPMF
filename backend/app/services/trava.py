@@ -79,13 +79,11 @@ def mensagem_viva(ex: Execucao, nome: str) -> str:
 
 
 def interromper(db: Session, ex: Execucao, usuario: str, motivo: str, automatico: bool, ip: str | None = None) -> None:
-    """Marca a execução como interrompida (e pede cancelamento a quem ainda estiver vivo). Auditado; nada apagado."""
+    """Amostra -> interrompida; completa -> pausada ou interrompida (marca_orfa) (e pede cancelamento a quem ainda estiver vivo). Auditado; nada apagado."""
     anterior = ex.status
     if ex.tipo == TIPO_COMPLETA:
-        # Completa: volta a 'pausada' (como antes do CC12), que mantém "Retomar carga" do checkpoint na tela.
-        ex.status, ex.pausa_motivo = "pausada", f"Carga interrompida ({motivo}). Retome a carga."
-        ex.finalizado_em, ex.tabela_atual = datetime.now(UTC), None
-        msg = f"Carga completa pausada: {motivo}. A bronze e o checkpoint foram mantidos; retome a carga."
+        from app.services.carga_completa import marca_orfa
+        msg = marca_orfa(ex, motivo)
     else:
         ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", MSG_INTERROMPIDA, datetime.now(UTC), None
         msg = f"{MSG_INTERROMPIDA} Motivo: {motivo}"
@@ -122,28 +120,15 @@ def estado(db: Session, sistema: str, nome: str) -> dict | None:
             "parada": (not viva) or p > alerta, "mensagem": mensagem_viva(ex, nome)}
 
 
-def interrompe_se_parada(db: Session, sistema: str, usuario: str) -> int:
-    """Pedido de nova carga com a trava ocupada: execução sem atividade além do limite vira interrompida (auditado)
-    e recebe pedido de cancelamento. Retorna quantas foram interrompidas."""
-    alerta = get_settings().carga_alerta_min
-    n = 0
-    for ex in em_andamento(db, sistema):
-        if parada_min(ex) > alerta:
-            interromper(db, ex, usuario, f"sem atividade há mais de {alerta} min", automatico=True)
-            n += 1
-    if n:
-        db.commit()
-    return n
-
-
 def conflito(db: Session, sistema: str, conector: str, usuario: str) -> str:
-    """Trava ocupada: interrompe a execução parada (se houver) e devolve a mensagem para o 409."""
+    """Trava ocupada = processo vivo: NUNCA interrompe sozinho (mesmo sem sinal de vida). Devolve a mensagem do 409
+    com a execução que bloqueia; só o admin interrompe, pelo POST .../interromper com motivo."""
     nome = NOMES.get(conector, conector)
     exs = em_andamento(db, sistema)
-    if exs and interrompe_se_parada(db, sistema, usuario):
-        marcada = "pausada (retomável do checkpoint)" if exs[0].tipo == TIPO_COMPLETA else "interrompida"
-        return (f"A {tipo_rotulo(exs[0])} de {nome} estava sem atividade desde {_hora(ultima_atividade(exs[0]))} e foi "
-                f"marcada como {marcada}. O processo antigo ainda segura a trava; tente de novo em instantes.")
-    if exs:
-        return mensagem_viva(exs[0], nome)
-    return f"Já existe uma carga de {nome} em andamento."
+    if not exs:
+        return f"Já existe uma carga de {nome} em andamento."
+    msg = mensagem_viva(exs[0], nome)
+    alerta = get_settings().carga_alerta_min
+    if parada_min(exs[0]) > alerta:
+        msg += f" Sem atividade há mais de {alerta} min: um admin pode interrompê-la informando o motivo."
+    return msg
