@@ -217,7 +217,7 @@ def test_cc12_completa_orfa_vira_pausada_auditada(client, tokens, origem, db):  
     _amostra(db, "saude")
     velha = _exec(db, tipo=ccomp.TIPO, minutos=30)
     try:
-        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
+        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202
         db.expire_all()
         v = db.get(Execucao, velha.id)
         assert v.status == "pausada" and "segue de onde parou" in v.pausa_motivo and v.finalizado_em is not None
@@ -250,7 +250,7 @@ def test_cc12_completa_parada_trava_livre_vira_pausada(client, tokens, origem, d
     _amostra(db, "saude")
     ex = _exec(db, tipo=ccomp.TIPO, minutos=30)
     try:
-        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
+        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202
         db.expire_all()
         v = db.get(Execucao, ex.id)
         assert v.status == "pausada" and v.cancelar is True

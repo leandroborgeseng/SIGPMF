@@ -307,7 +307,7 @@ def test_rs3_disco_acima_do_limite_recusa_inicio_mas_amostra_segue(client, token
     r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
     assert r.status_code == 409 and "88%" in r.json()["detail"] and "limite 85%" in r.json()["detail"]
     assert client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()["liberada"] is False
-    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
+    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202
     monkeypatch.setenv("RECURSOS_LIMITE_DISCO", "95")  # limite por env
     assert recursos.motivo_disco_cheio() is None
 
@@ -467,7 +467,7 @@ def test_rs5_sem_leitura_do_disco_bloqueia_a_carga(client, tokens, origem, db, m
     assert r.status_code == 409 and r.json()["detail"] == recursos.SEM_LEITURA_DISCO
     s = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()
     assert s["liberada"] is False and s["motivo"] == recursos.SEM_LEITURA_DISCO
-    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200  # amostra segue
+    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202  # amostra segue
 
 
 # ---------- Keyset: chave única e sem NULL; fronteira do lote ----------

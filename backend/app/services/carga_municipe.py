@@ -159,11 +159,13 @@ def _bronze_iss(db: Session, linhas: list[dict], execucao_id: int, quarentena: b
 
 def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=None, bronze: bool = False,
                             nulos: list[dict] | None = None, total_origem: int | None = None,
-                            total_nulos: int | None = None) -> Execucao:
-    """`nulos`/`total_origem`/`total_nulos` só para testes sintéticos (no conector vêm de SELECTs separados)."""
-    ex = Execucao(tipo="carga_municipe_amostra", sistema="ISS", status="em_andamento", usuario=usuario)
-    db.add(ex)
-    db.commit()
+                            total_nulos: int | None = None, ex: Execucao | None = None) -> Execucao:
+    """`nulos`/`total_origem`/`total_nulos` só para testes sintéticos (no conector vêm de SELECTs separados).
+    `ex`: execução já criada pela rota assíncrona (202) da amostra."""
+    if ex is None:
+        ex = Execucao(tipo="carga_municipe_amostra", sistema="ISS", status="em_andamento", usuario=usuario)
+        db.add(ex)
+        db.commit()
     try:
         if linhas is None:
             try:
@@ -227,6 +229,7 @@ def executar_carga_municipe(db: Session, usuario: str, linhas=None, connector=No
         ex.ignorados, ex.duplicados, ex.pendentes = c["inalteradas"], c["duplicadas"], c["pendentes"]
         ex.lotes = 1
         ex.status = "sucesso" if (c["novas"] or c["atualizadas"]) else "sem_novidades"
+        ex.etapa = "concluida"
         # Só contagens na mensagem/log: nenhum documento em claro (M7).
         ex.mensagem = (f"lidas={c['lidas']} novas={c['novas']} atualizadas={c['atualizadas']} "
                        f"inalteradas={c['inalteradas']} duplicadas={c['duplicadas']} pendentes={c['pendentes']} "

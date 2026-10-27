@@ -73,3 +73,14 @@ def db(banco):
     s = SessionLocal()
     yield s
     s.close()
+
+
+@pytest.fixture(autouse=True)
+def _amostra_sincrona(monkeypatch):
+    """A rota da amostra responde 202 e roda em background (thread). Nos testes, o disparo é síncrono para que a
+    resposta já traga o estado final; o teste do timeout (test_zzzzzz_amostra_background) usa a thread real."""
+    from app.services import carga_conector as cc
+
+    def sincrono(ex_id, conector, usuario, trava):
+        cc.rodar_amostra(ex_id, conector, usuario, trava)
+    monkeypatch.setattr(cc, "disparar_amostra", sincrono)

@@ -45,6 +45,18 @@ export function perda(de: number, para: number): number | null {
 }
 
 export const CARGA_EM_PREPARACAO = 'Carga real em preparação'
+export type ExecAmostra = {
+  id: number; status: string; lidos: number; mensagem: string | null; em_andamento?: boolean
+  etapa?: string | null; processadas_etapa?: number | null; total_etapa?: number | null
+}
+export const INTERVALO_AMOSTRA_MS = 2000
+const ETAPA_AMOSTRA: Record<string, string> = { leitura: 'lendo da origem', prata: 'tratando (prata)', ouro: 'unificando cidadãos (ouro)', concluida: 'concluindo' }
+const espera = (ms: number) => new Promise((ok) => setTimeout(ok, ms))
+export function textoAndamento(nome: string, r: ExecAmostra): string {
+  const etapa = ETAPA_AMOSTRA[r.etapa ?? 'leitura'] ?? 'em andamento'
+  const cont = r.total_etapa ? ` (${milhar(r.processadas_etapa ?? 0)} de ${milhar(r.total_etapa)})` : ''
+  return `Amostra de ${nome} em andamento: ${etapa}${cont}. Pode sair desta tela; a carga continua no servidor.`
+}
 export const MSG_ORIGEM_VAZIA = 'Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.'
 
 export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false }: {
@@ -71,10 +83,20 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
     setConfirmar(null); setRodando(b.id); setAviso(null)
     try {
       // Puxar amostra = carga real por conector (política de tabelas, admin), liberada também em produção.
+      // Responde 202 e roda em background (TL 27/10): a tela acompanha etapa e sinal de vida até terminar.
       // Carga completa e reprocessar seguem pela rota sintética, só em dev/test.
-      const r = modo === 'amostra'
-        ? await api<{ status: string; lidos: number; mensagem: string | null }>(`/conectores/${b.conector_id ?? b.id}/amostra`, { method: 'POST' })
-        : await api<{ status: string; lidos: number; mensagem: string | null }>(`/conectores/${b.id}/executar`, { method: 'POST', body: JSON.stringify({ modo }) })
+      let r: ExecAmostra
+      if (modo === 'amostra') {
+        const id = b.conector_id ?? b.id
+        r = await api<ExecAmostra>(`/conectores/${id}/amostra`, { method: 'POST' })
+        while (r.em_andamento) {
+          setAviso({ texto: textoAndamento(b.nome, r), erro: false })
+          await espera(INTERVALO_AMOSTRA_MS)
+          r = await api<ExecAmostra>(`/conectores/${id}/amostra/${r.id}`)
+        }
+      } else {
+        r = await api<ExecAmostra>(`/conectores/${b.id}/executar`, { method: 'POST', body: JSON.stringify({ modo }) })
+      }
       if (r.status === 'falha') setAviso({ texto: `Falha na carga de ${b.nome}: ${r.mensagem ?? 'erro'}.`, erro: true })
       else setAviso({ texto: `${ROTULO_MODO[modo]} de ${b.nome} concluída (${r.status === 'sem_novidades' ? 'sem novidades' : 'sucesso'}). Contagens atualizadas abaixo.`, erro: false })
       onRecarregar()

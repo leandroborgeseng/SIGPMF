@@ -106,6 +106,19 @@ describe('painel de bases', () => {
     expect(f.mock.calls.filter(([, i]) => i?.method === 'POST').length).toBe(1)
   })
 
+  it('amostra 202 em background: mostra a etapa e acompanha até concluir (TL 27/10)', async () => {
+    const f = mock((url, init) => {
+      if (init?.method === 'POST') return [202, { id: 41, status: 'em_andamento', em_andamento: true, lidos: 0, mensagem: null, etapa: 'ouro', processadas_etapa: 5000, total_etapa: 477109 }]
+      if (url === '/api/conectores/saude/amostra/41') return [200, { id: 41, status: 'sucesso', em_andamento: false, lidos: 100, mensagem: null, etapa: 'concluida' }]
+      return [200, RESP]
+    })
+    montar('admin')
+    await userEvent.click(within(await cartao('Saude')).getByRole('button', { name: 'Puxar amostra de Saude' }))
+    expect(await screen.findByText(/Amostra de Saude em andamento: unificando cidadãos \(ouro\) \(5\.000 de 477\.109\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/Puxar amostra de Saude concluída \(sucesso\)/, {}, { timeout: 4000 })).toBeInTheDocument()
+    expect(f.mock.calls.some(([u]) => u === '/api/conectores/saude/amostra/41')).toBe(true)
+  })
+
   it('erro na execução vira alerta; erro de API e vazio (UX-C8, estados)', async () => {
     mock((_u, init) => (init?.method === 'POST' ? [409, { detail: 'Saude: Sem lista de colunas aprovada.' }] : [200, RESP]))
     montar('admin')

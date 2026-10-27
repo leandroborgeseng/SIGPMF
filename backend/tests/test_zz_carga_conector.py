@@ -64,9 +64,9 @@ def _reaplica_0006(banco):
 def leitor(monkeypatch):
     estado = {"falha_em": None}
 
-    def fake(db, usuario, conector, leitor=None, _orig=cc.executar_amostra):
+    def fake(db, usuario, conector, leitor=None, _orig=cc.executar_amostra, **kw):
         sis = cc.CONECTORES.get(conector, ("X",))[0]
-        return _orig(db, usuario, conector, leitor=Leitor(sis, estado["falha_em"]))
+        return _orig(db, usuario, conector, leitor=Leitor(sis, estado["falha_em"]), **kw)
     monkeypatch.setattr(cc, "executar_amostra", fake)
     monkeypatch.setenv("SQLSERVER_HOST", HOST)
     monkeypatch.setenv("SQLSERVER_USER", USER)
@@ -106,7 +106,7 @@ def test_permissoes_e_auditoria(client, tokens, leitor, db):
                                                                         Auditoria.acao == "amostra_conector_solicitada"))
     for _ in range(2):
         r = client.post("/api/conectores/cemiterio/amostra", headers=tokens["admin"])
-        assert r.status_code == 200 and r.json()["status"] != "falha", r.text
+        assert r.status_code == 202 and r.json()["status"] != "falha", r.text
     depois = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.alvo == "conector:cemiterio",
                                                                          Auditoria.acao == "amostra_conector_solicitada"))
     assert depois - antes == 2
@@ -115,7 +115,7 @@ def test_permissoes_e_auditoria(client, tokens, leitor, db):
 
 def test_amostra_grava_bronze_e_repetir_nao_duplica(client, tokens, leitor, db):
     r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     ex = db.get(Execucao, r.json()["id"])
     assert ex.status in ("sucesso", "sem_novidades") and ex.finalizado_em and ex.lidos > 0, ex.mensagem
     assert ex.lidos == ex.novos + ex.atualizados + ex.ignorados
@@ -134,7 +134,7 @@ def test_falha_na_origem_nao_deixa_carga_parcial(client, tokens, leitor, db):
     leitor["falha_em"] = tabs[-1]  # as primeiras tabelas leem bem, a última dá timeout
     antes = _bronze(db, "CEMITERIO")
     r = client.post("/api/conectores/cemiterio/amostra", headers=tokens["admin"])
-    assert r.status_code == 200
+    assert r.status_code == 202
     db.expire_all()
     ex = db.get(Execucao, r.json()["id"])
     assert ex.status == "falha" and ex.finalizado_em is not None and "timeout" in ex.mensagem
@@ -151,7 +151,7 @@ def test_amostra_orfa_sem_trava_vira_interrompida_e_nova_inicia(client, tokens, 
     db.commit()
     try:
         r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-        assert r.status_code == 200, r.text
+        assert r.status_code == 202, r.text
         db.expire_all()
         assert db.get(Execucao, velha.id).status == "interrompida"
         assert db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida",
@@ -185,7 +185,7 @@ def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
         mp.setattr(ccomp, "motivo_bloqueio", lambda db, c: ccomp.SEM_AMOSTRA)
         r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
         assert r.status_code == 409 and r.json()["detail"] == ccomp.SEM_AMOSTRA
-    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
+    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202
     with pytest.MonkeyPatch.context() as mp:  # não dispara a carga real (sem origem neste teste)
         def nao_roda(ex_id, conector, trava):
             s = ccomp.SessionLocal()
@@ -266,7 +266,7 @@ def test_iss_amostra_usa_politica_do_municipe(client, tokens, leitor, db):
     from app.models.camadas import Municipe
     assert client.post("/api/conectores/iss/amostra", headers=tokens["operador"]).status_code == 403
     r = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     db.expire_all()
     ex = db.get(Execucao, r.json()["id"])
     assert ex.tipo == cc.TIPO_AMOSTRA_ISS and ex.status in ("sucesso", "sem_novidades"), ex.mensagem
@@ -315,7 +315,7 @@ def test_rotas_iss_admin_403_auditado(client, tokens, db, rota):
 
 def test_rota_antiga_iss_delega_a_amostra(client, tokens, leitor, db):
     r = client.post("/api/conectores/iss/municipes/executar", headers=tokens["admin"])
-    assert r.status_code == 200 and r.json()["tipo"] == cc.TIPO_AMOSTRA_ISS
+    assert r.status_code == 202 and r.json()["tipo"] == cc.TIPO_AMOSTRA_ISS
     assert db.scalar(select(func.count()).select_from(Auditoria).where(
         Auditoria.acao == "amostra_conector_solicitada", Auditoria.alvo == "conector:iss")) >= 1
 
@@ -369,7 +369,7 @@ def test_banco_vem_do_catalogo_sem_variavel_do_conector(leitor, db, monkeypatch)
 def test_amostra_pelo_id_numerico_da_base(client, tokens, leitor, db):
     b = _base(db, "Cemiterio")
     r = client.post(f"/api/conectores/{b.id}/amostra", headers=tokens["admin"])
-    assert r.status_code == 200 and r.json()["tipo"] == cc.TIPO_AMOSTRA, r.text
+    assert r.status_code == 202 and r.json()["tipo"] == cc.TIPO_AMOSTRA, r.text
     logs = " ".join(x.mensagem for x in db.scalars(select(Log).where(Log.execucao_id == r.json()["id"])))
     assert "catálogo" in logs
     bases = client.get("/api/conectores", headers=tokens["admin"]).json()["bases"]
@@ -387,7 +387,7 @@ def test_amostra_real_liberada_em_prod_e_sintetico_404(client, tokens, leitor, m
     get_settings.cache_clear()
     try:
         r = client.post("/api/conectores/iss/amostra", headers=tokens["admin"])
-        assert r.status_code == 200, r.text
+        assert r.status_code == 202, r.text
         d = client.get("/api/conectores", headers=tokens["admin"]).json()
         assert d["carga_habilitada"] is False
         iss = next(x for x in d["bases"] if x["nome"] == "ISS")

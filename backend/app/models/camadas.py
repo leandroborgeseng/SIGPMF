@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -43,7 +43,7 @@ class Cidadao(Base):
 
 class Identificador(Base):
     __tablename__ = "identificadores"
-    __table_args__ = (UniqueConstraint("tipo", "valor"), SV)
+    __table_args__ = (UniqueConstraint("tipo", "valor"), Index("ix_silver_identificadores_cidadao_id", "cidadao_id"), SV)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cidadao_id: Mapped[str] = mapped_column(ForeignKey("silver.cidadaos.cidadao_id", ondelete="CASCADE"))
     tipo: Mapped[str] = mapped_column(String(20))
@@ -60,7 +60,8 @@ class SistemaSilver(Base):
 
 class Vinculo(Base):
     __tablename__ = "vinculos"
-    __table_args__ = (UniqueConstraint("sistema", "tabela", "chave_origem"), SV)
+    __table_args__ = (UniqueConstraint("sistema", "tabela", "chave_origem"),
+                      Index("ix_silver_vinculos_cidadao_id_id", "cidadao_id", "id"), SV)  # 0010
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cidadao_id: Mapped[str] = mapped_column(ForeignKey("silver.cidadaos.cidadao_id", ondelete="CASCADE"))
     sistema: Mapped[str] = mapped_column(String(50))
@@ -75,7 +76,7 @@ class Vinculo(Base):
 
 class Endereco(Base):
     __tablename__ = "enderecos"
-    __table_args__ = SV
+    __table_args__ = (Index("ix_silver_enderecos_cidadao_id", "cidadao_id"), SV)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cidadao_id: Mapped[str] = mapped_column(ForeignKey("silver.cidadaos.cidadao_id", ondelete="CASCADE"))
     logradouro: Mapped[str | None] = mapped_column(String(300))

@@ -94,7 +94,7 @@ def _ex(db, r):
 
 def test_saude_tipos_reais_do_driver(client, tokens, db, origem):
     r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     ex = _ex(db, r)
     assert ex.status in ("sucesso", "sem_novidades"), ex.mensagem
     assert isinstance(origem.kw["port"], int) and isinstance(origem.kw["timeout"], int)

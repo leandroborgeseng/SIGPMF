@@ -106,7 +106,7 @@ def usa_origem(monkeypatch):
 
 def _roda(client, tokens, db):
     r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     db.expire_all()
     return db.get(Execucao, r.json()["id"])
 
