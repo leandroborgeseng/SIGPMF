@@ -55,8 +55,13 @@ const espera = (ms: number) => new Promise((ok) => setTimeout(ok, ms))
 export function textoAndamento(nome: string, r: ExecAmostra): string {
   const etapa = ETAPA_AMOSTRA[r.etapa ?? 'leitura'] ?? 'em andamento'
   const cont = r.total_etapa ? ` (${milhar(r.processadas_etapa ?? 0)} de ${milhar(r.total_etapa)})` : ''
-  return `Amostra de ${nome} em andamento: ${etapa}${cont}. Pode sair desta tela; a carga continua no servidor.`
+  return `Amostra de ${nome} em andamento: ${etapa}${cont}.`
 }
+export const MAX_FALHAS_ACOMPANHAMENTO = 3
+export const MSG_SEM_ACOMPANHAMENTO = 'Não foi possível acompanhar a amostra agora. Ela continua no servidor; atualize a página em instantes.'
+/** Falha só na consulta de status (rede ou 5xx): não é falha da carga (Designer UX, TL 27/10). */
+const falhaDeAcompanhamento = (e: unknown) => !(e instanceof ApiErro) || e.status >= 500
+class SemAcompanhamento extends Error {}
 export const MSG_ORIGEM_VAZIA = 'Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.'
 
 export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false }: {
@@ -91,8 +96,18 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
         r = await api<ExecAmostra>(`/conectores/${id}/amostra`, { method: 'POST' })
         while (r.em_andamento) {
           setAviso({ texto: textoAndamento(b.nome, r), erro: false })
-          await espera(INTERVALO_AMOSTRA_MS)
-          r = await api<ExecAmostra>(`/conectores/${id}/amostra/${r.id}`)
+          let falhas = 0
+          for (;;) {
+            await espera(INTERVALO_AMOSTRA_MS)
+            try {
+              r = await api<ExecAmostra>(`/conectores/${id}/amostra/${r.id}`)
+              break
+            } catch (e) {
+              if (!falhaDeAcompanhamento(e)) throw e
+              falhas += 1
+              if (falhas >= MAX_FALHAS_ACOMPANHAMENTO) throw new SemAcompanhamento()
+            }
+          }
         }
       } else {
         r = await api<ExecAmostra>(`/conectores/${b.id}/executar`, { method: 'POST', body: JSON.stringify({ modo }) })
@@ -101,6 +116,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
       else setAviso({ texto: `${ROTULO_MODO[modo]} de ${b.nome} concluída (${r.status === 'sem_novidades' ? 'sem novidades' : 'sucesso'}). Contagens atualizadas abaixo.`, erro: false })
       onRecarregar()
     } catch (e) {
+      if (e instanceof SemAcompanhamento) { setAviso({ texto: MSG_SEM_ACOMPANHAMENTO, erro: false }); return }
       setAviso({ texto: `Falha na carga de ${b.nome}: ${e instanceof ApiErro ? e.message : 'erro inesperado'}`, erro: true })
     } finally {
       setRodando(null)
@@ -133,7 +149,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
               <label htmlFor="busca-base" className="sr-only">Buscar base pelo nome</label>
               <input id="busca-base" type="search" placeholder="Buscar base" value={busca} onChange={(e) => setBusca(e.target.value)} />
             </div>
-            <div aria-live="polite">{aviso && <p role={aviso.erro ? 'alert' : undefined} className={`aviso${aviso.erro ? ' erro' : ''}`}>{aviso.texto}</p>}</div>
+            <div aria-live="polite">{aviso && <p role={aviso.erro ? 'alert' : undefined} aria-live="polite" className={`aviso${aviso.erro ? ' erro' : ''}`}>{aviso.texto}</p>}</div>
             {confirmar && (
               <div role="dialog" aria-modal="false" aria-labelledby="t-conf" className="cartao confirmar">
                 <p id="t-conf">{confirmar.modo === 'completa'
