@@ -28,7 +28,27 @@ class OrigemAgenda(Origem):
     """Origem sintética da carga completa + assinatura (COUNT/MAX) calculada das mesmas linhas."""
     def __init__(self, sistema):
         super().__init__(sistema)
-        self.assinaturas, self.falhar_assinatura = 0, False
+        self.assinaturas, self.falhar_assinatura, self.desdes, self._filtro = 0, False, [], None
+
+    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite, desde=None):
+        """IN2: com `desde`, a página usa o SQL real com o filtro e a origem sintética aplica o mesmo filtro."""
+        self.desdes.append((tabela, desde))
+        if desde is not None:
+            sql, params = self.montar_pagina(politica, tabela, ordem, limite, ultima, desde=desde)
+            assert f"[{desde[0]}] >= %s" in sql and params[-1] == desde[1]
+        self._filtro = desde
+        try:
+            return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite)
+        finally:
+            self._filtro = None
+
+    def linhas(self, tabela):
+        rows = super().linhas(tabela)
+        f = getattr(self, "_filtro", None)
+        if f is None:
+            return rows
+        campo, valor = f
+        return [r for r in rows if r.get(campo) is not None and str(r.get(campo)) >= valor.strftime("%Y-%m-%d %H:%M:%S")]
 
     def assinatura(self, conn, tabela, pol, campo_incremental):
         sql = self.montar_assinatura(pol, tabela, campo_incremental)  # SQL real, pelo guard
@@ -220,7 +240,7 @@ def test_ag2_carga_manual_em_andamento_vira_ocupada_e_tenta_depois(db, origem, m
     _amostras(db)
     _zera_agenda(db)
 
-    def ocupado(db, usuario, conector, somente_camadas=False):
+    def ocupado(db, usuario, conector, somente_camadas=False, modo="completa"):
         raise cc.Conflito("ocupado")
     monkeypatch.setattr(ccomp, "iniciar", ocupado)
     feitos = ag.ciclo(db, agora=_local(2026, 10, 28, 5, 0), leitores=_leitores(origem), esperar=_esperar)

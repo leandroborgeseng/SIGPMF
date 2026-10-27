@@ -19,6 +19,8 @@
 | AGENDA_INTERVALO_S | de quanto em quanto tempo a agenda confere se há carga a iniciar (padrão 60 s) |
 | AGENDA_PULAR_SEM_MUDANCA | `true` (padrão): antes de ler, compara `COUNT(*)` e `MAX(campo incremental)` de cada tabela com a última carga bem-sucedida; igual = "Sem mudança na origem", nada é lido nem reconstruído |
 | AGENDA_TENTATIVAS / AGENDA_REESPERA_MIN | falha tenta de novo depois de `REESPERA_MIN` (30) até `TENTATIVAS` (3) vezes no dia |
+| AGENDA_COMPLETA_DIAS | a agenda faz carga **incremental** (só o alterado) e uma **completa** a cada N dias e na primeira vez (padrão 7); a completa pega registros excluídos na origem |
+| CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |
 
@@ -44,3 +46,14 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - Só repete cargas já liberadas: o conector precisa de uma amostra com sucesso (senão fica "Não liberada").
 - Homologação: `AGENDA_HABILITADA=true` e `AGENDA_JANELA=00:00-24:00`. Produção: `AGENDA_JANELA=00:00-06:00`.
 - Só um processo agenda (trava `agenda:lider`); com mais de um worker, os outros ficam de reserva.
+
+## Carga incremental e camadas (IN1–IN4)
+- **Incremental**: por tabela, lê só as linhas com `campo incremental >= marca d'água` (maior data já gravada na bronze
+  − `CARGA_INCREMENTAL_MARGEM_H`). Tabela sem campo incremental na política, ou sem histórico, é lida por inteiro.
+  Não verifica de novo a unicidade da chave nem atualiza checkpoints (isso é da completa). Exclusões na origem só
+  aparecem na completa (a cada `AGENDA_COMPLETA_DIAS`).
+- **Prata e ouro só quando algo mudou**: antes de reconstruir, compara a assinatura das entradas (bronze: total, maior
+  id e quarentena; confirmações de óbito; parâmetros da correlação; hash do código das regras) com a da última
+  reconstrução bem-sucedida (`controle.camadas_estado`). Igual = reconstrução pulada ("Nada mudou nas entradas da prata
+  e do ouro"). A reconciliação da carga completa roda do mesmo jeito. "Retomar prata e ouro" sempre reconstrói.
+- Um deploy que muda as regras (correlação, mapeamentos, ouro) muda o hash e força a próxima reconstrução.

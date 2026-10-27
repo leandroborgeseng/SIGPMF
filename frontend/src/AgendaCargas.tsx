@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiErro } from './api'
 
-type ExecAg = { id: number; status: string; etapa: string | null; iniciado_em: string | null; finalizado_em: string | null
+type ExecAg = { id: number; status: string; etapa: string | null; modo?: string; iniciado_em: string | null; finalizado_em: string | null
   lidos: number; gravados: number; processadas_etapa: number | null; total_etapa: number | null }
 type ItemAgenda = {
   conector: string; nome: string; horario: string; ativo: boolean; ordem: number; forcar: boolean
   ultimo_status: string | null; ultimo_status_texto: string | null; ultima_mensagem: string | null
   ultimo_inicio_em: string | null; ultimo_fim_em: string | null; tentativas: number; proxima_em: string | null
   horario_fora_da_janela: boolean; ultima_execucao: ExecAg | null; em_andamento: ExecAg | null
+  proximo_modo?: string; ultima_completa_em?: string | null
 }
 export type RespAgenda = {
   habilitada: boolean; janela: string; dia_todo: boolean; fuso: string; pular_sem_mudanca: boolean; alerta_email: boolean
+  completa_a_cada_dias?: number
   agora: string; itens: ItemAgenda[]; historico: (ExecAg & { conector: string })[]
 }
 export const AGENDA_INTERVALO_MS = 30000
@@ -26,6 +28,7 @@ export function classeStatus(s: string | null): string {
   if (s === 'bloqueada' || s === 'ocupada' || s === 'pausada' || s === 'cancelada') return 'atencao'
   return 'neutro'
 }
+export const MODO: Record<string, string> = { completa: 'Completa', incremental: 'Incremental' }
 const ETAPA: Record<string, string> = { leitura: 'Lendo da origem', prata: 'Tratando (prata)', ouro: 'Unificando cidadãos (ouro)' }
 const hora = (iso: string | null) => iso
   ? new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso))
@@ -87,7 +90,8 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
         <div>
           <h2 id="t-agenda">Agenda das cargas</h2>
           <p className="sutil">Uma carga por vez, {d.dia_todo ? 'a qualquer hora' : `só entre ${janela}`}
-            {d.pular_sem_mudanca ? ' · pula o conector quando a origem não mudou' : ''}.</p>
+            {d.pular_sem_mudanca ? ' · pula o conector quando a origem não mudou' : ''}
+            {d.completa_a_cada_dias ? ` · lê só o que mudou e faz uma carga completa a cada ${d.completa_a_cada_dias} dias` : ''}.</p>
         </div>
         <span className={`selo ${d.habilitada ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />
           {d.habilitada ? `Ligada · ${d.dia_todo ? 'dia todo' : janela}` : 'Desligada neste ambiente'}</span>
@@ -125,7 +129,12 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
                     {i.horario_fora_da_janela && !d.dia_todo && <span className="agenda-nota">fora da janela</span>}
                   </div>
                 </td>
-                <td data-rotulo="Próxima">{i.forcar ? 'Em até 1 minuto' : i.proxima_em && d.habilitada ? curta(i.proxima_em) : '—'}</td>
+                <td data-rotulo="Próxima">
+                  <div className="agenda-ultima">
+                    <span>{i.forcar ? 'Em até 1 minuto' : i.proxima_em && d.habilitada ? curta(i.proxima_em) : '—'}</span>
+                    {i.ativo && i.proximo_modo && <span className="agenda-modo">{MODO[i.proximo_modo] ?? i.proximo_modo}</span>}
+                  </div>
+                </td>
                 <td data-rotulo="Última carga">
                   {rodando
                     ? <div className="agenda-ultima">
@@ -135,6 +144,7 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
                     : i.ultimo_status
                       ? <div className="agenda-ultima">
                           <span className={`selo ${classeStatus(i.ultimo_status)}`}><i aria-hidden="true" />{i.ultimo_status_texto}</span>
+                          {i.ultima_execucao?.modo && <span className="agenda-modo">{MODO[i.ultima_execucao.modo] ?? i.ultima_execucao.modo}</span>}
                           <span className="sutil">{curta(i.ultimo_fim_em ?? i.ultimo_inicio_em ?? d.agora)}{i.tentativas > 0 ? ` · tentativa ${i.tentativas}` : ''}</span>
                           {i.ultima_mensagem && <span className="agenda-msg">{i.ultima_mensagem}</span>}
                         </div>

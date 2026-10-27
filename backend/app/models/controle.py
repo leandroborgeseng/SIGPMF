@@ -69,6 +69,8 @@ class Execucao(Base):
     processadas_etapa: Mapped[int | None] = mapped_column(Integer)
     total_etapa: Mapped[int | None] = mapped_column(Integer)
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # IN2 (0012): 'completa' (relê tudo) ou 'incremental' (só o alterado desde a marca d'água); nulo = completa
+    modo: Mapped[str | None] = mapped_column(String(20))
 
     def registra_erro(self, exc: BaseException) -> None:
         from app.services.diagnostico import categoria
@@ -192,5 +194,16 @@ class Agendamento(Base):
     ultimo_inicio_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ultimo_fim_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assinatura_origem: Mapped[dict | None] = mapped_column(JSONType)
+    ultima_completa_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # IN3 (0012)
     atualizado_por: Mapped[str | None] = mapped_column(String(200))
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CamadasEstado(Base):
+    """IN1 (0012): assinatura das entradas (bronze, confirmações, parâmetros, regras) da última prata/ouro."""
+    __tablename__ = "camadas_estado"
+    __table_args__ = S
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    assinatura: Mapped[dict] = mapped_column(JSONType)
+    execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
+    reconstruido_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

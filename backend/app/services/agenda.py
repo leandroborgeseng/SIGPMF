@@ -11,6 +11,8 @@
   Falha avisa por e-mail quando SMTP_HOST e ALERTA_PARA estão configurados (sem host, usuário, senha nem CPF).
 - AG5: só um processo agenda (advisory lock de sessão `agenda:lider`), mesmo com vários workers.
 - AG6: "Executar agora" (admin) marca `forcar`; o próximo ciclo roda o conector mesmo fora do horário e da janela.
+- IN3: no dia a dia a carga é INCREMENTAL (só o alterado desde a marca d'água); a cada AGENDA_COMPLETA_DIAS (e na
+  primeira vez) é COMPLETA, para pegar exclusões na origem. Em ambas, prata/ouro só são refeitas se a bronze mudou.
 """
 import logging
 import re
@@ -101,6 +103,14 @@ def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
     if prox is not None and agora < prox:
         return False
     return m >= minutos(ag.horario)
+
+
+def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
+    """IN3: completa na primeira vez e a cada AGENDA_COMPLETA_DIAS; incremental no resto."""
+    ultima = _utc(ag.ultima_completa_em)
+    if ultima is None or agora - ultima >= timedelta(days=get_settings().agenda_completa_dias):
+        return "completa"
+    return "incremental"
 
 
 def proxima(ag: Agendamento, agora: datetime, ini: int, fim: int) -> datetime | None:
@@ -232,8 +242,9 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
         if ag.assinatura_origem == assin and anterior in RESOLVIDOS:
             return _encerra(db, ag, "sem_mudanca", f"A origem de {nome} não mudou desde a última carga: nada foi lido.",
                             agora, resolvido=True)
+    modo = modo_da_vez(ag, agora)
     try:
-        ex = ccomp.iniciar(db, USUARIO, conector)
+        ex = ccomp.iniciar(db, USUARIO, conector, modo=modo)
     except ccomp.Bloqueado as exc:
         return _encerra(db, ag, "bloqueada", str(exc), agora, resolvido=False)
     except cc.Conflito:
@@ -252,8 +263,12 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
                                             "andamento; a agenda não inicia outra até ela terminar.", agora, resolvido=True)
     if ex.status == "sucesso":
         ag.assinatura_origem = assin
-        return _encerra(db, ag, "sucesso", f"Carga de {nome} concluída: {ex.lidos} lidas, "
-                                           f"{(ex.novos or 0) + (ex.atualizados or 0)} gravadas.", agora, resolvido=True)
+        if modo == "completa":
+            ag.ultima_completa_em = agora
+        return _encerra(db, ag, "sucesso", f"Carga {modo} de {nome} concluída: {ex.lidos} lidas, "
+                                           f"{(ex.novos or 0) + (ex.atualizados or 0)} gravadas"
+                                           + (" (prata e ouro mantidos: nada mudou)." if ccomp.MSG_CAMADAS_MANTIDAS in (ex.mensagem or "")
+                                              else "."), agora, resolvido=True)
     return _encerra(db, ag, ex.status if ex.status in STATUS_TEXTO else "falha",
                     ex.mensagem or f"Carga de {nome} terminou como {ex.status}.", agora, resolvido=False)
 
@@ -330,7 +345,7 @@ def _execucao(db: Session, ex_id: int | None) -> dict | None:
     ex = db.get(Execucao, ex_id) if ex_id else None
     if ex is None:
         return None
-    return {"id": ex.id, "status": ex.status, "etapa": ex.etapa, "iniciado_em": _utc(ex.iniciado_em),
+    return {"id": ex.id, "status": ex.status, "etapa": ex.etapa, "modo": ex.modo or "completa", "iniciado_em": _utc(ex.iniciado_em),
             "finalizado_em": _utc(ex.finalizado_em), "lidos": ex.lidos, "gravados": (ex.novos or 0) + (ex.atualizados or 0),
             "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa}
 
@@ -350,7 +365,8 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "ultimo_status_texto": STATUS_TEXTO.get(ag.ultimo_status or "", ag.ultimo_status),
             "ultima_mensagem": ag.ultima_mensagem, "ultimo_inicio_em": _utc(ag.ultimo_inicio_em),
             "ultimo_fim_em": _utc(ag.ultimo_fim_em), "tentativas": ag.tentativas,
-            "proxima_em": p, "horario_fora_da_janela": not na_janela(minutos(ag.horario), ini, fim),
+            "proxima_em": p, "proximo_modo": modo_da_vez(ag, agora), "ultima_completa_em": _utc(ag.ultima_completa_em),
+            "horario_fora_da_janela": not na_janela(minutos(ag.horario), ini, fim),
             "ultima_execucao": _execucao(db, ag.ultima_execucao_id),
             "em_andamento": _execucao(db, atual.id) if atual else None,
             "atualizado_por": ag.atualizado_por})
@@ -360,6 +376,7 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
                                                             Execucao.iniciado_em >= agora - timedelta(hours=24))
                                      .order_by(Execucao.id))]
     return {"habilitada": s.agenda_habilitada, "janela": s.agenda_janela, "dia_todo": dia_todo(ini, fim),
+            "completa_a_cada_dias": s.agenda_completa_dias,
             "fuso": s.agenda_fuso, "pular_sem_mudanca": s.agenda_pular_sem_mudanca,
             "alerta_email": bool(s.smtp_host and s.alerta_para), "agora": agora, "itens": itens, "historico": historico}
 

@@ -9,11 +9,13 @@ const item = (o: object = {}) => ({
   conector: 'saude', nome: 'Saúde', horario: '01:00', ativo: true, ordem: 1, forcar: false,
   ultimo_status: 'sucesso', ultimo_status_texto: 'Concluída', ultima_mensagem: 'Carga de Saúde concluída: 13 lidas, 13 gravadas.',
   ultimo_inicio_em: '2026-10-28T04:00:00Z', ultimo_fim_em: '2026-10-28T04:20:00Z', tentativas: 0,
-  proxima_em: '2026-10-29T04:00:00Z', horario_fora_da_janela: false, ultima_execucao: null, em_andamento: null, ...o,
+  proxima_em: '2026-10-29T04:00:00Z', horario_fora_da_janela: false, em_andamento: null, proximo_modo: 'incremental',
+  ultima_execucao: { id: 7, status: 'sucesso', etapa: 'concluida', modo: 'completa', iniciado_em: '2026-10-28T04:00:00Z',
+    finalizado_em: '2026-10-28T04:20:00Z', lidos: 13, gravados: 13, processadas_etapa: null, total_etapa: null }, ...o,
 })
 const resp = (o: Partial<RespAgenda> = {}): RespAgenda => ({
   habilitada: true, janela: '00:00-24:00', dia_todo: true, fuso: 'America/Sao_Paulo', pular_sem_mudanca: true,
-  alerta_email: false, agora: '2026-10-28T12:00:00Z',
+  alerta_email: false, agora: '2026-10-28T12:00:00Z', completa_a_cada_dias: 7,
   itens: [item(), item({ conector: 'cemiterio', nome: 'Cemitério', horario: '03:00', ativo: false, ultimo_status: 'sem_mudanca',
     ultimo_status_texto: 'Sem mudança na origem', ultima_mensagem: 'A origem de Cemitério não mudou desde a última carga: nada foi lido.' })],
   historico: [{ conector: 'saude', id: 7, status: 'sucesso', etapa: 'concluida', iniciado_em: '2026-10-28T04:00:00Z',
@@ -41,6 +43,9 @@ describe('agenda das cargas (AG1–AG6)', () => {
     const linha = screen.getByRole('row', { name: /Saúde/ })
     expect(within(linha).getByText('Concluída')).toBeVisible()
     expect(within(linha).getByText(/13 lidas, 13 gravadas/)).toBeVisible()
+    expect(within(linha).getByText('Completa')).toBeVisible()      // modo da última carga
+    expect(within(linha).getByText('Incremental')).toBeVisible()   // modo da próxima
+    expect(screen.getByText(/carga completa a cada 7 dias/)).toBeVisible()
     expect(screen.getByText('Sem mudança na origem')).toBeVisible()
     expect(screen.getByRole('img', { name: '1 execução(ões) da agenda nas últimas 24 horas' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Executar agora' })).toBeNull()   // leitura não altera

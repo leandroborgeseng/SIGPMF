@@ -193,8 +193,9 @@ class SqlServerConnector:
         return " WHERE (" + " OR ".join(termos) + ")", tuple(params)
 
     def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,
-                      ultima: tuple | None = None) -> tuple[str, tuple]:
-        """Página da carga completa por keyset: colunas da política, WHERE chave > última, ORDER BY chave, TOP (lote)."""
+                      ultima: tuple | None = None, desde: tuple[str, Any] | None = None) -> tuple[str, tuple]:
+        """Página da carga completa por keyset: colunas da política, WHERE chave > última, ORDER BY chave, TOP (lote).
+        IN2: com `desde=(campo, valor)`, só as linhas com campo >= valor (carga incremental), parametrizado."""
         cols = list(politica.colunas_select(tabela))
         fora = [c for c in ordem if c not in cols]
         if not ordem or fora:
@@ -204,6 +205,12 @@ class SqlServerConnector:
         where, params = self.filtro_keyset(ordem, ultima)
         completa = "(" + " AND ".join(f"{_ident(c)} IS NOT NULL" for c in ordem) + ")"  # CC9: só chave completa
         where = f"{where} AND {completa}" if where else f" WHERE {completa}"
+        if desde is not None:
+            campo, valor = desde
+            if campo not in cols:
+                raise TabelaRecusada("Campo incremental fora das colunas da política.")
+            where = f"{where} AND ({_ident(campo)} >= %s)"
+            params = (*params, valor)
         sql = (f"SELECT TOP ({int(limite)}) {', '.join(_ident(c) for c in cols)} "
                f"FROM {_ident('dbo.' + tabela.split('.')[-1])}{where} ORDER BY {', '.join(_ident(c) for c in ordem)}")
         return garante_somente_leitura(sql), params
@@ -268,8 +275,8 @@ class SqlServerConnector:
         return int(r[0][0]) if r else 0
 
     def ler_pagina(self, conn, tabela: str, politica, ordem: tuple[str, ...], ultima: tuple | None,
-                   limite: int) -> list[dict]:
-        sql, params = self.montar_pagina(politica, tabela, ordem, limite, ultima)
+                   limite: int, desde: tuple[str, Any] | None = None) -> list[dict]:
+        sql, params = self.montar_pagina(politica, tabela, ordem, limite, ultima, desde=desde)
         return executa_somente_leitura(conn, sql, params or None, limite=limite)
 
     def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,

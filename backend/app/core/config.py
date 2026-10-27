@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     agenda_tentativas: int = Field(3, alias="AGENDA_TENTATIVAS", ge=1, le=10)
     agenda_reespera_min: int = Field(30, alias="AGENDA_REESPERA_MIN", ge=1, le=1440)
     agenda_espera_max_h: int = Field(20, alias="AGENDA_ESPERA_MAX_H", ge=1, le=72)
+    # IN3: a agenda faz carga incremental e, a cada N dias, uma completa (pega exclusões na origem).
+    agenda_completa_dias: int = Field(7, alias="AGENDA_COMPLETA_DIAS", ge=1, le=90)
+    # IN2: a incremental relê desde (maior data já gravada na bronze − margem), para não perder alterações tardias.
+    carga_incremental_margem_h: int = Field(24, alias="CARGA_INCREMENTAL_MARGEM_H", ge=0, le=720)
     # Alerta de falha por e-mail (opcional: sem SMTP_HOST, só fica registrado na tela e na auditoria).
     smtp_host: str | None = Field(None, alias="SMTP_HOST")
     smtp_port: int = Field(587, alias="SMTP_PORT")
