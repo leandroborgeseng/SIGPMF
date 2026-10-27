@@ -212,3 +212,35 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .banco-camadas dt { color: var(--ink-3); font-size: 11.5px; } .banco-camadas dd { margin: 0; font-weight: 600; }
 .tabela-quarentena { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: .4rem; }
 .tabela-quarentena th, .tabela-quarentena td { text-align: left; padding: .2rem .4rem; border-bottom: 1px solid #e3e7ec; }
+
+/* AG1–AG6: agenda das cargas (Conectores) — mesmo visual do Monitor de cargas */
+.agenda { margin-bottom: 16px; display: grid; gap: 12px; }
+.agenda-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.agenda-cab h2 { margin: 0 0 .25rem; }
+.agenda-cab .sutil { margin: 0; }
+.selo.atencao { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-ink); }
+.selo.atencao > i { background: var(--warn); }
+.agenda-tabela th[scope="row"] { font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; font-size: 14px; background: transparent; }
+.agenda-tabela td { vertical-align: top; }
+.agenda-hora { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font: 500 14px var(--font-mono); color: var(--ink); background: var(--surface); }
+.agenda-hora:focus-visible, .agenda-chave input:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.agenda-nota { display: block; margin-top: 4px; font-size: 12px; color: var(--warn-ink); }
+.agenda-chave { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; font-weight: 500; }
+.agenda-chave input { width: 18px; height: 18px; accent-color: var(--brand); }
+.agenda-ultima { display: grid; gap: 4px; justify-items: start; }
+.agenda-msg { font-size: 12px; color: var(--ink-2); max-width: 46ch; }
+.agenda-tempo h3 { margin: 4px 0 8px; font-size: 14px; color: var(--ink-2); }
+.gantt { display: grid; gap: 6px; overflow-x: auto; }
+.gantt-eixo, .gantt-linha { display: grid; grid-template-columns: 110px minmax(420px, 1fr); gap: 10px; align-items: center; }
+.gantt-eixo { grid-template-columns: 110px repeat(5, minmax(84px, 1fr)); font: 500 11px var(--font-mono); color: var(--ink-3); }
+.gantt-rotulo { font-size: 13px; color: var(--ink-2); }
+.gantt-trilho { position: relative; height: 18px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); }
+.gantt-barra { position: absolute; top: 2px; bottom: 2px; border-radius: 4px; background: var(--brand); min-width: 4px; }
+.gantt-barra.sucesso { background: var(--brand); }
+.gantt-barra.em_andamento { background: var(--brand-bright); }
+.gantt-barra.falha { background: var(--danger); }
+.gantt-barra.atencao { background: var(--warn); }
+.gantt-barra.neutro { background: var(--off); }
+@media (max-width: 760px) {
+  .agenda-tabela th[scope="row"] { display: block; padding: 4px 0 6px; border: 0; }
+}

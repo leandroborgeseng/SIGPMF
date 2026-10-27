@@ -227,6 +227,19 @@ class SqlServerConnector:
         politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
         return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}")
 
+    def montar_assinatura(self, politica, tabela: str, campo_incremental: str | None) -> str:
+        """AG3: COUNT(*) e MAX(campo incremental) — uma linha por tabela, sem ler nenhum registro."""
+        cols = politica.colunas_select(tabela)
+        t = _ident("dbo." + tabela.split(".")[-1])
+        if campo_incremental and campo_incremental in cols:
+            return garante_somente_leitura(f"SELECT COUNT(*), MAX({_ident(campo_incremental)}) FROM {t}")
+        return garante_somente_leitura(f"SELECT COUNT(*), NULL FROM {t}")
+
+    def assinatura(self, conn, tabela: str, politica, campo_incremental: str | None) -> list:
+        total, maximo = executa_somente_leitura(conn, self.montar_assinatura(politica, tabela, campo_incremental),
+                                                limite=1, como_dict=False)[0]
+        return [int(total or 0), None if maximo is None else str(maximo)]
+
     def montar_verificacao_chave(self, politica, tabela: str, ordem: tuple[str, ...]) -> tuple[str, str]:
         """Keyset exige chave única e sem NULL: (total + linhas com NULL na chave, combinações distintas da chave)."""
         cols = politica.colunas_select(tabela)

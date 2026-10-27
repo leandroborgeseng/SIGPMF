@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -170,4 +170,27 @@ class BaseCatalogo(Base):
     conjunto: Mapped[str | None] = mapped_column(String(50))
     descricao: Mapped[str | None] = mapped_column(Text)
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Agendamento(Base):
+    """AG1: horário diário da carga completa de um conector (migração 0011). Um por vez, dentro da janela."""
+    __tablename__ = "agendamentos"
+    __table_args__ = S
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conector: Mapped[str] = mapped_column(String(50), unique=True)
+    horario: Mapped[str] = mapped_column(String(5))
+    ativo: Mapped[bool] = mapped_column(Boolean, default=False)
+    ordem: Mapped[int] = mapped_column(Integer, default=0)
+    forcar: Mapped[bool] = mapped_column(Boolean, default=False)
+    ultima_data: Mapped[date | None] = mapped_column(Date)
+    tentativas: Mapped[int] = mapped_column(Integer, default=0)
+    proxima_tentativa_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_status: Mapped[str | None] = mapped_column(String(30))
+    ultima_mensagem: Mapped[str | None] = mapped_column(Text)
+    ultima_execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
+    ultimo_inicio_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_fim_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assinatura_origem: Mapped[dict | None] = mapped_column(JSONType)
+    atualizado_por: Mapped[str | None] = mapped_column(String(200))
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

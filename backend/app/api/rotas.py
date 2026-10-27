@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    AgendaIn,
     CargaIn,
     ConfirmaObitoIn,
     ExecutarBaseIn,
@@ -41,6 +42,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services import agenda as ag
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
 from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
@@ -666,3 +668,37 @@ def auditoria(limite: int = 100, u: Usuario = Depends(ADMIN), db: Session = Depe
 
 
 
+
+
+# ---------- Agenda das cargas (AG1–AG6) ----------
+@api.get("/agenda")
+def agenda_estado(db: Session = Depends(get_db)):
+    """Agendamentos, próxima execução, última carga e histórico das últimas 24 h (qualquer perfil autenticado)."""
+    try:
+        return ag.estado(db)
+    except ag.AgendaInvalida as exc:
+        raise HTTPException(500, str(exc)) from None
+
+
+@api.put("/agenda/{conector}")
+def agenda_alterar(conector: str, dados: AgendaIn, req: Request, u: Usuario = Depends(admin_auditado),
+                   db: Session = Depends(get_db)):
+    try:
+        ag.atualizar(db, conector, u.email, **dados.model_dump())
+    except LookupError:
+        _404()
+    except ag.AgendaInvalida as exc:
+        raise HTTPException(422, str(exc)) from None
+    return ag.estado(db)
+
+
+@api.post("/agenda/{conector}/executar-agora", status_code=202)
+def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """AG6: o próximo ciclo da agenda (até AGENDA_INTERVALO_S) roda o conector, mesmo fora do horário e da janela."""
+    if not get_settings().agenda_habilitada:
+        raise HTTPException(409, "A agenda está desligada neste ambiente (AGENDA_HABILITADA).")
+    try:
+        ag.forcar(db, conector, u.email)
+    except LookupError:
+        _404()
+    return ag.estado(db)

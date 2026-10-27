@@ -7,6 +7,7 @@
 | controle | usuarios | perfis admin, admin_lgpd, operador, leitura (senha bcrypt) |
 | controle | auditoria | quem, quando (timestamptz), ação, alvo, detalhe JSONB — append-only |
 | controle | parametros | limiar e pesos da correlação |
+| controle | agendamentos | agenda das cargas completas (0011): conector, horário, ativo, ordem, forçar, último status/mensagem/execução, tentativas, próxima tentativa, assinatura da origem (COUNT e MAX do campo incremental por tabela) |
 | bronze | registros | sistema_origem, tabela, id_origem, dados JSONB, hash SHA-256, execucao_id, atualizado_origem_em, extraido_em; único (origem, tabela, id, hash) |
 | silver | cidadaos, identificadores | cadastro central; identificador CPF (normalizado) |
 | silver | sistemas, vinculos | vínculo registro de origem ↔ cidadão com método, confiança e atributos |

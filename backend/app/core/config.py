@@ -42,6 +42,23 @@ class Settings(BaseSettings):
     carga_nulos_limite_min: int = Field(10, alias="SIGPMF_CARGA_NULOS_LIMITE_MIN", ge=0)
     carga_alerta_min: int = Field(5, alias="SIGPMF_CARGA_ALERTA_MIN", ge=1, le=1440)
     carga_pausa_ms: int = Field(200, alias="CARGA_COMPLETA_PAUSA_MS", ge=0, le=60000)
+    # AG1–AG6: agenda das cargas completas (uma por vez, só dentro da janela). Desligada por padrão.
+    agenda_habilitada: bool = Field(False, alias="AGENDA_HABILITADA")
+    agenda_janela: str = Field("00:00-06:00", alias="AGENDA_JANELA")  # "00:00-24:00" = o dia todo (homologação)
+    agenda_fuso: str = Field("America/Sao_Paulo", alias="AGENDA_FUSO")
+    agenda_intervalo_s: int = Field(60, alias="AGENDA_INTERVALO_S", ge=5, le=3600)
+    agenda_pular_sem_mudanca: bool = Field(True, alias="AGENDA_PULAR_SEM_MUDANCA")
+    agenda_tentativas: int = Field(3, alias="AGENDA_TENTATIVAS", ge=1, le=10)
+    agenda_reespera_min: int = Field(30, alias="AGENDA_REESPERA_MIN", ge=1, le=1440)
+    agenda_espera_max_h: int = Field(20, alias="AGENDA_ESPERA_MAX_H", ge=1, le=72)
+    # Alerta de falha por e-mail (opcional: sem SMTP_HOST, só fica registrado na tela e na auditoria).
+    smtp_host: str | None = Field(None, alias="SMTP_HOST")
+    smtp_port: int = Field(587, alias="SMTP_PORT")
+    smtp_usuario: str | None = Field(None, alias="SMTP_USUARIO")
+    smtp_senha: str | None = Field(None, alias="SMTP_SENHA")
+    smtp_starttls: bool = Field(True, alias="SMTP_STARTTLS")
+    alerta_de: str | None = Field(None, alias="ALERTA_DE")
+    alerta_para: str = Field("", alias="ALERTA_PARA")  # e-mails separados por vírgula
 
     @property
     def perfis_reveal(self) -> set[str]:

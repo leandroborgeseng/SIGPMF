@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { useAuth } from '../auth'
+import AgendaCargas from '../AgendaCargas'
 import { Esqueleto, SeloStatus } from '../componentes'
 import PainelBases, { CARGA_EM_PREPARACAO, type Base } from './PainelBases'
 
@@ -55,6 +56,7 @@ export default function Conectores() {
         <h1 id="t-con">Conectores</h1>
         <p className="sutil">Bases municipais, camadas de dados e histórico de cargas.</p>
       </header>
+      <AgendaCargas ehAdmin={ehAdmin} />
       <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
