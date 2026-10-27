@@ -227,17 +227,55 @@ def test_cc12_completa_orfa_vira_pausada_auditada(client, tokens, origem, db):  
         _fecha(db)
 
 
-def test_cc12_completa_viva_parada_so_admin_pausa(client, tokens, db, lock_de_outro):
+def test_cc12_completa_viva_parada_vira_pausada(client, tokens, db, lock_de_outro):
+    """Tester (#20, ciclo 1): trava OCUPADA + completa sem atividade -> 409 com a execução viva e status inalterado
+    (nem pausada, nem cancelar). Só o admin interrompe, por POST /interromper com motivo."""
     ex = _exec(db, tipo=ccomp.TIPO, minutos=30)
     try:
-        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 409
+        r = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
+        assert r.status_code == 409 and "carga completa de Saúde em andamento desde" in r.json()["detail"]
+        assert client.post("/api/conectores/saude/completa", headers=tokens["admin"]).status_code == 409
         db.expire_all()
-        assert db.get(Execucao, ex.id).status == "em_andamento"  # trava ocupada: nada automático
+        v = db.get(Execucao, ex.id)
+        assert v.status == "em_andamento" and not v.cancelar and v.finalizado_em is None
         r = client.post(f"/api/conectores/saude/execucoes/{ex.id}/interromper", headers=tokens["admin"],
                         json={"motivo": "ZZTESTE completa travada"})
-        assert r.status_code == 200 and r.json()["status"] == "pausada"
+        assert r.status_code == 200 and r.json()["status"] == "pausada"  # só pelo admin
     finally:
         _fecha(db)
+
+
+def test_cc12_completa_parada_trava_livre_vira_pausada(client, tokens, origem, db):  # noqa: F811
+    """Trava LIVRE + completa sem atividade: novo pedido pausa a completa (auditado) e a nova carga roda."""
+    _amostra(db, "saude")
+    ex = _exec(db, tipo=ccomp.TIPO, minutos=30)
+    try:
+        assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 200
+        db.expire_all()
+        v = db.get(Execucao, ex.id)
+        assert v.status == "pausada" and v.cancelar is True
+        a = db.scalar(select(Auditoria).where(Auditoria.acao == "execucao_interrompida", Auditoria.alvo == f"execucao:{ex.id}"))
+        assert a is not None and a.detalhe["automatico"] is True
+    finally:
+        _fecha(db)
+
+
+def test_cc11_feitos_igual_total_sem_cpf_sem_dupla_contagem(db):
+    """Tester: sem CPF/CNS passam pelas etapas 1 e 3; feitos (sem min) tem que ser exatamente o total."""
+    _banco_teste(db)
+    ex = Execucao(tipo="zzteste_feitos", sistema="SAUDE", status="sucesso", usuario=USR)
+    db.add(ex)
+    db.flush()
+    sp = db.begin_nested()
+    db.execute(text("delete from bronze.registros"))  # banco de TESTE; volta no rollback
+    db.add_all([RegistroBronze(sistema_origem="SAUDE", tabela="pacientes", id_origem=f"ZZTESTE{i}",
+                               dados={"Matricula": f"ZZTESTE{i}", "Nome": f"ZZTESTE PESSOA {i}", "Cpf": None},
+                               hash=f"zzf{i}", execucao_id=ex.id) for i in range(1200)])
+    db.flush()
+    r = processamento.reconstruir(db)
+    assert r["feitos"] == r["total_bronze"] == 1200, r
+    sp.rollback()
+    db.rollback()
 
 
 def test_cc11_feitos_igual_total_com_todos_os_papeis(db):
