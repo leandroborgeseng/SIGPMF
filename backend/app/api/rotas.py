@@ -234,13 +234,15 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
-@api.post("/conectores/{conector}/amostra")
+@api.post("/conectores/{conector}/amostra", status_code=202)
 def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
-    """PB13: carga real por conector, só pela política de tabelas, TOP (AMOSTRA_LIMITE). Admin, auditado."""
+    """PB13: carga real por conector, só pela política de tabelas, TOP (AMOSTRA_LIMITE). Admin, auditado.
+    TL 27/10: responde 202 com o id da execução e roda em background (como a carga completa); a tela acompanha por
+    GET /conectores/{conector}/amostra/{id}. 404/409 continuam imediatos (validação e trava #20 antes do 202)."""
     conector = _id_conector(db, conector)
     audita(db, u.email, "amostra_conector_solicitada", f"conector:{conector}", ip=_ip(req))
     try:
-        ex = cc.executar_amostra(db, u.email, conector)
+        ex = cc.iniciar_amostra(db, u.email, conector)
     except cc.ConectorDesconhecido:
         _404()
     except cc.SemMapeamento as exc:
@@ -249,9 +251,26 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     except cc.Conflito as exc:
         audita(db, u.email, "amostra_conector_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_conector_executada", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos},
-           _ip(req))
-    return _exec(ex)
+    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    db.expire_all()  # se o disparo foi síncrono (testes), devolve o estado final
+    return _exec_amostra(db.get(Execucao, ex.id))
+
+
+def _exec_amostra(ex: Execucao) -> dict:
+    return {**_exec(ex), "etapa": ex.etapa, "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa,
+            "atualizado_em": ex.atualizado_em, "em_andamento": ex.status == "em_andamento"}
+
+
+@api.get("/conectores/{conector}/amostra/{eid}")
+def amostra_situacao(conector: str, eid: int, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Status da amostra em background: status, etapa (leitura/prata/ouro/concluida), contador e sinal de vida."""
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    ex = db.get(Execucao, eid)
+    if ex is None or ex.sistema != cc.CONECTORES[conector][0] or ex.tipo not in cc.TIPOS_AMOSTRA:
+        _404()
+    return _exec_amostra(ex)
 
 
 @api.get("/conectores/{conector}/bloqueio")
@@ -476,7 +495,7 @@ def sistema_recursos(u: Usuario = Depends(admin_auditado), db: Session = Depends
     return recursos.publico(db)
 
 
-@api.post("/conectores/iss/municipes/executar")
+@api.post("/conectores/iss/municipes/executar", status_code=202)
 def executa_municipe(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Compatibilidade com o #6: a carga real só passa pela amostra por conector (PB13), admin e auditada."""
     return amostra_conector("iss", req, u, db)

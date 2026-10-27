@@ -106,6 +106,19 @@ describe('painel de bases', () => {
     expect(f.mock.calls.filter(([, i]) => i?.method === 'POST').length).toBe(1)
   })
 
+  it('amostra 202 em background: mostra a etapa e acompanha até concluir (TL 27/10)', async () => {
+    const f = mock((url, init) => {
+      if (init?.method === 'POST') return [202, { id: 41, status: 'em_andamento', em_andamento: true, lidos: 0, mensagem: null, etapa: 'ouro', processadas_etapa: 5000, total_etapa: 477109 }]
+      if (url === '/api/conectores/saude/amostra/41') return [200, { id: 41, status: 'sucesso', em_andamento: false, lidos: 100, mensagem: null, etapa: 'concluida' }]
+      return [200, RESP]
+    })
+    montar('admin')
+    await userEvent.click(within(await cartao('Saude')).getByRole('button', { name: 'Puxar amostra de Saude' }))
+    expect(await screen.findByText(/Amostra de Saude em andamento: unificando cidadãos \(ouro\) \(5\.000 de 477\.109\)/)).toBeInTheDocument()
+    expect(await screen.findByText(/Puxar amostra de Saude concluída \(sucesso\)/, {}, { timeout: 4000 })).toBeInTheDocument()
+    expect(f.mock.calls.some(([u]) => u === '/api/conectores/saude/amostra/41')).toBe(true)
+  })
+
   it('erro na execução vira alerta; erro de API e vazio (UX-C8, estados)', async () => {
     mock((_u, init) => (init?.method === 'POST' ? [409, { detail: 'Saude: Sem lista de colunas aprovada.' }] : [200, RESP]))
     montar('admin')
@@ -173,5 +186,55 @@ describe('painel de bases', () => {
     const iss = await cartao('ISS')
     expect(within(iss).getByRole('status')).toHaveTextContent('Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.')
     expect(within(iss).queryByText(/sem_novidades/)).toBeNull()
+  })
+  describe('acompanhamento da amostra com falha de status (Designer UX, TL 27/10)', () => {
+    const EM = { id: 41, status: 'em_andamento', em_andamento: true, lidos: 0, mensagem: null, etapa: 'ouro', processadas_etapa: 5000, total_etapa: 477109 }
+    const roteiro = (respostas: Array<[number, unknown] | 'rede'>) => {
+      let i = 0
+      const f = vi.fn(async (url: string, init?: RequestInit) => {
+        let rs: [number, unknown] | 'rede' = [200, RESP]
+        if (init?.method === 'POST') rs = [202, EM]
+        else if (url === '/api/conectores/saude/amostra/41') rs = respostas[Math.min(i++, respostas.length - 1)]
+        if (rs === 'rede') throw new TypeError('Failed to fetch')
+        return new Response(JSON.stringify(rs[1]), { status: rs[0], headers: { 'Content-Type': 'application/json' } })
+      })
+      vi.stubGlobal('fetch', f)
+      return f
+    }
+    const disparar = async () => {
+      montar('admin')
+      await userEvent.click(within(await cartao('Saude')).getByRole('button', { name: 'Puxar amostra de Saude' }))
+    }
+
+    it('1 a 2 falhas seguidas mantêm o andamento e a carga conclui', async () => {
+      roteiro(['rede', [502, {}], [200, { ...EM, status: 'sucesso', em_andamento: false, etapa: 'concluida' }]])
+      await disparar()
+      const andamento = await screen.findByText(/Amostra de Saude em andamento/)
+      expect(andamento).toHaveAttribute('aria-live', 'polite')
+      expect(andamento.textContent).not.toMatch(/Pode sair desta tela/)
+      expect(await screen.findByText(/Puxar amostra de Saude concluída \(sucesso\)/, {}, { timeout: 9000 })).toBeInTheDocument()
+      expect(screen.queryByText(/Falha na carga/)).not.toBeInTheDocument()
+    }, 15000)
+
+    it('contador zera no sucesso: falha, andamento, 2 falhas e conclui', async () => {
+      roteiro([[503, {}], [200, EM], 'rede', [500, {}], [200, { ...EM, status: 'sucesso', em_andamento: false }]])
+      await disparar()
+      expect(await screen.findByText(/Puxar amostra de Saude concluída \(sucesso\)/, {}, { timeout: 14000 })).toBeInTheDocument()
+      expect(screen.queryByText(/Não foi possível acompanhar/)).not.toBeInTheDocument()
+    }, 20000)
+
+    it('3 falhas seguidas mostram aviso de acompanhamento, não falha da carga', async () => {
+      roteiro(['rede', [502, {}], [500, {}]])
+      await disparar()
+      expect(await screen.findByText('Não foi possível acompanhar a amostra agora. Ela continua no servidor; atualize a página em instantes.', {}, { timeout: 9000 })).toBeInTheDocument()
+      expect(screen.queryByText(/Falha na carga/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    }, 15000)
+
+    it('status falha vindo da API continua mostrando falha da carga', async () => {
+      roteiro([[200, { ...EM, status: 'falha', em_andamento: false, mensagem: 'ouro abortada' }]])
+      await disparar()
+      expect(await screen.findByText(/Falha na carga de Saude: ouro abortada\./, {}, { timeout: 5000 })).toBeInTheDocument()
+    }, 10000)
   })
 })

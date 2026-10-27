@@ -496,7 +496,9 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
     total = int(db.scalar(select(func.count(func.distinct(func.concat(
         RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
         .where(RegistroBronze.quarentena.is_(None))) or 0)
-    t0 = _inicio_etapa(db, ex, "prata", total)
+    t0 = _inicio_etapa(db, ex, "prata", total)  # faz commit: a trava de transação das camadas vem depois
+    from app.services import trava as tv
+    tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
     # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
     # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
     sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
@@ -505,7 +507,7 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
     sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
     _log_separado(ex.id, "ouro", None, None)
     t1 = time.monotonic()
-    gres = visao.reconstruir(db)
+    gres = visao.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot))
     _log_separado(ex.id, "ouro", t1, gres)
     ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
     rec = reconciliacao(db, sistema)

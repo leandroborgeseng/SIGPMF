@@ -15,8 +15,9 @@ Ordem dos passes:
 from collections import defaultdict
 from datetime import date
 from itertools import combinations
+from typing import NamedTuple
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from app.identity import cns as cnsmod
@@ -48,10 +49,38 @@ def parametros(db: Session) -> corr.Parametros:
     return _params(db)[0]
 
 
-def _ultimas_versoes(db: Session) -> list[RegistroBronze]:
+class _Reg(NamedTuple):
+    """Só o que a prata usa do registro da bronze (sem o JSON `dados`, que vira o dict canônico)."""
+    id: int
+    sistema_origem: str
+    tabela: str
+    id_origem: str
+    atualizado_origem_em: object
+
+
+def _ultimas_versoes(db: Session):
+    """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor). Antes vinham como
+    objetos ORM completos (com `dados`) numa lista: centenas de MB a mais por 100 mil linhas."""
     sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None)).group_by(  # CC9
         RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
-    return list(db.scalars(select(RegistroBronze).where(RegistroBronze.id.in_(sub)).order_by(RegistroBronze.id)))
+    q = (select(RegistroBronze.id, RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem,
+                RegistroBronze.atualizado_origem_em, RegistroBronze.dados)
+         .where(RegistroBronze.id.in_(sub)).order_by(RegistroBronze.id).execution_options(yield_per=5000))
+    for i, so, t, io, at, dados in db.execute(q):
+        yield _Reg(i, so, t, io, at), dados
+
+
+def _grava(db: Session, model, objs, lote: int = 5000) -> None:
+    """INSERT em lote (ORM bulk insert por dicts, sem unit of work nem identity map). Atributos não definidos ficam
+    de fora do dict e recebem o default da coluna, como no add_all."""
+    buf = []
+    for o in objs:
+        buf.append({k: v for k, v in vars(o).items() if not k.startswith("_")})
+        if len(buf) >= lote:
+            db.execute(insert(model), buf)
+            buf = []
+    if buf:
+        db.execute(insert(model), buf)
 
 
 def _data(v) -> date | None:
@@ -173,11 +202,11 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
                                   tipo=tipo, campo=campo, detalhe=detalhe))
 
     regs = []
-    for r in _ultimas_versoes(db):
+    for r, dados in _ultimas_versoes(db):
         m = MAPEAMENTOS.get((r.sistema_origem, r.tabela), {})
         if not m:  # bronze sem mapeamento para a silver (ex.: ISS.Municipes, que tem silver própria): não correlaciona
             continue
-        regs.append((r, canonico(r.sistema_origem, r.tabela, r.dados), m.get("papel", "pessoa"), m))
+        regs.append((r, canonico(r.sistema_origem, r.tabela, dados), m.get("papel", "pessoa"), m))
     por_papel = defaultdict(list)
     for x in regs:
         por_papel[x[2]].append(x)
@@ -336,25 +365,30 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         motivo = "obito_revisao" if len(cand) == 1 else "obito_ambiguo" if cand else "obito_sem_candidato"
         pendente(r, c, motivo, cand, {"tabela_origem": r.tabela, "sinais": sinais, "pre_selecionado": None})
 
-    db.add_all(cidadaos.values())
-    db.flush()
-    db.add_all(list(ids.values()) + pend + inc)
+    db.flush()  # SistemaSilver e os DELETEs antes dos INSERTs em lote
+    _grava(db, Cidadao, cidadaos.values())
+    _grava(db, Identificador, ids.values())
+    _grava(db, CorrelacaoPendente, pend)
+    _grava(db, Inconsistencia, inc)
     enderecos: list[Endereco] = []
-    for r, c, cid, metodo, conf, attrs in vinculos:
-        db.add(Vinculo(cidadao_id=cid, sistema=r.sistema_origem, tabela=r.tabela, chave_origem=r.id_origem, bronze_id=r.id,
-                       metodo=metodo, confianca=conf, atributos=attrs, fonte_atualizado_em=r.atualizado_origem_em))
-        if c.get("endereco"):  # CM10: endereço de sepultura/titular fica como texto livre
-            enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
-                                      fonte_atualizado_em=r.atualizado_origem_em))
+
+    def gera_vinculos():
+        for r, c, cid, metodo, conf, attrs in vinculos:
+            yield Vinculo(cidadao_id=cid, sistema=r.sistema_origem, tabela=r.tabela, chave_origem=r.id_origem,
+                          bronze_id=r.id, metodo=metodo, confianca=conf, atributos=attrs,
+                          fonte_atualizado_em=r.atualizado_origem_em)
+            if c.get("endereco"):  # CM10: endereço de sepultura/titular fica como texto livre
+                enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
+                                          fonte_atualizado_em=r.atualizado_origem_em))
+    _grava(db, Vinculo, gera_vinculos())
     ultimo: dict[str, Endereco] = {}
     for e in enderecos:
         u = ultimo.get(e.cidadao_id)
         if u is None or (e.fonte_atualizado_em and (u.fonte_atualizado_em is None or e.fonte_atualizado_em > u.fonte_atualizado_em)):
             ultimo[e.cidadao_id] = e
-    for e in ultimo.values():
-        e.mais_recente = True
-    db.add_all(enderecos)
-    db.flush()
+    for e in enderecos:
+        e.mais_recente = e is ultimo[e.cidadao_id]
+    _grava(db, Endereco, enderecos)
     if progresso:
         progresso(min(feitos[0], total), total)
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
