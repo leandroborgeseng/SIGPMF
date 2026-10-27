@@ -81,9 +81,16 @@ def mensagem_viva(ex: Execucao, nome: str) -> str:
 def interromper(db: Session, ex: Execucao, usuario: str, motivo: str, automatico: bool, ip: str | None = None) -> None:
     """Marca a execução como interrompida (e pede cancelamento a quem ainda estiver vivo). Auditado; nada apagado."""
     anterior = ex.status
-    ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", MSG_INTERROMPIDA, datetime.now(UTC), None
+    if ex.tipo == TIPO_COMPLETA:
+        # Completa: volta a 'pausada' (como antes do CC12), que mantém "Retomar carga" do checkpoint na tela.
+        ex.status, ex.pausa_motivo = "pausada", f"Carga interrompida ({motivo}). Retome a carga."
+        ex.finalizado_em, ex.tabela_atual = datetime.now(UTC), None
+        msg = f"Carga completa pausada: {motivo}. A bronze e o checkpoint foram mantidos; retome a carga."
+    else:
+        ex.status, ex.mensagem, ex.finalizado_em, ex.tabela_atual = "interrompida", MSG_INTERROMPIDA, datetime.now(UTC), None
+        msg = f"{MSG_INTERROMPIDA} Motivo: {motivo}"
     ex.cancelar = True
-    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"{MSG_INTERROMPIDA} Motivo: {motivo}"))
+    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=msg))
     audita(db, usuario, "execucao_interrompida", f"execucao:{ex.id}",
            {"tipo": ex.tipo, "sistema": ex.sistema, "status_anterior": anterior, "motivo": motivo,
             "automatico": automatico, "parada_min": round(parada_min(ex), 1)}, ip, commit=False)
@@ -134,8 +141,9 @@ def conflito(db: Session, sistema: str, conector: str, usuario: str) -> str:
     nome = NOMES.get(conector, conector)
     exs = em_andamento(db, sistema)
     if exs and interrompe_se_parada(db, sistema, usuario):
+        marcada = "pausada (retomável do checkpoint)" if exs[0].tipo == TIPO_COMPLETA else "interrompida"
         return (f"A {tipo_rotulo(exs[0])} de {nome} estava sem atividade desde {_hora(ultima_atividade(exs[0]))} e foi "
-                "marcada como interrompida. O processo antigo ainda segura a trava; tente de novo em instantes.")
+                f"marcada como {marcada}. O processo antigo ainda segura a trava; tente de novo em instantes.")
     if exs:
         return mensagem_viva(exs[0], nome)
     return f"Já existe uma carga de {nome} em andamento."
