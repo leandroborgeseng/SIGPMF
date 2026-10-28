@@ -45,8 +45,10 @@ describe('acesso', () => {
     montar('/dashboard', 'admin')
     const nav = await screen.findByRole('navigation', { name: 'Navegação principal' })
     const links = within(nav).getAllByRole('link')
-    expect(links.map((l) => l.textContent)).toEqual(['Dashboard', 'Conectores', 'Simulador do Cidadão', 'Explorar dados'])
-    expect(links[0]).toHaveAttribute('aria-current', 'page')
+    expect(links.map((l) => l.textContent)).toEqual(['Visão geral', 'Saúde', 'Fazenda', 'Dashboard das cargas', 'Monitor de cargas',
+      'Conectores', 'Simulador do Cidadão', 'Explorar dados'])
+    expect(links[3]).toHaveAttribute('aria-current', 'page')
+    expect(links[0]).not.toHaveAttribute('aria-current')  // /painel não fica ativo em outras rotas (end)
   })
 
   it('gaveta abre com ☰ e fecha com Esc devolvendo o foco (UX-S2)', async () => {

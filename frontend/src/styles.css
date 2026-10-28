@@ -265,3 +265,45 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .impostos-imoveis li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; }
 .impostos-imoveis li.inativo { background: var(--surface-2); color: var(--ink-2); }
+
+/* Onda 4: painéis de gestão (mesmo visual do canvas) */
+.painel { display: grid; gap: 16px; }
+.painel-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.kpi { display: grid; gap: 4px; }
+.kpi .cartao-valor { font-size: 26px; color: var(--brand-hover); }
+.kpi-alerta .cartao-valor { color: var(--danger-ink); }
+.kpi-bom .cartao-valor { color: var(--ok-ink); }
+.kpi-nota { font-size: 12px; color: var(--ink-3); }
+.painel-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.painel-bloco { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.painel-bloco.largo { grid-column: 1 / -1; }
+.painel-bloco-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.painel-bloco-cab h2 { margin: 0; font-size: 16px; }
+.painel-vazio { margin: 0; padding: 18px 0; text-align: center; }
+.painel-atalhos { display: flex; flex-wrap: wrap; gap: 8px; }
+.destaque { margin: 0; padding: 10px 12px; border-radius: var(--r-md); background: var(--brand-soft); color: var(--ink); font-size: 14px; }
+.barras-h { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.barras-h li { display: grid; grid-template-columns: minmax(110px, 38%) minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 13.5px; }
+.barras-h-rotulo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barras-h-trilho { height: 12px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; }
+.barras-h-barra { display: block; height: 100%; border-radius: 4px; background: var(--brand); }
+.barras-h-barra.alerta { background: var(--warn); }
+.barras-h-barra.ok { background: var(--ok); }
+.barras-h-valor { min-width: 64px; text-align: right; color: var(--ink-2); }
+.colunas { display: grid; gap: 8px; }
+.colunas-legenda { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-3); }
+.colunas-legenda span { display: inline-flex; align-items: center; gap: 6px; }
+.leg { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+.leg.a, .col.a { background: var(--brand); }
+.leg.b, .col.b { background: #9BC2EE; }
+.colunas-grade { display: grid; gap: 8px; height: 200px; align-items: end; border-bottom: 1px solid var(--line); }
+.colunas-mes { display: grid; grid-template-rows: 1fr auto; height: 100%; min-width: 0; }
+.colunas-barras { display: flex; gap: 3px; align-items: flex-end; height: 100%; }
+.col { flex: 1; border-radius: 3px 3px 0 0; min-height: 2px; }
+.colunas-rotulo { font: 500 11px var(--font-mono); color: var(--ink-3); text-align: center; padding-top: 6px; }
+@media (max-width: 760px) {
+  .painel-grade { grid-template-columns: 1fr; }
+  .colunas-grade { height: 160px; gap: 4px; }
+  .colunas-rotulo { font-size: 9.5px; }
+}

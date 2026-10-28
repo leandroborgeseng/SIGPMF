@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
 import Login from './pages/Login'
 import Simulador from './pages/Simulador'
+import { MonitorCargas, PainelFazenda, PainelGeral, PainelSaude } from './paineis/Paineis'
 
 function Protegido({ children }: { children: ReactNode }) {
   const { sessao } = useAuth()
@@ -24,6 +25,10 @@ export default function App() {
         <Route path="/conectores" element={<Conectores />} />
         <Route path="/simulador" element={<Simulador />} />
         <Route path="/explorar" element={<ExplorarDados />} />
+        <Route path="/painel" element={<PainelGeral />} />
+        <Route path="/painel/saude" element={<PainelSaude />} />
+        <Route path="/painel/fazenda" element={<PainelFazenda />} />
+        <Route path="/monitor" element={<MonitorCargas />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
