@@ -89,12 +89,13 @@ def _utc(d: datetime | None) -> datetime | None:
 
 
 def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
-    """`agora` com fuso. Forçado roda sempre; senão: ativo, dentro da janela, já passou do horário e ainda não resolvido
-    hoje, respeitando a espera entre tentativas."""
-    if ag.forcar:
-        return True
+    """`agora` com fuso. Só agendamento ativo roda (SIL15: `forcar` não liga um desligado). Forçado roda fora do
+    horário e da janela; senão: dentro da janela, já passou do horário e ainda não resolvido hoje, respeitando
+    a espera entre tentativas."""
     if not ag.ativo:
         return False
+    if ag.forcar:
+        return True
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
     if not na_janela(m, ini, fim) or ag.ultima_data == local.date():

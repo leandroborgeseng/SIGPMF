@@ -134,6 +134,8 @@ def test_ag1_devido_horario_janela_forcar_e_espera():
     a.ativo = False
     assert not ag.devido(a, _local(2026, 10, 29, 3, 0), ini, fim)
     a.forcar = True
+    assert not ag.devido(a, _local(2026, 10, 29, 12, 0), ini, fim)       # SIL15: forçar não liga um desligado
+    a.ativo = True
     assert ag.devido(a, _local(2026, 10, 29, 12, 0), ini, fim)           # executar agora ignora horário e janela
 
 
@@ -254,6 +256,8 @@ def test_ag6_forcar_roda_fora_da_janela(db, origem, monkeypatch):
     _zera_agenda(db, ativo=False)
     monkeypatch.setenv("AGENDA_JANELA", "00:00-06:00")
     get_settings.cache_clear()
+    db.execute(update(Agendamento).where(Agendamento.conector == "cemiterio").values(ativo=True, horario="05:00"))
+    db.commit()
     ag.forcar(db, "cemiterio", "admin@aion.local")
     feitos = ag.ciclo(db, agora=_local(2026, 10, 28, 14, 0), leitores=_leitores(origem), esperar=_esperar)
     assert feitos == [("cemiterio", "sucesso")] and _ag(db, "cemiterio").forcar is False
@@ -292,6 +296,13 @@ def test_ag6_executar_agora_so_com_agenda_habilitada(client, tokens, db, monkeyp
     monkeypatch.setenv("AGENDA_HABILITADA", "true")
     get_settings.cache_clear()
     assert client.post("/api/agenda/saude/executar-agora", headers=tokens["leitura"]).status_code == 403
+    r = client.post("/api/agenda/saude/executar-agora", headers=tokens["admin"])  # agendamento desligado: 409
+    assert r.status_code == 409 and "desligado" in r.json()["detail"]
+    aud = db.scalar(select(Auditoria).where(Auditoria.acao == "agenda_executar_agora_recusada")
+                    .order_by(Auditoria.id.desc()))
+    assert aud.alvo == "agendamento:saude" and aud.detalhe["motivo"] == "desligado"
+    db.execute(update(Agendamento).where(Agendamento.conector == "saude").values(ativo=True))
+    db.commit()
     r = client.post("/api/agenda/saude/executar-agora", headers=tokens["admin"])
     assert r.status_code == 202 and r.json()["itens"][0]["forcar"] is True
     _zera_agenda(db, ativo=False)

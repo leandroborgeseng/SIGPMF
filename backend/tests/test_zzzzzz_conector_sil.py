@@ -118,12 +118,16 @@ def test_codigo_sem_escrita_nem_rota_proibida():
     import ast
     listas = {"ROTAS_BLOQUEADAS", "SEGMENTOS_PROIBIDOS", "RADICAIS_PROIBIDOS"}
     proibida = re.compile(r"atualizar|preco|parcelas", re.I)
+    # R2 (QA #23): além de .post( também .request(, .send( e .stream( (e put/patch/delete). Unificação: o único ponto
+    # de rede do pacote é o self._http.request(...) do ClienteSil._envia, sempre depois de checa_operacao.
+    escrita = re.compile(r"\.(?:put|patch|delete|post|request|send|stream)\(", re.I)
     for f in PACOTE.glob("*.py"):
         src = f.read_text(encoding="utf-8")
-        if f.name == "conector.py":  # conector da main (#tributário): só o POST de autenticação
-            assert re.findall(r"\.(?:put|patch|delete|post)\([^,)]*", src, re.I) == ['.post("api/authenticate"'], f.name
+        achados = escrita.findall(src)
+        if f.name == "cliente.py":
+            assert achados == [".request("] and "self._http.request(metodo, caminho" in src, (f.name, achados)
         else:
-            assert not re.search(r"\.(put|patch|delete|post)\(", src, re.I), f.name
+            assert achados == [], (f.name, achados)
         arvore = ast.parse(src)
         permitidos = set()
         for n in ast.walk(arvore):

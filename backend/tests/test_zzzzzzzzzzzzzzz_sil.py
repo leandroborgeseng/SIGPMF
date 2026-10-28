@@ -49,9 +49,11 @@ class ApiSil:
         }} for c in lote]})
 
 
-def _sil(api, **kw):
-    cfg = ConfigSil("https://sil.invalid/v1", "cliente", SECRET, "pmfranca", intervalo_ms=0, amostra_limite=120, **kw)
-    return SilConnector(cfg, transporte=httpx.MockTransport(api), esperar=lambda s: None)
+def _sil(api, max_lotes=100, **kw):
+    """Leitor unificado sobre o ClienteSil, com transporte mock (nenhuma rede)."""
+    cfg = ConfigSil("https://sil.invalid/v1", "cliente", SECRET, "pmfranca", req_por_s=20.0, **kw)
+    return SilConnector(cfg, transporte=httpx.MockTransport(api), esperar=lambda s: None, amostra_limite=120,
+                        max_lotes=max_lotes)
 
 
 def test_achata_sem_email_telefone_e_campos_vazios_viram_nulo():
@@ -89,13 +91,13 @@ def test_token_expirado_renova_e_repete_e_502_tenta_de_novo():
 def test_erros_sem_segredo_na_mensagem():
     def recusa(req):
         return httpx.Response(401, json={"error": "invalid_client"})
-    con = SilConnector(ConfigSil("https://sil.invalid/v1", "cliente", SECRET, "x", intervalo_ms=0),
-                       transporte=httpx.MockTransport(recusa), esperar=lambda s: None)
+    con = SilConnector(ConfigSil("https://sil.invalid/v1", "cliente", SECRET, "x"),
+                       transporte=httpx.MockTransport(recusa), esperar=lambda s: None, amostra_limite=10)
     r = con.testar_conexao()
     assert r["ok"] is False and SECRET not in r["erro"] and "cliente" not in r["erro"]
     assert SECRET not in repr(con.config) and "cliente" not in repr(con.config)
     with pytest.raises(ErroSil):
-        SilConnector(ConfigSil(None, None, None, None)).abrir()
+        SilConnector(ConfigSil(None, None, None, None), amostra_limite=10).abrir()
 
 
 def test_sil_registrado_como_conector_de_fato():
