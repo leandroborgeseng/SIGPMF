@@ -37,6 +37,8 @@ export function pendencias(trib: RespTributario | null | false, saude: RespSaude
     if (t.divida_ativa > 0) out.push({ area: 'Impostos', titulo: 'Débito em dívida ativa', detalhe: `${reais(t.divida_ativa)}${t.protestada ? ' · protestado' : ''}`, tom: 'alerta' })
     const aVencer = trib.lancamentos.filter((x) => x.situacao === 'a_vencer').sort((a, b) => String(a.vencimento).localeCompare(String(b.vencimento)))[0]
     if (aVencer) out.push({ area: 'Impostos', titulo: `Próxima parcela vence em ${dataBR(aVencer.vencimento)}`, detalhe: reais(aVencer.valor), tom: 'info' })
+    const comDebito = (trib.empresas ?? []).filter((e) => e.possui_debito)
+    if (comDebito.length) out.push({ area: 'Empresas', titulo: comDebito.length === 1 ? 'Empresa com débito na prefeitura' : `${comDebito.length} empresas com débito na prefeitura`, detalhe: comDebito.map((e) => `CCM ${e.ccm}`).join(', '), tom: 'alerta' })
   }
   if (saude && saude.proximos[0]) {
     const p = saude.proximos[0]

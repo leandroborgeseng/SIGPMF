@@ -35,10 +35,24 @@ describe('Impostos e imóveis (TR7)', () => {
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations.map((v) => v.id)).toEqual([])
   })
+  it('mostra as empresas do CPF (SIL) com a situação de débito', async () => {
+    mock(200, { ...resp, empresas: [
+      { ccm: 1234, nome: 'COMERCIO SINTETICO ME', documento: '***.456.789-**', possui_debito: true, endereco: 'Rua X', bairro: 'CENTRO' },
+      { ccm: 5678, nome: 'SERVICOS SINTETICOS', documento: '***.456.789-**', possui_debito: false, endereco: null, bairro: null },
+    ] })
+    const { container } = render(<ImpostosCidadao id="c1" />)
+    const lista = await screen.findByRole('list', { name: 'Empresas' })
+    expect(within(lista).getByText('COMERCIO SINTETICO ME')).toBeVisible()
+    expect(within(lista).getByText(/CCM 1234 · CENTRO/)).toBeVisible()
+    expect(within(lista).getByText('Com débito')).toBeVisible()
+    expect(within(lista).getByText('Sem débito')).toBeVisible()
+    const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
+    expect(r.violations.map((v) => v.id)).toEqual([])
+  })
   it('sem dados e com erro não quebra', async () => {
     mock(200, { ...resp, imoveis: [], lancamentos: [], dividas: [] })
     const { unmount } = render(<ImpostosCidadao id="c1" />)
-    expect(await screen.findByText(/Nenhum imóvel, lançamento ou dívida/)).toBeVisible()
+    expect(await screen.findByText(/Nenhum imóvel, lançamento, dívida ou empresa/)).toBeVisible()
     unmount()
     mock(500, { detail: 'x' })
     render(<ImpostosCidadao id="c1" />)

@@ -10,7 +10,7 @@ type Item = { cidadao_id: string; nome: string | null; cpf: string | null }
 
 const MOTIVO_MIN = Number(import.meta.env.VITE_REVELAR_MOTIVO_MIN ?? 10)
 const NIVEL_MAX = 3
-const TIPO: Record<string, string> = { PF: 'PF', PJ: 'PJ', IM: 'IM' }
+const TIPO: Record<string, string> = { PF: 'PF', PJ: 'PJ', IM: 'IM', EM: 'EM' }
 
 /** VN5: explorador de vínculos em colunas — cada clique abre só o próximo nível (consulta auditada com o motivo). */
 export default function Vinculos() {
@@ -48,7 +48,7 @@ export default function Vinculos() {
       <header className="page-head">
         <p className="kicker">Dados · uso interno</p>
         <h1 id="t-vinc">Explorador de vínculos</h1>
-        <p className="sutil">Pessoa → imóveis → outros possuidores → os imóveis deles. Cada abertura fica registrada com o motivo.</p>
+        <p className="sutil">Pessoa → imóveis e empresas → outros possuidores → os imóveis deles. Cada abertura fica registrada com o motivo.</p>
       </header>
       <form className="cartao vinc-form" onSubmit={buscar}>
         <label htmlFor="v-motivo">Motivo da consulta (obrigatório)</label>

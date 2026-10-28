@@ -32,6 +32,8 @@ describe('ficha no formato do portal (onda 5)', () => {
     expect(p.map((x) => x.titulo)).toEqual(['1 parcela(s) vencida(s)', 'Débito em dívida ativa', 'Próxima parcela vence em 05/11/2099',
       'Consulta de Oftalmologia em 12/11/2099'])
     expect(pendencias(false, false)).toEqual([])
+    const comEmpresa = pendencias({ ...trib, empresas: [{ ccm: 77, nome: 'X', documento: '*', possui_debito: true, endereco: null, bairro: null }] }, false)
+    expect(comEmpresa.find((x) => x.area === 'Empresas')?.detalhe).toBe('CCM 77')
   })
   it('resumo e saúde sem conteúdo clínico, acessível', async () => {
     const { container } = render(<><ResumoPortal trib={trib} saude={saude} /><SaudeCidadao saude={saude} /></>)

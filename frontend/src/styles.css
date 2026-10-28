@@ -363,6 +363,8 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .vinc-tipo { align-self: start; padding: 0 6px; border-radius: 4px; font: 700 10px var(--font-mono); color: #fff; background: var(--brand); }
 .vinc-tipo.t-PJ { background: #14365F; }
 .vinc-tipo.t-IM { background: #7A5B00; }
+.vinc-tipo.t-EM { background: #1F6B4F; }
+.impostos-sub { margin: 14px 0 4px; font-size: 15px; }
 .vinc-abre { color: var(--ink-4); }
 .vinc-flags { display: flex; flex-wrap: wrap; gap: 4px; }
 .vinc-vazio { padding: 14px; }

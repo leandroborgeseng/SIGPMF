@@ -230,6 +230,23 @@ class ImovelPossuidor(Base):
     ativo: Mapped[bool] = mapped_column(Boolean)
 
 
+class EmpresaSil(Base):
+    """Empresa da API SIL (tributário novo), pelo CCM. Liga ao cidadão só quando o CNPJ/CPF é um CPF já correlacionado
+    (MEI, autônomo, empresário individual); PJ fica só com o documento (mascarado na API)."""
+    __tablename__ = "empresas_sil"
+    __table_args__ = (Index("ix_silver_empresa_sil_cidadao", "cidadao_id"), Index("ix_silver_empresa_sil_doc", "documento"),
+                      TR)
+    ccm: Mapped[int] = mapped_column(Integer, primary_key=True)
+    documento: Mapped[str | None] = mapped_column(String(14))  # só dígitos
+    tipo_pessoa: Mapped[str | None] = mapped_column(String(2))  # PF / PJ
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    nome: Mapped[str | None] = mapped_column(String(250))
+    possui_debito: Mapped[bool | None] = mapped_column(Boolean)
+    endereco: Mapped[str | None] = mapped_column(String(300))
+    bairro: Mapped[str | None] = mapped_column(String(120))
+    cep: Mapped[str | None] = mapped_column(String(12))
+
+
 class Lancamento(Base):
     __tablename__ = "lancamentos"
     __table_args__ = (Index("ix_silver_lancamento_cidadao", "cidadao_id"), Index("ix_silver_lancamento_venc", "vencimento"), TR)

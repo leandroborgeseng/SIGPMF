@@ -4,6 +4,7 @@ pessoas, e chamada no fim dela (os CPFs já estão correlacionados).
 
 - Nunca cria cidadão: o vínculo com `cidadao_id` só existe quando o CPF do possuidor é um identificador já
   correlacionado (silver.identificadores). PJ e CPF sem cidadão ficam só com o documento (mascarado na API).
+- Empresas da API SIL (por CCM): ligadas ao cidadão quando o CNPJ/CPF é um CPF correlacionado (MEI/autônomo).
 - "Contribuinte" do Financeiro é polimórfico (inscrição imobiliária, inscrição do ISS, sepultura…): vira `codi` só
   quando é um CODI de imóvel conhecido; o cidadão do lançamento e da dívida é o possuidor PRINCIPAL ativo do imóvel
   (posse sem baixa, a mais recente).
@@ -16,9 +17,9 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.identity.cpf import normaliza, valido
-from app.models.camadas import DividaAtiva, Identificador, Imovel, ImovelPossuidor, Lancamento, RegistroBronze
+from app.models.camadas import DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor, Lancamento, RegistroBronze
 
-SISTEMAS = ("IPTU", "DIVIDA", "FINANCEIRO")
+SISTEMAS = ("IPTU", "DIVIDA", "FINANCEIRO", "SIL")
 
 
 def _ultimas(db: Session, sistema: str, tabela: str):
@@ -88,7 +89,7 @@ def _grava(db: Session, model, objs, lote: int = 5000) -> int:
 
 
 def reconstruir(db: Session) -> dict[str, int]:
-    for m in (DividaAtiva, Lancamento, ImovelPossuidor, Imovel):
+    for m in (DividaAtiva, Lancamento, ImovelPossuidor, Imovel, EmpresaSil):
         db.execute(delete(m))
     cpf_cid = {v: c for v, c in db.execute(select(Identificador.valor, Identificador.cidadao_id)
                                             .where(Identificador.tipo == "cpf"))}
@@ -157,5 +158,23 @@ def reconstruir(db: Session) -> dict[str, int]:
     for p in posses:
         if p.cidadao_id:
             ligados["possuidores"] += 1
+
+    def empresas():
+        for _io, d in _ultimas(db, "SIL", "Empresas"):
+            ccm = _i(d.get("Ccm"))
+            if ccm is None:
+                continue
+            doc = _digitos(d.get("CNPJCPF")) or None
+            pf = doc is not None and len(doc) <= 11
+            if doc:
+                doc = doc.zfill(11) if pf else doc.zfill(14)
+            cid = cpf_cid.get(normaliza(doc)) if pf and valido(doc) else None
+            if cid:
+                ligados["empresas"] += 1
+            deb = _s(d.get("PossuiDebito"), 1)
+            yield EmpresaSil(ccm=ccm, documento=doc, tipo_pessoa=("PF" if pf else "PJ") if doc else None, cidadao_id=cid,
+                             nome=_s(d.get("Nome"), 250), possui_debito=None if deb is None else deb.upper() == "S",
+                             endereco=_s(d.get("Endereco"), 300), bairro=_s(d.get("Bairro"), 120), cep=_s(d.get("CEP"), 12))
+    n_emp = _grava(db, EmpresaSil, empresas())
     return {"imoveis": n_imoveis, "possuidores": n_posses, "possuidores_com_cidadao": ligados["possuidores"],
-            "lancamentos": n_lanc, "dividas": n_div}
+            "lancamentos": n_lanc, "dividas": n_div, "empresas": n_emp, "empresas_com_cidadao": ligados["empresas"]}

@@ -5,14 +5,16 @@ Nós (ids opacos — nunca CPF/CNPJ no id):
 - "im:<codi>"        imóvel (silver.imoveis / imovel_possuidores)
 - "ps:<id>"          possuidor sem cidadão (PJ ou CPF não correlacionado), pela linha de silver.imovel_possuidores;
                       o documento sai sempre mascarado
-Vínculos disponíveis hoje: pessoa ↔ imóvel (posse atual e anterior) ↔ outros possuidores. Sócios (ISS) e família
-(Senior/CadÚnico) entram como novos tipos de aresta quando esses conectores forem ligados.
+- "em:<ccm>"         empresa da API SIL (inscrição municipal)
+Vínculos disponíveis hoje: pessoa ↔ imóvel (posse atual e anterior) ↔ outros possuidores; pessoa ↔ empresa (CPF do
+titular na SIL); empresa ↔ imóveis possuídos pelo mesmo CNPJ/CPF. Sócios (ISS) e família (Senior/CadÚnico) entram como
+novos tipos de aresta quando esses conectores forem ligados.
 """
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.identity.cpf import mascara
-from app.models.camadas import Cidadao, DividaAtiva, Identificador, Imovel, ImovelPossuidor
+from app.models.camadas import Cidadao, DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor
 
 NIVEL_MAXIMO = 3
 POSSE = {1: "Proprietário(a)", 2: "Compromissário(a)", 3: "Possuidor(a)"}
@@ -22,7 +24,7 @@ class NoInvalido(ValueError):
     pass
 
 
-def _mascara_doc(doc: str | None) -> str:
+def mascara_doc(doc: str | None) -> str:
     d = "".join(ch for ch in str(doc or "") if ch.isdigit())
     if len(d) == 14:
         return f"**.***.***/{d[8:12]}-**"
@@ -70,8 +72,25 @@ def _no_possuidor(db: Session, pid: int) -> tuple[dict, ImovelPossuidor]:
     if p.cidadao_id:
         return _no_pessoa(db, p.cidadao_id), p
     rotulo = "Empresa (CNPJ)" if p.tipo_pessoa == "PJ" else "Pessoa sem cadastro correlacionado"
-    return {"id": f"ps:{p.id}", "tipo": p.tipo_pessoa, "nome": rotulo, "doc": _mascara_doc(p.documento),
+    return {"id": f"ps:{p.id}", "tipo": p.tipo_pessoa, "nome": rotulo, "doc": mascara_doc(p.documento),
             "flags": _flags(0, ["Sem ficha no SIGPMF"]), "cidadao_id": None}, p
+
+
+def _no_empresa(db: Session, ccm: int) -> dict:
+    e = db.get(EmpresaSil, ccm)
+    if e is None:
+        raise NoInvalido("Empresa não encontrada")
+    extra = ["Débito na SIL"] if e.possui_debito else []
+    flags = [{"texto": t, "tom": "alerta"} for t in extra]
+    return {"id": f"em:{ccm}", "tipo": "EM", "nome": e.nome or "Empresa sem nome",
+            "doc": f"CCM {ccm} · {mascara_doc(e.documento)}", "flags": flags, "cidadao_id": None}
+
+
+def _empresas_do_doc(db: Session, *, cidadao: str | None = None, documento: str | None = None) -> list[dict]:
+    q = select(EmpresaSil.ccm).order_by(EmpresaSil.ccm)
+    q = q.where(EmpresaSil.cidadao_id == cidadao) if cidadao else q.where(EmpresaSil.documento == documento)
+    return [_como_vizinho(_no_empresa(db, ccm), f"Titular da inscrição municipal (CCM {ccm})", "SIL · empresa", "Empresas")
+            for ccm in db.scalars(q.limit(100))]
 
 
 def _como_vizinho(no: dict, relacao: str, fonte: str, grupo: str) -> dict:
@@ -87,6 +106,20 @@ def explorar(db: Session, no_id: str) -> dict:
         for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == chave)
                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())):
             vizinhos.append(_como_vizinho(_no_imovel(db, p.codi), _rel_posse(p), "IPTU · possuidor", "Imóveis"))
+        vizinhos += _empresas_do_doc(db, cidadao=chave)
+    elif tipo == "em":
+        try:
+            ccm = int(chave)
+        except ValueError:
+            raise NoInvalido("Nó inválido") from None
+        no = _no_empresa(db, ccm)
+        e = db.get(EmpresaSil, ccm)
+        if e.cidadao_id:
+            vizinhos.append(_como_vizinho(_no_pessoa(db, e.cidadao_id), "Titular (CPF)", "SIL · empresa", "Titular"))
+        if e.documento:
+            for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.documento == e.documento)
+                                .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())):
+                vizinhos.append(_como_vizinho(_no_imovel(db, p.codi), _rel_posse(p), "IPTU · possuidor", "Imóveis"))
     elif tipo == "im":
         no = _no_imovel(db, chave)
         vistos = set()
@@ -105,6 +138,8 @@ def explorar(db: Session, no_id: str) -> dict:
         for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.documento == p0.documento)
                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())):
             vizinhos.append(_como_vizinho(_no_imovel(db, p.codi), _rel_posse(p), "IPTU · possuidor", "Imóveis"))
+        if p0.documento:
+            vizinhos += _empresas_do_doc(db, documento=p0.documento)
     else:
         raise NoInvalido("Nó inválido")
     return {"no": no, "vizinhos": vizinhos}

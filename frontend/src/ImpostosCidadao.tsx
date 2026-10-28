@@ -9,7 +9,10 @@ type LancT = { exercicio: number; tributo: string | null; parcela: number | null
   valor: number | null; valor_pago: number | null; pagamento: string | null; pago: boolean; situacao: string }
 type DivT = { codi: string; ano: number | null; natureza: number | null; inscricao: string | null; saldo: number | null
   valor_origem: number | null; protestos: number; extinta: boolean }
-export type RespTributario = { cidadao_id: string; totais: Totais; imoveis: ImovelT[]; lancamentos: LancT[]; dividas: DivT[] }
+type EmpresaT = { ccm: number; nome: string | null; documento: string; possui_debito: boolean | null; endereco: string | null
+  bairro: string | null }
+export type RespTributario = { cidadao_id: string; totais: Totais; imoveis: ImovelT[]; lancamentos: LancT[]; dividas: DivT[]
+  empresas?: EmpresaT[] }
 
 export const validaTributario = (r: unknown): r is RespTributario => !!r && typeof (r as RespTributario).totais === 'object'
   && Array.isArray((r as RespTributario).imoveis) && Array.isArray((r as RespTributario).lancamentos) && Array.isArray((r as RespTributario).dividas)
@@ -34,11 +37,12 @@ export default function ImpostosCidadao({ id, dados }: { id: string; dados?: Res
   if (falhou) return <section className="cartao impostos" aria-labelledby="t-impostos"><h3 id="t-impostos">Impostos e imóveis</h3><p className="sutil">Sem leitura dos dados tributários.</p></section>
   if (!d) return <section className="cartao impostos" aria-labelledby="t-impostos"><h3 id="t-impostos">Impostos e imóveis</h3><p className="sutil">Carregando…</p></section>
   const t = d.totais
-  const vazio = d.imoveis.length === 0 && d.lancamentos.length === 0 && d.dividas.length === 0
+  const empresas = d.empresas ?? []
+  const vazio = d.imoveis.length === 0 && d.lancamentos.length === 0 && d.dividas.length === 0 && empresas.length === 0
   return (
     <section className="cartao impostos" aria-labelledby="t-impostos">
       <h3 id="t-impostos">Impostos e imóveis</h3>
-      {vazio ? <p className="sutil">Nenhum imóvel, lançamento ou dívida ligado a este cidadão.</p> : (
+      {vazio ? <p className="sutil">Nenhum imóvel, lançamento, dívida ou empresa ligado a este cidadão.</p> : (
         <>
           <div className="impostos-totais">
             <div className="cartao"><span className="cartao-rotulo">Imóveis</span><span className="cartao-valor">{t.imoveis}</span></div>
@@ -87,6 +91,24 @@ export default function ImpostosCidadao({ id, dados }: { id: string; dados?: Res
                 </li>
               ))}
             </ul>
+          )}
+          {empresas.length > 0 && (
+            <>
+              <h4 className="impostos-sub">Empresas no CPF <span className="sutil">· inscrição municipal (SIL)</span></h4>
+              <ul className="impostos-imoveis" aria-label="Empresas">
+                {empresas.map((e) => (
+                  <li key={e.ccm}>
+                    <div>
+                      <strong>{e.nome || 'Empresa sem nome'}</strong>
+                      <span className="sutil"> · CCM {e.ccm}{e.bairro ? ` · ${e.bairro}` : ''}</span>
+                    </div>
+                    <span className={`selo ${e.possui_debito ? 'falha' : e.possui_debito === false ? 'sucesso' : 'neutro'}`}>
+                      <i aria-hidden="true" />{e.possui_debito ? 'Com débito' : e.possui_debito === false ? 'Sem débito' : 'Sem informação'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </>
       )}

@@ -609,8 +609,10 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     Documento de outros possuidores sai mascarado; a consulta é auditada (dado pessoal + fiscal)."""
     from datetime import date as _date
 
-    from app.models.camadas import DividaAtiva, Imovel, ImovelPossuidor, Lancamento
+    from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    from app.services.vinculos import mascara_doc
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
                              .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
     imoveis = {i.codi: i for i in db.scalars(select(Imovel).where(Imovel.codi.in_([p.codi for p in posses])))} if posses else {}
@@ -623,14 +625,14 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
     ativa = [d for d in divs if not d.extinta]
     audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
-                                                                  "dividas": len(divs)}, _ip(req))
+                                                                  "dividas": len(divs), "empresas": len(empresas)}, _ip(req))
     return {
         "cidadao_id": cid,
         "totais": {"imoveis": len({p.codi for p in posses if p.ativo}),
                    "em_aberto": round(sum(f(x.valor) or 0 for x in em_aberto), 2), "parcelas_em_aberto": len(em_aberto),
                    "vencido": round(sum(f(x.valor) or 0 for x in vencido), 2), "parcelas_vencidas": len(vencido),
                    "divida_ativa": round(sum(f(d.saldo) or 0 for d in ativa), 2), "inscricoes_divida": len(ativa),
-                   "protestada": any((d.protestos or 0) > 0 for d in ativa)},
+                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas)},
         "imoveis": [{"codi": p.codi, "inscricao": getattr(imoveis.get(p.codi), "inscricao", None),
                      "numero": getattr(imoveis.get(p.codi), "numero", None),
                      "complemento": getattr(imoveis.get(p.codi), "complemento", None),
@@ -645,6 +647,9 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
         "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "inscricao": d.inscricao, "saldo": f(d.saldo),
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
+        # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual
+        "empresas": [{"ccm": e.ccm, "nome": e.nome, "documento": mascara_doc(e.documento), "possui_debito": e.possui_debito,
+                      "endereco": e.endereco, "bairro": e.bairro} for e in empresas],
     }
 
 

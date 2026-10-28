@@ -137,3 +137,74 @@ def test_amostra_e_carga_completa_da_sil_ate_a_bronze(db, api_sil):
     assert rec["status"] == "sem_contagem" and rec["ok"] and rec["bronze"] == 121
     dados = db.scalar(select(RegistroBronze.dados).where(RegistroBronze.sistema_origem == "SIL").limit(1))
     assert "Email" not in dados and "Telefone" not in dados
+
+
+# ---------------------------------------------------------------- prata: empresas ligadas ao cidadão pelo CPF
+
+def _cpf(base9: str) -> str:
+    from app.identity.cpf import digitos_verificadores
+    return base9 + digitos_verificadores(base9)
+
+
+@pytest.fixture()
+def empresas_na_bronze(db):
+    from sqlalchemy import delete
+
+    from app.models.camadas import Cidadao, Identificador
+    from app.silver import tributario
+    cpf = _cpf("731450286")
+    cid = "sil-teste-cidadao-0001"
+    db.add(Cidadao(cidadao_id=cid, nome="Titular Sintetico SIL"))
+    db.add(Identificador(cidadao_id=cid, tipo="cpf", valor=cpf))
+    ex = Execucao(tipo="teste_sil", sistema="SIL", status="sucesso", usuario="teste")
+    db.add(ex)
+    db.flush()
+    linhas = [(900001, f"{cpf[:3]}.{cpf[3:6]}.{cpf[6:9]}-{cpf[9:]}", "MEI SINTETICO", "S"),
+              (900002, "12.345.678/0001-95", "LTDA SINTETICA", "N"),
+              (900003, None, "SEM DOCUMENTO", None)]
+    for ccm, doc, nome, deb in linhas:
+        db.add(RegistroBronze(sistema_origem="SIL", tabela="Empresas", id_origem=str(ccm), hash=f"h{ccm}", execucao_id=ex.id,
+                              dados={"Ccm": ccm, "CNPJCPF": doc, "Nome": nome, "PossuiDebito": deb, "Bairro": "CENTRO"}))
+    db.commit()
+    res = tributario.reconstruir(db)
+    db.commit()
+    yield cid, res
+    db.execute(delete(RegistroBronze).where(RegistroBronze.execucao_id == ex.id))
+    db.execute(delete(Identificador).where(Identificador.cidadao_id == cid))
+    db.execute(delete(Cidadao).where(Cidadao.cidadao_id == cid))
+    db.commit()
+    tributario.reconstruir(db)
+    db.commit()
+
+
+def test_prata_liga_empresa_ao_cidadao_so_pelo_cpf(db, empresas_na_bronze):
+    from app.models.camadas import EmpresaSil
+    cid, res = empresas_na_bronze
+    mei, ltda, sem = (db.get(EmpresaSil, c) for c in (900001, 900002, 900003))
+    assert mei.cidadao_id == cid and mei.tipo_pessoa == "PF" and mei.possui_debito is True
+    assert ltda.cidadao_id is None and ltda.tipo_pessoa == "PJ" and ltda.documento == "12345678000195"
+    assert sem.documento is None and sem.cidadao_id is None and sem.possui_debito is None
+    assert res["empresas"] >= 3 and res["empresas_com_cidadao"] >= 1
+
+
+def test_ficha_mostra_empresas_do_cpf_mascaradas(client, tokens, empresas_na_bronze):
+    cid, _ = empresas_na_bronze
+    r = client.get(f"/api/gold/cidadaos/{cid}/tributario", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["totais"]["empresas"] == 1
+    e = d["empresas"][0]
+    assert e["ccm"] == 900001 and e["nome"] == "MEI SINTETICO" and e["possui_debito"] is True
+    assert "731450" not in e["documento"]                          # documento sempre mascarado
+
+
+def test_vinculos_pessoa_empresa_e_volta(db, empresas_na_bronze):
+    from app.services.vinculos import explorar
+    cid, _ = empresas_na_bronze
+    pf = explorar(db, f"pf:{cid}")
+    emp = [v for v in pf["vizinhos"] if v["grupo"] == "Empresas"]
+    assert [v["id"] for v in emp] == ["em:900001"] and emp[0]["tipo"] == "EM"
+    assert any(f["texto"] == "Débito na SIL" for f in emp[0]["flags"])
+    em = explorar(db, "em:900001")
+    assert em["no"]["nome"] == "MEI SINTETICO" and "731450" not in em["no"]["doc"]
+    assert [v["id"] for v in em["vizinhos"] if v["grupo"] == "Titular"] == [f"pf:{cid}"]
