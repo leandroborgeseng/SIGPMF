@@ -239,6 +239,41 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
+# Rotas fixas da SIL antes de /conectores/{conector}/amostra (a ordem decide o casamento).
+@api.post("/conectores/sil/amostra", status_code=202)
+def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """SIL9 (TL 27/10): amostra SIL (consultarlote, UM lote) só para admin, auditada, em background (202).
+    Auditoria: usuário, horário (criado_em), id da execução e contagens; nunca documentos, URL ou credenciais."""
+    from app.connectors.sil.cliente import SilDesabilitado
+    from app.services import amostra_sil as sil
+    audita(db, u.email, "amostra_sil_solicitada", "conector:sil", ip=_ip(req))
+    try:
+        ex = sil.iniciar_amostra(db, u.email)
+    except SilDesabilitado as exc:
+        audita(db, u.email, "amostra_sil_recusada", "conector:sil", {"motivo": "desligado"}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except sil.Conflito as exc:
+        audita(db, u.email, "amostra_sil_conflito", "conector:sil", ip=_ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.LOTES_POR_EXECUCAO},
+           _ip(req))
+    db.expire_all()  # disparo síncrono nos testes: devolve o estado final
+    return _exec_sil(db.get(Execucao, ex.id))
+
+
+def _exec_sil(ex: Execucao) -> dict:
+    return {**_exec(ex), "etapa": ex.etapa, "atualizado_em": ex.atualizado_em, "em_andamento": ex.status == "em_andamento"}
+
+
+@api.get("/conectores/sil/amostra/{eid}")
+def sil_amostra_situacao(eid: int, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    from app.connectors.sil import carga
+    ex = db.get(Execucao, eid)
+    if ex is None or ex.tipo != carga.TIPO_EXECUCAO:
+        _404()
+    return _exec_sil(ex)
+
+
 @api.post("/conectores/{conector}/amostra", status_code=202)
 def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """PB13: carga real por conector, só pela política de tabelas, TOP (AMOSTRA_LIMITE). Admin, auditado.
@@ -276,6 +311,18 @@ def amostra_situacao(conector: str, eid: int, u: Usuario = Depends(admin_auditad
     if ex is None or ex.sistema != cc.CONECTORES[conector][0] or ex.tipo not in cc.TIPOS_AMOSTRA:
         _404()
     return _exec_amostra(ex)
+
+
+@api.get("/conectores/sil/status")
+def sil_status(u: Usuario = Depends(admin_auditado)):
+    """Conector SIL (somente leitura): se está ligado e quais consultas estão mapeadas. Nunca devolve URL, id ou
+    segredo; não chama a SIL."""
+    from app.connectors.sil.cliente import GET_PERMITIDOS
+    from app.connectors.sil.config import ConfigSil
+    from app.connectors.sil.endpoints import ENDPOINTS
+    return {**ConfigSil.do_ambiente().resumo_publico(), "rotas_permitidas": sorted(GET_PERMITIDOS),
+            "endpoints": {n: {"caminho": e.caminho, "parametro": e.parametro, "paginado": e.paginado}
+                          for n, e in ENDPOINTS.items()}}
 
 
 @api.get("/conectores/{conector}/bloqueio")
