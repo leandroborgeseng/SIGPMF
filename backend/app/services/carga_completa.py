@@ -361,14 +361,38 @@ def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, Che
     return cps
 
 
-def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str) -> None:
+STATUS_PARCIAL = "parcial"
+
+
+def _parcial(conn) -> dict | None:
+    """Leitor com teto de lotes (API SIL): {"parcial": True, "lotes_lidos": n, "ha_mais": True} quando parou no teto e a
+    origem ainda tem dados; None nos demais leitores e quando a origem acabou."""
+    f = getattr(conn, "parcial", None)
+    return f() if callable(f) else None
+
+
+def _finaliza_parcial(db: Session, ex: Execucao, conector: str, parcial: dict, t_leitura: float) -> None:
+    """Execução PARCIAL (teto de lotes): não é carga completa. Checkpoint fica aberto (a próxima execução continua do
+    último CCM), não há reconciliação, prata/ouro NÃO são reconstruídas e camadas_estado não muda. A agenda não
+    marca ultima_completa_em nem a assinatura (status != sucesso)."""
+    ex.tabela_atual = None
+    _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, **parcial})
+    ex.etapa, ex.atualizado_em = "concluida", datetime.now(UTC)
+    _finaliza(db, ex, STATUS_PARCIAL,
+              f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem de {NOMES[conector]} "
+              f"(teto SIL_MAX_LOTES_POR_EXECUCAO). lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados}. "
+              "Não é carga completa: prata e ouro não foram reconstruídas; a próxima execução continua de onde parou.",
+              extra=parcial)
+
+
+def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str, extra: dict | None = None) -> None:
     ex.status, ex.mensagem, ex.finalizado_em = status, mensagem, datetime.now(UTC)
-    nivel = "ERROR" if status == "falha" else "WARN" if status in ("pausada", "cancelada") else "INFO"
+    nivel = "ERROR" if status == "falha" else "WARN" if status in ("pausada", "cancelada", STATUS_PARCIAL) else "INFO"
     db.add(Log(execucao_id=ex.id, nivel=nivel, mensagem=mensagem))
     db.commit()
     audita(db, ex.usuario, "carga_completa_finalizada", f"execucao:{ex.id}",
            {"resultado": status, "lidas": ex.lidos, "gravadas": ex.novos + ex.atualizados, "ignoradas": ex.ignorados,
-            "total_origem": ex.total_origem})
+            "total_origem": ex.total_origem, **(extra or {})})
 
 
 def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
@@ -460,10 +484,14 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 cp.posicao += len(linhas)
                 cp.execucao_id = ex.id
                 cp.atualizado_em = datetime.now(UTC)
-                cp.concluida = len(linhas) < s.carga_lote
+                parcial = _parcial(conn)
+                # Teto de lotes (SIL_MAX_LOTES_POR_EXECUCAO) com a origem ainda tendo dados: o checkpoint NÃO fecha.
+                cp.concluida = parcial is None and len(linhas) < s.carga_lote
                 ex.etapa, ex.total_etapa, ex.atualizado_em = "leitura", ex.total_origem, datetime.now(UTC)
                 ex.processadas_etapa = sum(c.posicao for c in cps.values())
                 db.commit()  # bronze do lote + checkpoint + progresso: tudo ou nada
+                if parcial is not None:
+                    return _finaliza_parcial(db, ex, conector, parcial, t_leitura)
                 if cp.concluida:
                     break
                 if s.carga_pausa_ms:
@@ -725,6 +753,10 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                 ex.processadas_etapa = (ex.processadas_etapa or 0) + len(linhas)
                 ex.atualizado_em = datetime.now(UTC)
                 db.commit()
+                parcial = _parcial(conn)
+                if parcial is not None:
+                    ex.tabela_atual = None
+                    return _finaliza_parcial(db, ex, conector, parcial, t_leitura)
                 if len(linhas) < s.carga_lote:
                     break
                 if s.carga_pausa_ms:

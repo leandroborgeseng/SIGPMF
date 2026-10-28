@@ -1,70 +1,55 @@
-"""Conector da API SIL (tributário novo), SOMENTE LEITURA (só GET de consulta; nunca os POST de atualização).
+"""Conector da API SIL (tributário novo), SOMENTE LEITURA, como leitor da carga genérica (amostra, carga completa, agenda).
 
-Mesma interface de leitor que o SqlServerConnector usa na amostra, na carga completa e na agenda (abrir, ler_pagina,
-ler_amostra, verificar_chave, assinatura), para a SIL entrar no mesmo carregador, monitor e agenda.
+Mesma interface de leitor que o SqlServerConnector (abrir, ler_pagina, ler_amostra, verificar_chave, assinatura), para a
+SIL entrar no mesmo carregador, monitor e agenda e cair em silver.empresas_sil.
 
-Empresas: GET /franca/empresa/consultarlote?Sequencia=N devolve as próximas 50 empresas com CCM >= N (conferido em
-produção em 28/10/2026). Paginação por keyset: a próxima chamada começa no último CCM + 1; acaba quando vem vazio.
-A API não tem contagem nem data de alteração: a carga é sempre completa e a reconciliação fica "sem contagem".
+Unificação (TL 28/10): este leitor NÃO fala HTTP. Toda chamada passa pelo ClienteSil (cliente.py): allowlist
+(checa_operacao) antes de qualquer rede, homologação (sandbox) primeiro, produção só em erro de rede, expires_in
+validado, token com trava, retry/backoff/throttle e logs sem segredo. Não existe outro caminho HTTP no pacote.
 
-Token OAuth2 (client_credentials, expira em ~10 min) renovado sozinho; 401 renova e repete uma vez; 429/5xx/rede
-repetem com espera. Nenhuma mensagem leva token, secret ou client_id. E-mail e telefone da empresa não entram.
+Empresas: GET /franca/empresa/consultarlote?Sequencia=N devolve as próximas 50 empresas com CCM >= N. Paginação por
+keyset (último CCM + 1); acaba em lista vazia/404. Teto de lotes por execução (SIL_MAX_LOTES_POR_EXECUCAO, padrão 1)
+até a primeira amostra ser validada. E-mail e telefone da empresa não entram.
 """
 import logging
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 import httpx
 
-from app.core.config import Settings, get_settings
+from app.connectors.sil.cliente import ClienteSil, ErroSil, SilDesabilitado
+from app.connectors.sil.config import ConfigSil
+
+__all__ = ["ConfigSil", "ErroSil", "SilConnector", "achata_empresa"]
 
 log = logging.getLogger("sigpmf.sil")
 
 LOTE_API = 50
+CAMINHO_LOTE = "/franca/empresa/consultarlote"
 TABELA_EMPRESAS = "Empresas"
 COLUNAS_EMPRESAS = ("Ccm", "CNPJCPF", "Nome", "PossuiDebito", "Endereco", "Bairro", "CEP", "Complemento",
                     "AreaOcupada", "AreaUtilizada")
-
-
-class ErroSil(RuntimeError):
-    """Falha da API SIL com mensagem segura (sem token, secret nem client_id)."""
-
-
-@dataclass(repr=False)
-class ConfigSil:
-    base_url: str | None
-    client_id: str | None
-    client_secret: str | None
-    scope: str | None
-    grant_type: str = "client_credentials"
-    timeout: int = 60
-    intervalo_ms: int = 150
-    amostra_limite: int = 1000
-
-    @classmethod
-    def do_ambiente(cls, s: Settings | None = None) -> "ConfigSil":
-        s = s or get_settings()
-        return cls(s.sil_base_url, s.sil_client_id, s.sil_client_secret, s.sil_scope, s.sil_grant_type,
-                   int(s.sil_timeout), int(s.sil_intervalo_ms), int(s.amostra_limite))
-
-    def configurado(self) -> bool:
-        return bool(self.base_url and self.client_id and self.client_secret)
-
-    def __repr__(self) -> str:  # nunca expõe credenciais (logs, tracebacks)
-        return f"ConfigSil(base_url={self.base_url!r}, client_id=***, client_secret=***, scope=***, timeout={self.timeout})"
-
-    __str__ = __repr__
+MSG_NAO_CONFIGURADA = "API SIL não configurada no ambiente (SIL_BASE_URL, SIL_CLIENT_ID, SIL_CLIENT_SECRET)."
 
 
 class _Sessao:
-    """Uma 'conexão' da carga: cliente HTTP + token vigente."""
+    """Uma 'conexão' da carga: o ClienteSil e quantos lotes já foram lidos nesta execução."""
 
-    def __init__(self, cliente: httpx.Client):
-        self.cliente, self.token, self.expira = cliente, None, 0.0
+    def __init__(self, cliente: ClienteSil):
+        self.cliente, self.lotes, self.truncado = cliente, 0, False
+        self.ultimo_lote_cheio = False  # o último lote veio com LOTE_API itens: a API provavelmente tem mais
+
+    @property
+    def ha_mais(self) -> bool:
+        """Parou no teto de lotes com a API ainda devolvendo lotes cheios: a execução é PARCIAL."""
+        return self.truncado and self.ultimo_lote_cheio
+
+    def parcial(self) -> dict | None:
+        return {"parcial": True, "lotes_lidos": self.lotes, "ha_mais": True} if self.ha_mais else None
 
     def close(self) -> None:
-        self.cliente.close()
+        self.cliente.fechar()
 
 
 def _txt(v: Any) -> str | None:
@@ -84,78 +69,51 @@ def achata_empresa(e: dict) -> dict:
             "AreaUtilizada": _txt(e.get("AreaUtilizada"))}
 
 
-def _segundos(v: Any) -> int:
-    try:
-        return int(str(v).rstrip("s"))
-    except (TypeError, ValueError):
-        return 600
+def _empresas(j: Any) -> list | None:
+    """Lista de empresas da resposta: {"empresas": [...]} (visto em produção) ou {"data": {"empresas": [...]}} (doc)."""
+    if isinstance(j, dict):
+        if isinstance(j.get("empresas"), list):
+            return j["empresas"]
+        d = j.get("data")
+        if isinstance(d, dict) and isinstance(d.get("empresas"), list):
+            return d["empresas"]
+    return None
 
 
 class SilConnector:
     def __init__(self, config: ConfigSil | None = None, nome: str = "sil", transporte: httpx.BaseTransport | None = None,
-                 esperar=time.sleep):
+                 esperar: Callable[[float], None] = time.sleep, relogio: Callable[[], float] = time.monotonic,
+                 amostra_limite: int | None = None, max_lotes: int | None = None):
         self.config = config or ConfigSil.do_ambiente()
-        self.nome, self._transporte, self._esperar = nome, transporte, esperar
+        self.nome, self._transporte, self._esperar, self._relogio = nome, transporte, esperar, relogio
+        if amostra_limite is None:
+            from app.core.config import get_settings
+            amostra_limite = int(get_settings().amostra_limite)
+        self.amostra_limite = amostra_limite
+        self.max_lotes = max(1, int(max_lotes or self.config.max_lotes_por_execucao or 1))
+        self.ultima_parcial: dict | None = None
 
-    # ------------------------------------------------------------------ HTTP
+    # ------------------------------------------------------------------ HTTP (só pelo ClienteSil)
     def abrir(self) -> _Sessao:
-        if not self.config.configurado():
-            raise ErroSil("API SIL não configurada no ambiente (SIL_BASE_URL, SIL_CLIENT_ID, SIL_CLIENT_SECRET).")
-        base = self.config.base_url.rstrip("/") + "/"
-        return _Sessao(httpx.Client(base_url=base, timeout=self.config.timeout, transport=self._transporte))
-
-    def _autentica(self, s: _Sessao) -> None:
-        c = self.config
-        try:
-            r = s.cliente.post("api/authenticate", data={
-                "client_id": c.client_id, "client_secret": c.client_secret, "grant_type": c.grant_type,
-                "scope": c.scope or ""})
-        except httpx.HTTPError as exc:
-            raise ErroSil(f"API SIL não respondeu na autenticação ({type(exc).__name__}).") from None
-        if r.status_code != 200:
-            raise ErroSil(f"API SIL recusou a autenticação (HTTP {r.status_code}). Conferir SIL_CLIENT_ID/SECRET/SCOPE.")
-        j = r.json()
-        if "access_token" not in j:
-            raise ErroSil("API SIL não devolveu token na autenticação.")
-        s.token, s.expira = j["access_token"], time.monotonic() + _segundos(j.get("expires_in"))
-
-    def _get(self, s: _Sessao, caminho: str, params: dict) -> tuple[int, Any]:
-        renovou = False
-        for tentativa in range(4):
-            if s.token is None or time.monotonic() > s.expira - 60:
-                self._autentica(s)
-            try:
-                r = s.cliente.get(caminho, params=params, headers={"Authorization": f"Bearer {s.token}"})
-            except httpx.HTTPError as exc:
-                if tentativa == 3:
-                    raise ErroSil(f"API SIL não respondeu ({type(exc).__name__}) em {caminho}.") from None
-                self._esperar(2 ** tentativa)
-                continue
-            if r.status_code == 401 and not renovou:
-                s.token, renovou = None, True
-                continue
-            if r.status_code == 429 or r.status_code >= 500:
-                if tentativa == 3:
-                    raise ErroSil(f"API SIL indisponível (HTTP {r.status_code}) em {caminho}.")
-                self._esperar(2 ** tentativa)
-                continue
-            if self.config.intervalo_ms:
-                self._esperar(self.config.intervalo_ms / 1000)  # gentileza com a API do fornecedor
-            try:
-                return r.status_code, r.json()
-            except ValueError:
-                return r.status_code, None
-        raise ErroSil(f"API SIL não respondeu em {caminho}.")
+        if not self.config.habilitado:
+            raise SilDesabilitado(MSG_NAO_CONFIGURADA)
+        return _Sessao(ClienteSil(self.config, transport=self._transporte, relogio=self._relogio, dormir=self._esperar))
 
     # ------------------------------------------------------------------ empresas
     def lote_empresas(self, s: _Sessao, sequencia: int) -> list[dict]:
-        st, j = self._get(s, "franca/empresa/consultarlote", {"Sequencia": int(sequencia)})
-        if isinstance(j, dict) and isinstance(j.get("empresas"), list):
-            linhas = [achata_empresa(x.get("empresa") or {}) for x in j["empresas"] if (x.get("empresa") or {}).get("Ccm")]
-            return sorted((r for r in linhas if r["Ccm"] >= sequencia), key=lambda r: r["Ccm"])
-        if st in (200, 204, 404):  # fim da sequência (sem lista)
+        j = s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)})  # allowlist + token + retry no ClienteSil
+        s.lotes += 1
+        if j is None:  # 404: fim da sequência
             return []
-        raise ErroSil(f"Resposta inesperada da API SIL em empresa/consultarlote (HTTP {st}).")
+        itens = _empresas(j)
+        s.ultimo_lote_cheio = isinstance(itens, list) and len(itens) >= LOTE_API
+        if itens is None:
+            if isinstance(j, dict) and not j:
+                return []
+            raise ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
+        linhas = [achata_empresa(x.get("empresa") or {}) for x in itens
+                  if isinstance(x, dict) and (x.get("empresa") or {}).get("Ccm")]
+        return sorted((r for r in linhas if r["Ccm"] >= sequencia), key=lambda r: r["Ccm"])
 
     # ------------------------------------------------------------------ interface de leitor
     def _checa_tabela(self, tabela: str) -> None:
@@ -164,23 +122,38 @@ class SilConnector:
 
     def ler_pagina(self, conn: _Sessao, tabela: str, politica, ordem, ultima: tuple | None, limite: int,
                    desde=None) -> list[dict]:
-        """Keyset por CCM: acumula lotes de 50 até `limite` ou até a API acabar (lote vazio)."""
+        """Keyset por CCM: acumula lotes de 50 até `limite`, até a API acabar ou até o teto de lotes da execução
+        (`max_lotes`, por sessão). No teto devolve o que leu e as próximas chamadas devolvem [] (fim da execução)."""
         self._checa_tabela(tabela)
         seq = int(ultima[0]) + 1 if ultima and ultima[0] is not None else 1
         out: list[dict] = []
         while len(out) < limite:
+            if conn.lotes >= self.max_lotes:
+                if not conn.truncado:
+                    conn.truncado = True
+                    log.info("SIL: teto de %d lote(s) por execução atingido (SIL_MAX_LOTES_POR_EXECUCAO)",
+                             self.max_lotes)
+                break
             lote = self.lote_empresas(conn, seq)
             if not lote:
                 break
             out.extend(lote)
-            seq = lote[-1]["Ccm"] + 1
+            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+                conn.truncado = True  # teto atingido e a API ainda tem lotes: execução parcial
+            prox = lote[-1]["Ccm"] + 1
+            if prox <= seq:  # nunca repete a mesma Sequencia
+                break
+            seq = prox
         return out
 
     def ler_amostra(self, tabela: str, politica=None, campo_incremental=None, desde=None) -> list[dict]:
         conn = self.abrir()
         try:
-            return self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.config.amostra_limite)[
-                : self.config.amostra_limite]
+            out = self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.amostra_limite)[: self.amostra_limite]
+            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+                conn.truncado = True
+            self.ultima_parcial = conn.parcial()  # a amostra genérica registra "parcial" na execução e na auditoria
+            return out
         finally:
             conn.close()
 
@@ -196,10 +169,11 @@ class SilConnector:
         return [None, "indisponivel"]  # sem contagem/data na API: a agenda nunca pula a SIL
 
     def testar_conexao(self) -> dict:
+        """Só a autenticação (sondagem sandbox-first do ClienteSil); nenhum GET de dados."""
         try:
             s = self.abrir()
             try:
-                self._autentica(s)
+                s.cliente.sondar()
             finally:
                 s.close()
             return {"ok": True, "erro": None}
