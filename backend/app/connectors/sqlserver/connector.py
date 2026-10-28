@@ -31,15 +31,17 @@ class ConfigSqlServer:
     password: str | None
     timeout: int
     amostra_limite: int
+    consulta_timeout: int = 120  # por consulta (o `timeout` acima vale para o login)
 
     @classmethod
     def do_ambiente(cls, s: Settings) -> "ConfigSqlServer":
         return cls(s.sqlserver_host, int(s.sqlserver_port), s.sqlserver_database, s.sqlserver_user,
-                   s.sqlserver_password, int(s.sqlserver_timeout), int(s.amostra_limite))
+                   s.sqlserver_password, int(s.sqlserver_timeout), int(s.amostra_limite),
+                   int(s.sqlserver_consulta_timeout))
 
     def __repr__(self) -> str:  # nunca expõe host, usuário nem senha (logs, tracebacks)
         return (f"ConfigSqlServer(host=***, port={self.port}, database={self.database!r}, user=***, password=***, "
-                f"timeout={self.timeout}, amostra_limite={self.amostra_limite})")
+                f"timeout={self.timeout}, consulta_timeout={self.consulta_timeout}, amostra_limite={self.amostra_limite})")
 
     __str__ = __repr__
 
@@ -109,7 +111,7 @@ class SqlServerConnector:
         c = self.config
         # Coolify entrega variáveis como texto: porta e timeout sempre int
         return pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
-                               database=c.database, login_timeout=int(c.timeout), timeout=int(c.timeout),
+                               database=c.database, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
                                autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
 
     def testar_conexao(self) -> dict[str, Any]:

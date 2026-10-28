@@ -59,6 +59,14 @@ def executa_somente_leitura(conn, sql: str, params: tuple | None = None, *, limi
     try:
         cur = conn.cursor(as_dict=True) if como_dict else conn.cursor()
         cur.execute(texto, params)
-        return list(cur.fetchmany(int(limite)))
-    finally:
-        conn.rollback()
+        linhas = list(cur.fetchmany(int(limite)))
+    except BaseException:
+        # Timeout/queda: o driver fecha a conexão e o ROLLBACK falha com "Not connected" (MSSQLDriverException),
+        # que esconderia o erro verdadeiro. Tenta o ROLLBACK e propaga SEMPRE o erro original.
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    conn.rollback()
+    return linhas

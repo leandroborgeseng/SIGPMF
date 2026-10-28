@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     financeiro_exercicio_min: int | None = Field(None, alias="FINANCEIRO_EXERCICIO_MIN", ge=1990, le=2100)
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
     sqlserver_password: str | None = Field(None, alias="SQLSERVER_PASSWORD")
-    sqlserver_timeout: int = Field(5, alias="SQLSERVER_TIMEOUT")
+    sqlserver_timeout: int = Field(5, alias="SQLSERVER_TIMEOUT")  # login (conexão)
+    # Tempo máximo de cada consulta. Contagem/MAX de tabelas grandes (ex.: Consultas da Saúde) passa de 5 s.
+    sqlserver_consulta_timeout: int = Field(120, alias="SQLSERVER_CONSULTA_TIMEOUT")
     amostra_limite: int = Field(1000, alias="AMOSTRA_LIMITE", ge=1, le=10000)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)

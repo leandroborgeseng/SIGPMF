@@ -140,14 +140,43 @@ def proxima(ag: Agendamento, agora: datetime, ini: int, fim: int) -> datetime | 
 # ---------------------------------------------------------------- origem
 
 def assinatura_origem(leitor, sistema: str) -> dict[str, list]:
-    """AG3: {tabela: [linhas, max(campo incremental)]}, uma consulta leve por tabela (guard, sem ler registros)."""
+    """AG3: {tabela: [linhas, max(campo incremental)]}, uma consulta leve por tabela (guard, sem ler registros).
+
+    Uma tabela que falha (ex.: timeout numa tabela grande) vira [None, "indisponivel"] — assinatura desconhecida, logo
+    a carga RODA (não pula) — e a conexão é reaberta para as próximas. Só levanta se TODAS falharem (origem fora),
+    com a tabela na mensagem (FalhaLeitura)."""
+    from app.services.diagnostico import FalhaLeitura
     pol = politica(sistema)
+    tabelas = cc.tabelas_do_conector(sistema)
+    out: dict[str, list] = {}
+    primeira: FalhaLeitura | None = None
     conn = leitor.abrir()
     try:
-        return {t: leitor.assinatura(conn, t, pol, MAPEAMENTOS[(sistema, t)].get("campo_incremental"))
-                for t in cc.tabelas_do_conector(sistema)}
+        for t in tabelas:
+            try:
+                out[t] = leitor.assinatura(conn, t, pol, MAPEAMENTOS[(sistema, t)].get("campo_incremental"))
+            except Exception as exc:  # noqa: BLE001
+                primeira = primeira or FalhaLeitura(t, exc)
+                log.warning("assinatura de %s.%s indisponível (%s); a carga roda sem pular", sistema, t,
+                            type(exc).__name__)
+                out[t] = [None, "indisponivel"]
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                conn = leitor.abrir()
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if primeira is not None and all(v == [None, "indisponivel"] for v in out.values()):
+        raise primeira
+    return out
+
+
+def _tem_indisponivel(assin: dict | None) -> bool:
+    return any(v == [None, "indisponivel"] for v in (assin or {}).values())
 
 
 # ---------------------------------------------------------------- alerta
@@ -239,7 +268,7 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
             return _encerra(db, ag, "falha", f"Não foi possível consultar a origem de {nome}: "
                                              f"{motivo_seguro(c['classe'], c['numero'], c['tabela'], c['objeto'])}.",
                             agora, resolvido=False)
-        if ag.assinatura_origem == assin and anterior in RESOLVIDOS:
+        if ag.assinatura_origem == assin and anterior in RESOLVIDOS and not _tem_indisponivel(assin):
             return _encerra(db, ag, "sem_mudanca", f"A origem de {nome} não mudou desde a última carga: nada foi lido.",
                             agora, resolvido=True)
     modo = modo_da_vez(ag, agora)
