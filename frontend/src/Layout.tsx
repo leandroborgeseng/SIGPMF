@@ -82,6 +82,7 @@ export default function Layout() {
         <div className="rodape-lateral">
           <div className="usuario-nome">{sessao?.nome}</div>
           <div className="perfil">Perfil: {sessao?.perfil}</div>
+          <div className="perfil" title="Versão publicada">Build {__VERSAO__}</div>
           <button className="btn secundario" onClick={sair}>Sair</button>
         </div>
       </aside>

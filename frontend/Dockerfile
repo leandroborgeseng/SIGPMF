@@ -2,6 +2,8 @@ FROM node:20-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+ARG SOURCE_COMMIT=
+ENV SOURCE_COMMIT=$SOURCE_COMMIT
 COPY . .
 RUN npm run build
 
