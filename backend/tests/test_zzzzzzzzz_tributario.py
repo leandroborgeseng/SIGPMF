@@ -153,3 +153,26 @@ def test_tr8_conectores_tributarios_no_catalogo_e_na_agenda(client, tokens):
     itens = {i["conector"]: i for i in st["itens"]}
     assert {"iptu", "divida", "financeiro"} <= set(itens) and not itens["financeiro"]["ativo"]
     assert "financeiro" in ccomp.CONECTORES_COMPLETA and agenda.USUARIO == "agenda"
+
+
+def test_tr1_exercicio_minimo_vazio_no_env_e_nulo(monkeypatch):
+    monkeypatch.setenv("FINANCEIRO_EXERCICIO_MIN", "")
+    get_settings.cache_clear()
+    assert get_settings().financeiro_exercicio_min is None  # como vem do .env.example: o backend precisa subir
+    get_settings.cache_clear()
+
+
+def test_env_example_sobe_as_configuracoes(monkeypatch):
+    """O CI sobe o compose com o .env.example: toda variável dele precisa ser aceita pela configuração."""
+    import os
+
+    from app.core.config import Settings
+    raiz = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for linha in open(os.path.join(raiz, ".env.example"), encoding="utf-8"):
+        linha = linha.strip()
+        if linha and not linha.startswith("#") and "=" in linha:
+            k, v = linha.split("=", 1)
+            monkeypatch.setenv(k, v)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x@localhost/x")
+    monkeypatch.setenv("JWT_SECRET", "segredo-de-teste-com-32-caracteres!!")
+    Settings()  # não pode levantar ValidationError
