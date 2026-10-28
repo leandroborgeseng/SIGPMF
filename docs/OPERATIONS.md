@@ -79,3 +79,11 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - Saúde do cidadão: `GET /api/gold/cidadaos/{id}/saude` (próximos agendamentos, atendimentos, vacinas; auditada).
 - Ouro agregado: `gold.indicadores` (série, período, dimensão, valor; sem pessoa; grupos de saúde com menos de 5 casos
   suprimidos). API `GET /api/indicadores?series=kpi,saude_atend_mes,...` para os painéis.
+
+## Explorador de vínculos (onda 6, VN1–VN5)
+- Tela **Dados → Explorador de vínculos** (só `admin` e `admin_lgpd`): parte de uma pessoa e abre, um nível por clique,
+  imóveis → outros possuidores (pessoas e empresas) → os imóveis deles, até 3 níveis.
+- `GET /api/vinculos/{no}?motivo=&processo=&nivel=`: motivo obrigatório (mínimo `REVELAR_MOTIVO_MIN`); ids opacos
+  (`pf:` cidadão, `im:` imóvel, `ps:` possuidor sem cidadão) — CPF/CNPJ nunca vão na URL e saem mascarados; cada
+  abertura auditada como `consulta_vinculos` (alvo = cidadão quando é pessoa).
+- Sócios de empresas (ISS) e família (Senior/CadÚnico) entram como novos tipos de vínculo quando esses conectores forem ligados.

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
@@ -18,7 +19,8 @@ export default function Simulador() {
   const [lista, setLista] = useState<Item[] | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(false)
-  const [sel, setSel] = useState<string | null>(null)
+  const [params] = useSearchParams()
+  const [sel, setSel] = useState<string | null>(params.get('cid'))  // VN5: "Abrir ficha completa" do explorador
 
   const buscar = async (e?: FormEvent) => {
     e?.preventDefault()

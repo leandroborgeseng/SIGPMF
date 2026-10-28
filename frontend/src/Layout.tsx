@@ -16,6 +16,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/conectores', rotulo: 'Conectores', curto: 'Conectores' },
     { to: '/simulador', rotulo: 'Simulador do Cidadão', curto: 'Simulador' },
     { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
+    { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },
   ] },
 ]
 // Barra inferior do celular: só os atalhos principais (o menu lateral tem todos)

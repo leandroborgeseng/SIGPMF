@@ -716,6 +716,29 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
                                             "quando": a.criado_em} for a in regs]}
 
 
+@api.get("/vinculos/{no_id}")
+def explorar_vinculos(no_id: str, req: Request, motivo: str = "", processo: str = "", nivel: int = 0,
+                      u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """VN1–VN4: vizinhos diretos de um nó (pessoa, imóvel ou possuidor). Só admin e admin_lgpd; motivo obrigatório;
+    até NIVEL_MAXIMO níveis a partir do ponto de partida; cada abertura auditada (alvo = cidadão quando é pessoa)."""
+    from app.services import vinculos as vn
+    if u.perfil not in ("admin", "admin_lgpd"):
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    if len(motivo.strip()) < get_settings().revelar_motivo_min:
+        raise HTTPException(422, f"Informe o motivo da consulta (mínimo de {get_settings().revelar_motivo_min} caracteres).")
+    if nivel > vn.NIVEL_MAXIMO:
+        raise HTTPException(422, f"Limite de {vn.NIVEL_MAXIMO} níveis a partir do ponto de partida.")
+    try:
+        r = vn.explorar(db, no_id)
+    except vn.NoInvalido:
+        _404()
+    alvo = f"cidadao:{r['no']['cidadao_id']}" if r["no"]["cidadao_id"] else f"vinculo:{r['no']['id']}"
+    audita(db, u.email, "consulta_vinculos", alvo, {"no": r["no"]["id"], "nivel": nivel, "motivo": motivo.strip()[:300],
+                                                    "processo": processo.strip()[:60], "vizinhos": len(r["vizinhos"])}, _ip(req))
+    return {**r, "nivel": nivel, "nivel_maximo": vn.NIVEL_MAXIMO}
+
+
 @api.get("/gold/cidadaos/{cid}/sistemas")
 def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()

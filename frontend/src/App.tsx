@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
 import Login from './pages/Login'
 import Simulador from './pages/Simulador'
+import Vinculos from './pages/Vinculos'
 import { MonitorCargas, PainelFazenda, PainelGeral, PainelSaude } from './paineis/Paineis'
 
 function Protegido({ children }: { children: ReactNode }) {
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/painel/saude" element={<PainelSaude />} />
         <Route path="/painel/fazenda" element={<PainelFazenda />} />
         <Route path="/monitor" element={<MonitorCargas />} />
+        <Route path="/vinculos" element={<Vinculos />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
