@@ -30,7 +30,6 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
-from app.connectors.sqlserver.connector import SqlServerConnector
 from app.connectors.sqlserver.politicas import politica
 from app.core import recursos
 from app.core.audit import audita
@@ -47,8 +46,9 @@ from app.silver import processamento
 TIPO = "carga_completa_conector"
 MODOS = ("completa", "incremental")
 MSG_CAMADAS_MANTIDAS = "Nada mudou nas entradas da prata e do ouro: reconstrução pulada (resultado idêntico)."
-CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro")
-NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro"}
+CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil")
+NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro",
+         "sil": "API SIL"}
 
 
 SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
@@ -101,6 +101,8 @@ def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
     s = get_settings()
     limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
     nulos, total = v["nulos"], v["total"]
+    if total is None:  # origem sem contagem (API SIL): a chave é a da própria API, única e nunca nula
+        return None
     if nulos:
         pct = 100.0 * nulos / total if total else 100.0
         if total > 0 and nulos >= total:  # ressalva do Tester no #17: tabela inteira com chave nula sempre para
@@ -196,9 +198,9 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     return None
 
 
-def leitor_padrao(conector: str, db: Session) -> SqlServerConnector:
+def leitor_padrao(conector: str, db: Session):
     cfg, _ = cc.config_do_conector(conector, db)
-    return SqlServerConnector(cfg, nome=conector)
+    return cc.leitor_de(conector, cfg)
 
 
 def estimativa(db: Session, conector: str, leitor=None) -> dict:
@@ -211,7 +213,7 @@ def estimativa(db: Session, conector: str, leitor=None) -> dict:
         tabs = verificar_chaves(leitor, conn, sistema, pol)  # ChaveInvalida -> 409 na rota
     finally:
         conn.close()
-    return {"tabelas": tabs, "total": sum(tabs.values())}
+    return {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
 
 
 def ativa(db: Session, sistema: str) -> Execucao | None:
@@ -589,7 +591,10 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
                 RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
                 RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))) or 0)
         b, q = conta(False), conta(True)
-        ok = cp.total_origem is not None and b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
+        if cp.total_origem is None:  # origem sem contagem (API SIL): não há com o que comparar
+            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ok": True, "status": "sem_contagem"}
+            continue
+        ok = b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
         out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ok": ok,
                           "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
     return out

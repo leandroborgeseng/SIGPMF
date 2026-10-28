@@ -32,6 +32,7 @@ BASES: list[tuple] = [
     ("IPTU", _P, _A, _I, 7, ["IPTU"], "iptu", "Cadastro imobiliário e possuidores do IPTU (fatos, sem criar cidadão)"),
     ("Divida", _P, _A, _I, 8, ["DIVIDA"], "divida", "Dívida ativa (débitos do cidadão no painel)"),
     ("Financeiro", _P, _A, _I, 9, ["FINANCEIRO"], "financeiro", "Lançamentos tributários do exercício atual e anterior"),
+    ("API SIL", _P, _A, _I, 10, ["SIL"], "sil", "API REST do tributário novo (SIL): empresas por CCM, só leitura"),
     ("Alvara", _B, _A, _T, 9, [], None, "Alvarás (sem CPF); indicador de licenciamento"),
     ("IntegracaoJuridicoDivida", _P, _A, _T, 10, [], None, "Dívida ativa judicial: cadastros, CDAs, acordos (painel)"),
     # ---- analisados, sem fila ----

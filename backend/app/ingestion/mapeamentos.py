@@ -32,6 +32,8 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
+    # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
+    ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
     ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",
                                                                "Referencia", "Renovacao", "Parcela", "Duplicidade"),
                                              "campo_incremental": "Data_Ultima_Alteracao_Registro"},
@@ -78,7 +80,8 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
 
 NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
                   "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)",
-                  "IPTU": "IPTU — imóveis e possuidores", "DIVIDA": "Dívida ativa", "FINANCEIRO": "Lançamentos tributários"}
+                  "IPTU": "IPTU — imóveis e possuidores", "DIVIDA": "Dívida ativa", "FINANCEIRO": "Lançamentos tributários",
+                  "SIL": "API SIL — empresas"}
 
 
 def chave_origem(m: dict, dados: dict) -> str:

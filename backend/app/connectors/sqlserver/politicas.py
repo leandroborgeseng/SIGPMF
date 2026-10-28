@@ -238,8 +238,17 @@ FINANCEIRO = Politica(
     proibidas=frozenset({"Documento", "Arquivo", "Linha"}),
 )
 
+# API SIL (REST, não SQL): a política só fixa as colunas gravadas na bronze (o conector já achata o JSON nelas).
+# E-mail, telefone e endereço de entrega da empresa ficam fora.
+SIL = Politica(
+    sistema="SIL", base="API SIL",
+    colunas={"Empresas": ("Ccm", "CNPJCPF", "Nome", "PossuiDebito", "Endereco", "Bairro", "CEP", "Complemento",
+                          "AreaOcupada", "AreaUtilizada")},
+    proibidas=frozenset({"Email", "Telefone", "LocalEntrega"}),
+)
+
 POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
-                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO}
+                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
 
 
 def politica(sistema: str) -> Politica | None:

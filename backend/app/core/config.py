@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Tempo máximo de cada consulta. Contagem/MAX de tabelas grandes (ex.: Consultas da Saúde) passa de 5 s.
     sqlserver_consulta_timeout: int = Field(120, alias="SQLSERVER_CONSULTA_TIMEOUT")
     amostra_limite: int = Field(1000, alias="AMOSTRA_LIMITE", ge=1, le=10000)
+    # API SIL (tributário novo), só leitura. Produção: https://interface.siltecnologia.com.br/v1
+    sil_base_url: str | None = Field(None, alias="SIL_BASE_URL")
+    sil_client_id: str | None = Field(None, alias="SIL_CLIENT_ID")
+    sil_client_secret: str | None = Field(None, alias="SIL_CLIENT_SECRET")
+    sil_scope: str | None = Field(None, alias="SIL_SCOPE")
+    sil_grant_type: str = Field("client_credentials", alias="SIL_GRANT_TYPE")
+    sil_timeout: int = Field(60, alias="SIL_TIMEOUT", ge=1, le=600)
+    sil_intervalo_ms: int = Field(150, alias="SIL_INTERVALO_MS", ge=0, le=10000)  # pausa entre chamadas
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.

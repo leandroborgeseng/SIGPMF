@@ -94,7 +94,7 @@ def test_tr1_colunas_sensiveis_e_tabelas_recusadas():
 
 
 def test_tr3_fatos_nao_entram_na_correlacao_de_pessoas():
-    assert set(processamento.sistemas_so_fatos()) == {"IPTU", "DIVIDA", "FINANCEIRO"}
+    assert set(processamento.sistemas_so_fatos()) == {"IPTU", "DIVIDA", "FINANCEIRO", "SIL"}
 
 
 # ---------------------------------------------------------------- TR2–TR6: carga e prata

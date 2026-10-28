@@ -203,6 +203,9 @@ def _banco_origem(codigo: str, db: Session | None = None) -> dict:
     cid = next((k for k, (sis, _b) in cc.CONECTORES.items() if sis == codigo), None)
     if cid is None:
         return {}
+    if cid in cc.CONECTORES_API:
+        return {"conector_id": cid, "banco_origem": "API SIL", "banco_origem_esperado": cc.CONECTORES[cid][1],
+                "banco_origem_fallback": False}
     c, fallback = cc.config_do_conector(cid, db)
     return {"conector_id": cid, "banco_origem": c.database, "banco_origem_esperado": cc.CONECTORES[cid][1],
             "banco_origem_fallback": fallback}
@@ -379,6 +382,10 @@ def _diagnostica(conector: str, cfg, fallback: bool) -> dict:
     """Conexão (SELECT 1 + DB_NAME()) e estrutura (política x INFORMATION_SCHEMA), tudo pelo guard."""
     from app.connectors.sqlserver.politicas import politica as pol_de
     from app.services.diagnostico import categoria, motivo
+    if conector in cc.CONECTORES_API:  # REST: autenticar já é o teste (não há estrutura SQL a comparar)
+        r = cc.leitor_de(conector, cfg).diagnostico()
+        r.update({"conector": conector, "banco_configurado": "API SIL", "banco_fallback": False, "estrutura": None})
+        return r
     con = SqlServerConnector(cfg, nome=conector)
     r = con.diagnostico()
     r.update({"conector": conector, "banco_configurado": cfg.database, "banco_fallback": fallback, "estrutura": None})
