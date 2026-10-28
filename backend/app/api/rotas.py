@@ -609,11 +609,7 @@ def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0,
              "confianca": m.confianca} for m in db.scalars(q.limit(min(limite, 200)).offset(offset))]
 
 
-def mascara_nome(nome: str | None) -> str | None:
-    """Mantém só a inicial de cada palavra: "FULANO DE TAL" -> "F***** D* T**"."""
-    if not nome:
-        return nome
-    return " ".join(w[0] + "*" * (len(w) - 1) for w in str(nome).split())
+from app.identity.nome import PERFIL_REVELA_EMPRESA, mascara_nome, mascara_texto  # noqa: E402  (reexporta mascara_nome)
 
 
 @api.get("/silver/municipes/pendencias")
@@ -650,6 +646,34 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
                            "mais_recente": e.mais_recente} for e in ends]}
 
 
+def _empresa_sil(e, *, revela: bool) -> dict:
+    """SIL16: empresa da SIL para a ficha. Documento sempre mascarado; razão social, endereço e bairro só com revela."""
+    from app.services.vinculos import mascara_doc
+    return {"ccm": e.ccm, "nome": e.nome if revela else mascara_nome(e.nome), "documento": mascara_doc(e.documento),
+            "possui_debito": e.possui_debito, "endereco": mascara_texto(e.endereco, revela),
+            "bairro": mascara_texto(e.bairro, revela), "mascarado": not revela}
+
+
+@api.post("/gold/cidadaos/{cid}/tributario/revelar-empresas")
+def tributario_revelar_empresas(cid: str, req: Request, dados: RevelarIn | None = None,
+                                u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """MÉDIO-1 (decisão do TL): só admin_lgpd revela razão social, endereço e bairro das empresas SIL do cidadão,
+    com motivo no corpo (nunca na URL) e auditoria `revelar_empresa_sil`. Espelha o revelar-cpf."""
+    from app.models.camadas import EmpresaSil
+    if u.perfil != PERFIL_REVELA_EMPRESA:
+        audita(db, u.email, "revelar_empresa_sil_negado", f"cidadao:{cid}", {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Só o perfil admin_lgpd revela dados de empresa")
+    motivo = (dados.motivo or "").strip() if dados else ""
+    if len(motivo) < get_settings().revelar_motivo_min:
+        raise HTTPException(400, "Informe o motivo para revelar os dados da empresa.")
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
+    audita(db, u.email, "revelar_empresa_sil", f"cidadao:{cid}",
+           {"motivo": motivo[:300], "ccms": [e.ccm for e in empresas]}, _ip(req))
+    return {"cidadao_id": cid, "empresas": [_empresa_sil(e, revela=True) for e in empresas],
+            "remascarar_em_segundos": get_settings().revelar_cpf_segundos}
+
+
 @api.get("/gold/cidadaos/{cid}/tributario")
 def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """TR7: imóveis (posse ativa e histórica), lançamentos e dívida ativa ligados ao cidadão (prata tributária).
@@ -657,9 +681,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from datetime import date as _date
 
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
-    from app.services.vinculos import mascara_doc
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    revela = u.perfil == "admin_lgpd"
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
                              .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
@@ -696,11 +718,9 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
         # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual
-        # SIL16: razão social e endereço só em claro para admin_lgpd (leitura, operador e admin recebem mascarado).
-        "empresas": [{"ccm": e.ccm, "nome": e.nome if revela else mascara_nome(e.nome),
-                      "documento": mascara_doc(e.documento), "possui_debito": e.possui_debito,
-                      "endereco": e.endereco if revela or not e.endereco else "***", "bairro": e.bairro,
-                      "mascarado": not revela} for e in empresas],
+        # SIL16 + MÉDIO-1: sempre mascarado aqui, para todos os perfis (inclusive admin_lgpd). Em claro só pelo
+        # POST .../tributario/revelar-empresas (admin_lgpd, motivo obrigatório, auditoria revelar_empresa_sil).
+        "empresas": [_empresa_sil(e, revela=False) for e in empresas],
     }
 
 
@@ -771,7 +791,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
-              "revelar_cpf": "Revelou o CPF", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
+              "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))
     audita(db, u.email, "consulta_acessos", f"cidadao:{cid}", {"listados": len(regs)}, _ip(req))
@@ -793,7 +813,7 @@ def explorar_vinculos(no_id: str, req: Request, motivo: str = "", processo: str 
     if nivel > vn.NIVEL_MAXIMO:
         raise HTTPException(422, f"Limite de {vn.NIVEL_MAXIMO} níveis a partir do ponto de partida.")
     try:
-        r = vn.explorar(db, no_id)
+        r = vn.explorar(db, no_id, revela_empresa=u.perfil == PERFIL_REVELA_EMPRESA)
     except vn.NoInvalido:
         _404()
     alvo = f"cidadao:{r['no']['cidadao_id']}" if r["no"]["cidadao_id"] else f"vinculo:{r['no']['id']}"
