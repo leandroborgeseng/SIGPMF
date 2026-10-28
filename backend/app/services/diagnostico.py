@@ -112,6 +112,8 @@ def motivo(classe: str | None, numero: int | None, tabela: str | None, objeto: s
         return "Login recusado pela origem (usuário ou senha)."
     if numero in (20009, 20003, 20002) or (classe or "").lower().endswith("timeouterror"):
         return "Servidor de origem não respondeu (rede, porta ou timeout)."
+    if classe in ("MSSQLDriverException", "InterfaceError"):
+        return f"A conexão com a origem caiu durante a consulta{em} (provável tempo limite; ver SQLSERVER_CONSULTA_TIMEOUT)."
     if classe == "TypeError":
         return f"Erro interno ao converter os dados lidos{em}."
     if classe == "ProgrammingError":

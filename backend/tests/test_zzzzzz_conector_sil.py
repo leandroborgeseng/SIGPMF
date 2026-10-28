@@ -120,7 +120,10 @@ def test_codigo_sem_escrita_nem_rota_proibida():
     proibida = re.compile(r"atualizar|preco|parcelas", re.I)
     for f in PACOTE.glob("*.py"):
         src = f.read_text(encoding="utf-8")
-        assert not re.search(r"\.(put|patch|delete|post)\(", src, re.I), f.name
+        if f.name == "conector.py":  # conector da main (#tributário): só o POST de autenticação
+            assert re.findall(r"\.(?:put|patch|delete|post)\([^,)]*", src, re.I) == ['.post("api/authenticate"'], f.name
+        else:
+            assert not re.search(r"\.(put|patch|delete|post)\(", src, re.I), f.name
         arvore = ast.parse(src)
         permitidos = set()
         for n in ast.walk(arvore):

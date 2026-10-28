@@ -15,6 +15,26 @@ from app.models.controle import Usuario
 log = logging.getLogger("sigpmf")
 
 
+def configurar_logs() -> logging.Logger:
+    """A aplicação não configura o logging raiz e o uvicorn só configura os loggers dele: sem isto o INFO da medição da
+    prata (app.silver.medicao, só etapa/números, sem PII) era descartado. Handler próprio em stdout, sem propagar para o
+    raiz (não duplica se alguém configurar o raiz). Idempotente."""
+    import sys
+    med = logging.getLogger("app.silver.medicao")
+    med.setLevel(logging.INFO)
+    med.propagate = False
+    if not any(getattr(h, "_sigpmf_medicao", False) for h in med.handlers):
+        h = logging.StreamHandler(sys.stdout)
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        h._sigpmf_medicao = True
+        med.addHandler(h)
+    med.disabled = False
+    return med
+
+
+configurar_logs()
+
+
 def bootstrap_admin() -> None:
     """Cria o primeiro admin a partir de ADMIN_EMAIL/ADMIN_PASSWORD se não houver usuários."""
     s = get_settings()
@@ -41,6 +61,17 @@ def interromper_cargas_orfas() -> int:
         db.close()
 
 
+def iniciar_agenda():
+    """AG1/AG5: agenda das cargas só com AGENDA_HABILITADA=true e nunca em APP_ENV=test (os testes chamam o ciclo)."""
+    s = get_settings()
+    if not s.agenda_habilitada or s.app_env == "test":
+        return None
+    from app.services.agenda import Agendador
+    a = Agendador()
+    a.iniciar()
+    return a
+
+
 def create_app() -> FastAPI:
     s = get_settings()
     docs = s.app_env == "dev" and s.docs_habilitado
@@ -54,7 +85,10 @@ def create_app() -> FastAPI:
             interromper_cargas_orfas()
         except Exception as exc:  # noqa: BLE001
             log.warning("interromper_cargas_orfas falhou: %s", type(exc).__name__)
+        agendador = iniciar_agenda()
         yield
+        if agendador is not None:
+            agendador.parar()
 
     app = FastAPI(title="SIGPMF", lifespan=lifespan, version=VERSION, docs_url="/api/docs" if docs else None,
                   redoc_url=None, openapi_url="/api/openapi.json" if docs else None)

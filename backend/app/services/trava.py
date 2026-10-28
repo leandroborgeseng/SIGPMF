@@ -16,7 +16,8 @@ from app.core.config import get_settings
 from app.core.db import get_engine
 from app.models.controle import Execucao, Log
 
-NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iss": "ISS"}
+NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iss": "ISS", "iptu": "IPTU", "divida": "Dívida ativa",
+         "financeiro": "Financeiro", "sil": "API SIL"}
 TIPO_COMPLETA = "carga_completa_conector"
 TIPOS_AMOSTRA = ("amostra_conector", "carga_municipe_amostra")
 TIPOS_CARGA = (*TIPOS_AMOSTRA, TIPO_COMPLETA)
@@ -38,10 +39,32 @@ def trava_livre(db: Session, sistema: str) -> bool:
     return livre
 
 
-def sinal_de_vida(ex_id: int) -> None:
-    """Heartbeat (conexão separada, commit próprio)."""
+def sinal_de_vida(ex_id: int, etapa: str | None = None, processadas: int | None = None,
+                  total: int | None = None) -> None:
+    """Heartbeat (conexão separada, commit próprio). Com `etapa`, grava também etapa e contador (como a completa)."""
+    vals = {"atualizado_em": datetime.now(UTC)}
+    if etapa is not None:
+        vals.update(etapa=etapa, processadas_etapa=processadas, total_etapa=total)
     with get_engine().begin() as c:
-        c.execute(update(Execucao).where(Execucao.id == ex_id).values(atualizado_em=datetime.now(UTC)))
+        c.execute(update(Execucao).where(Execucao.id == ex_id).values(**vals))
+
+
+CHAVE_CAMADAS = zlib.crc32(b"camadas:prata+ouro")
+
+
+def aguarda_camadas(db: Session, ex_id: int | None = None, espera_s: float = 2.0, timeout_s: float | None = None) -> None:
+    """Prata e ouro são reconstruídas para TODOS os sistemas (DELETE + INSERT). A trava por sistema (#20) não impede
+    que, por exemplo, uma amostra de Saúde e uma de Cemitério reconstruam ao mesmo tempo: a segunda esperaria as
+    linhas da primeira e depois gravaria por cima (duplicidade/deadlock). Esta trava de TRANSAÇÃO (some no commit ou
+    rollback) serializa as reconstruções; enquanto espera, mantém o sinal de vida da execução."""
+    import time
+    t0 = time.monotonic()
+    while not db.execute(text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_CAMADAS}).scalar():
+        if ex_id is not None:
+            sinal_de_vida(ex_id)
+        if timeout_s is not None and time.monotonic() - t0 > timeout_s:
+            raise TimeoutError("outra reconstrução de prata/ouro em andamento")
+        time.sleep(espera_s)
 
 
 def _utc(d: datetime | None) -> datetime | None:

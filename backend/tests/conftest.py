@@ -73,3 +73,29 @@ def db(banco):
     s = SessionLocal()
     yield s
     s.close()
+
+
+@pytest.fixture(autouse=True)
+def _amostra_sincrona(monkeypatch):
+    """A rota da amostra responde 202 e roda em background (thread). Nos testes, o disparo é síncrono para que a
+    resposta já traga o estado final; o teste do timeout (test_zzzzzz_amostra_background) usa a thread real."""
+    from app.services import carga_conector as cc
+
+    def sincrono(ex_id, conector, usuario, trava):
+        cc.rodar_amostra(ex_id, conector, usuario, trava)
+    monkeypatch.setattr(cc, "disparar_amostra", sincrono)
+
+
+@pytest.fixture(autouse=True)
+def _camadas_sem_assinatura(request):
+    """IN1: cada teste começa sem a assinatura da última prata/ouro, para que uma carga completa reconstrua as camadas
+    como antes (os testes compartilham o banco). Os testes de IN1 provam o "pular" dentro do próprio teste."""
+    if "banco" not in request.fixturenames and "client" not in request.fixturenames and "db" not in request.fixturenames:
+        yield
+        return
+    request.getfixturevalue("banco")  # garante que as migrações já rodaram (banco novo no CI)
+    eng = create_engine(TEST_URL)
+    with eng.begin() as c:
+        c.execute(text("DELETE FROM controle.camadas_estado"))
+    eng.dispose()
+    yield

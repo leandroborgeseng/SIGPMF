@@ -5,8 +5,11 @@
 - Lê TODAS as tabelas antes de gravar: falha na origem (timeout, erro) não deixa carga parcial na bronze.
 - Bronze + silver + gold numa única transação; erro -> ROLLBACK e controle registra status, erro e fim.
 - Uma amostra por conector por vez: 409 se já houver uma em andamento (advisory lock + status).
+- A rota responde 202 com o id da execução e a amostra roda em background (TL 27/10: o proxy cortava o POST
+  quando prata/ouro passavam do timeout). Status/etapa/sinal de vida em GET .../amostra/{id}.
 - Nenhum host, usuário ou senha em mensagem, log ou resposta.
 """
+import threading
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
@@ -16,6 +19,7 @@ from app.bronze.ingestao import ingere
 from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
 from app.connectors.sqlserver.politicas import politica
 from app.core.config import get_settings
+from app.core.db import SessionLocal
 from app.gold import visao
 from app.ingestion.mapeamentos import MAPEAMENTOS, NOMES_SISTEMAS
 from app.models.controle import BaseCatalogo, Execucao, Log, Sistema, TabelaCatalogo
@@ -23,7 +27,18 @@ from app.services.diagnostico import MSG_ORIGEM_VAZIA, ORIGEM_VAZIA, FalhaLeitur
 from app.silver import processamento
 
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
-CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS")}
+CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS"),
+              "iptu": ("IPTU", "IPTU"), "divida": ("DIVIDA", "Divida"), "financeiro": ("FINANCEIRO", "Financeiro"),
+              "sil": ("SIL", "API SIL")}
+CONECTORES_API = ("sil",)  # origem REST: leitor próprio, sem banco SQL Server
+
+
+def leitor_de(conector: str, cfg):
+    """Leitor da origem do conector: API SIL ou SQL Server (mesma interface)."""
+    if conector == "sil":
+        from app.connectors.sil.conector import SilConnector
+        return SilConnector(nome=conector)
+    return SqlServerConnector(cfg, nome=conector)
 TIPO_AMOSTRA = "amostra_conector"
 TIPO_AMOSTRA_ISS = "carga_municipe_amostra"  # ISS usa a carga do Munícipe (#6) com a política ISS
 TIPOS_AMOSTRA = (TIPO_AMOSTRA, TIPO_AMOSTRA_ISS)
@@ -95,39 +110,119 @@ def amostra_reconciliada(db: Session, sistema: str) -> Execucao | None:
     return None
 
 
-def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> Execucao:
-    """`leitor`: objeto com ler_amostra(tabela, politica=...) (testes injetam origem sintética)."""
+def _valida(conector: str) -> str:
     if conector not in CONECTORES:
         raise ConectorDesconhecido(conector)
-    sistema, _banco_esperado = CONECTORES[conector]
-    tabelas = tabelas_do_conector(sistema)
-    if not tabelas:
+    sistema = CONECTORES[conector][0]
+    if not tabelas_do_conector(sistema):
         raise SemMapeamento(f"Conector {conector} ainda sem mapeamento para a silver nesta versão.")
-    pol = politica(sistema)
+    return sistema
+
+
+def _pega_trava(db: Session, sistema: str, conector: str, usuario: str):
+    """Trava de sessão (#20) numa conexão dedicada: não pode depender da conexão que a Session troca a cada commit."""
     from app.services import trava as tv
-    lock = tv.chave_lock(sistema)
-    # conexão dedicada: o lock de sessão não pode depender da conexão que a Session troca a cada commit
     trava = db.get_bind().connect()
-    if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": lock}).scalar():
+    if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": tv.chave_lock(sistema)}).scalar():
         trava.close()
         raise Conflito(tv.conflito(db, sistema, conector, usuario))
+    return trava
+
+
+def _solta_trava(trava, sistema: str) -> None:
+    from app.services import trava as tv
     try:
-        # CC12: temos a trava, então nenhuma execução "em_andamento" deste sistema está viva (sobrou de reinício)
-        tv.limpa_orfas(db, sistema, usuario)
+        trava.execute(text("select pg_advisory_unlock(:k)"), {"k": tv.chave_lock(sistema)})
+        trava.commit()
+    finally:
+        trava.close()
+
+
+def iniciar_amostra(db: Session, usuario: str, conector: str) -> Execucao:
+    """Rota POST .../amostra (TL 27/10): responde rápido (202) com a execução e roda em background, como a carga
+    completa. Validação, trava (#20) e limpeza de órfãs acontecem aqui, ANTES do 202: 404/409 continuam síncronos.
+    A trava passa para a thread e só é solta quando a amostra termina (sucesso, falha ou exceção)."""
+    sistema = _valida(conector)
+    from app.services import trava as tv
+    trava = _pega_trava(db, sistema, conector, usuario)
+    try:
+        tv.limpa_orfas(db, sistema, usuario)  # temos a trava: em_andamento deste sistema sobrou de um reinício
+        ex = Execucao(tipo=TIPO_AMOSTRA_ISS if sistema == "ISS" else TIPO_AMOSTRA, sistema=sistema,
+                      status="em_andamento", usuario=usuario, etapa="leitura", atualizado_em=datetime.now(UTC))
+        db.add(ex)
+        db.commit()
+    except Exception:
+        _solta_trava(trava, sistema)
+        raise
+    disparar_amostra(ex.id, conector, usuario, trava)
+    return ex
+
+
+def disparar_amostra(ex_id: int, conector: str, usuario: str, trava) -> None:
+    """Background (thread daemon), como carga_completa.disparar. Os testes trocam por execução síncrona."""
+    threading.Thread(target=rodar_amostra, args=(ex_id, conector, usuario, trava), daemon=True,
+                     name=f"amostra-{conector}-{ex_id}").start()
+
+
+def rodar_amostra(ex_id: int, conector: str, usuario: str, trava) -> None:
+    """Corpo da thread: sessão própria; SEMPRE solta a trava e nunca deixa a execução em_andamento."""
+    sistema = CONECTORES[conector][0]
+    db = SessionLocal()
+    try:
+        executar_amostra(db, usuario, conector, execucao_id=ex_id, trava=trava)
+        db.expire_all()
+        ex = db.get(Execucao, ex_id)
+        from app.core.audit import audita
+        audita(db, usuario, "amostra_conector_executada", f"execucao:{ex_id}", {"status": ex.status, "lidos": ex.lidos})
+    except Exception as exc:  # noqa: BLE001 - rede de segurança: executar_amostra já trata as falhas esperadas
+        db.rollback()
+        ex = db.get(Execucao, ex_id)
+        if ex is not None and ex.status == "em_andamento":
+            ex.status = "falha"
+            ex.registra_erro(exc)
+            ex.mensagem = f"Falha na amostra de {conector}: {ex.erro_publico()['motivo']}"
+            ex.finalizado_em = datetime.now(UTC)
+            db.add(Log(execucao_id=ex.id, nivel="ERROR", mensagem=ex.mensagem))
+            db.commit()
+    finally:
+        db.close()
+        _solta_trava(trava, sistema)
+
+
+def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, execucao_id: int | None = None,
+                     trava=None) -> Execucao:
+    """Amostra síncrona (corpo do background; testes chamam direto).
+    `leitor`: objeto com ler_amostra(tabela, politica=...) (testes injetam origem sintética).
+    `execucao_id`/`trava`: execução e trava já criadas por iniciar_amostra (quem passou a trava a solta)."""
+    sistema = _valida(conector)
+    tabelas = tabelas_do_conector(sistema)
+    pol = politica(sistema)
+    from app.services import trava as tv
+    propria = trava is None
+    if propria:
+        trava = _pega_trava(db, sistema, conector, usuario)
+    try:
+        if propria:
+            # CC12: temos a trava, então nenhuma execução "em_andamento" deste sistema está viva (sobrou de reinício)
+            tv.limpa_orfas(db, sistema, usuario)
+        ex = db.get(Execucao, execucao_id) if execucao_id is not None else None
         cfg, fallback = config_do_conector(conector, db)
         especifico = getattr(get_settings(), f"sqlserver_database_{conector}", None)
         origem_banco = ("SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
                         if especifico else "catálogo (controle.bases_catalogo)")
         if sistema == "ISS":
-            return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor)
-        ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario,
-                      atualizado_em=datetime.now(UTC))
-        db.add(ex)
-        db.commit()
-        db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
+            return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor, ex)
+        if ex is None:
+            ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario, etapa="leitura",
+                          atualizado_em=datetime.now(UTC))
+            db.add(ex)
+            db.commit()
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem="Origem do conector sil: API SIL (REST, só leitura)")
+               if conector in CONECTORES_API else
+               Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                    mensagem=f"Banco de origem do conector {conector}: {cfg.database or '-'} via {origem_banco}"))
         db.commit()
-        leitor = leitor or SqlServerConnector(cfg, nome=conector)
+        leitor = leitor or leitor_de(conector, cfg)
         tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
         try:
             lidas = {}
@@ -155,11 +250,15 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
                 for k in tot:
                     tot[k] += c[k]
                 tv.sinal_de_vida(ex.id)
-            sres = processamento.reconstruir(db, progresso=lambda _n, _t: tv.sinal_de_vida(ex.id))
-            gres = visao.reconstruir(db)
+            tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: uma reconstrução por vez (trava de transação)
+            tv.sinal_de_vida(ex.id, "prata", 0, None)
+            sres = processamento.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "prata", n, t))
+            tv.sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+            gres = visao.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "ouro", n, t))
             for k, v in tot.items():
                 setattr(ex, k, v)
             ex.status = "sucesso" if (tot["novos"] or tot["atualizados"]) else "sem_novidades"
+            ex.etapa = "concluida"
             ex.mensagem = (f"banco={'fallback' if fallback else 'conector'} lidos={tot['lidos']} novos={tot['novos']} "
                            f"atualizados={tot['atualizados']} ignorados={tot['ignorados']} silver={sres} gold={gres}")
             ex.finalizado_em = datetime.now(UTC)
@@ -175,15 +274,16 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None) -> E
             db.commit()
         return ex
     finally:
-        trava.execute(text("select pg_advisory_unlock(:k)"), {"k": lock})
-        trava.commit()
-        trava.close()
+        if propria:
+            _solta_trava(trava, sistema)
 
 
-def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, origem_banco: str, leitor):
+def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, origem_banco: str, leitor,
+                 ex: Execucao | None = None):
     """ISS: mesma rota/lock/auditoria; leitura e classificação do Munícipe (#6), também transacional."""
     from app.services.carga_municipe import executar_carga_municipe
-    ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"), bronze=True)
+    ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"), bronze=True,
+                                 ex=ex)
     db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                mensagem=f"Banco de origem do conector iss: {cfg.database or '-'} via {origem_banco}"))
     if ex.status == "falha" and ex.erro_publico():

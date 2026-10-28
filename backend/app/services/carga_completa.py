@@ -30,7 +30,6 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
-from app.connectors.sqlserver.connector import SqlServerConnector
 from app.connectors.sqlserver.politicas import politica
 from app.core import recursos
 from app.core.audit import audita
@@ -45,8 +44,11 @@ from app.services.diagnostico import linha_json
 from app.silver import processamento
 
 TIPO = "carga_completa_conector"
-CONECTORES_COMPLETA = ("saude", "cemiterio")
-NOMES = {"saude": "Saúde", "cemiterio": "Cemitério"}
+MODOS = ("completa", "incremental")
+MSG_CAMADAS_MANTIDAS = "Nada mudou nas entradas da prata e do ouro: reconstrução pulada (resultado idêntico)."
+CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil")
+NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro",
+         "sil": "API SIL"}
 
 
 SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
@@ -99,6 +101,8 @@ def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
     s = get_settings()
     limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
     nulos, total = v["nulos"], v["total"]
+    if total is None:  # origem sem contagem (API SIL): a chave é a da própria API, única e nunca nula
+        return None
     if nulos:
         pct = 100.0 * nulos / total if total else 100.0
         if total > 0 and nulos >= total:  # ressalva do Tester no #17: tabela inteira com chave nula sempre para
@@ -194,9 +198,9 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     return None
 
 
-def leitor_padrao(conector: str, db: Session) -> SqlServerConnector:
+def leitor_padrao(conector: str, db: Session):
     cfg, _ = cc.config_do_conector(conector, db)
-    return SqlServerConnector(cfg, nome=conector)
+    return cc.leitor_de(conector, cfg)
 
 
 def estimativa(db: Session, conector: str, leitor=None) -> dict:
@@ -209,7 +213,7 @@ def estimativa(db: Session, conector: str, leitor=None) -> dict:
         tabs = verificar_chaves(leitor, conn, sistema, pol)  # ChaveInvalida -> 409 na rota
     finally:
         conn.close()
-    return {"tabelas": tabs, "total": sum(tabs.values())}
+    return {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
 
 
 def ativa(db: Session, sistema: str) -> Execucao | None:
@@ -285,7 +289,10 @@ def interromper_orfas(db: Session) -> int:
     return n
 
 
-def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = False) -> Execucao:
+def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = False, modo: str = "completa") -> Execucao:
+    """IN2: modo 'completa' relê a origem inteira (keyset + checkpoint); 'incremental' só o alterado desde a marca d'água."""
+    if modo not in MODOS:
+        raise ValueError(f"Modo de carga inválido: {modo!r}")
     sistema = _sistema(conector)
     motivo = motivo_bloqueio(db, conector)
     if motivo:
@@ -307,7 +314,8 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
             # completa -> 'pausada' (retomável do checkpoint, como antes); amostra -> 'interrompida'. Auditado.
             tv.interromper(db, velha, usuario, "sem processo vivo (trava livre)", automatico=True)
         ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
-                      etapa="prata" if somente_camadas else "leitura", atualizado_em=datetime.now(UTC))
+                      etapa="prata" if somente_camadas else "leitura", atualizado_em=datetime.now(UTC),
+                      modo=None if somente_camadas else modo)
         if somente_camadas:  # leitura já concluída: total/contagens vêm da bronze, a origem não é lida
             ex.total_origem = sum(c.total_origem or 0 for c in db.scalars(
                 select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
@@ -374,7 +382,9 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Retomando prata e ouro de {conector} a partir "
                                                                       "da bronze (sem reler a origem)"))
                 db.commit()
-                _camadas(db, ex, conector, sistema)
+                _camadas(db, ex, conector, sistema, pode_pular=False)  # pedido explícito: sempre reconstrói
+            elif ex.modo == "incremental":
+                _executa_incremental(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
             else:
                 _executa(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
         except Exception as exc:  # noqa: BLE001 - lotes já confirmados ficam; o checkpoint permite retomar
@@ -491,23 +501,39 @@ def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) ->
     log.info("carga completa %s: %s", ex_id, msg)
 
 
-def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
-    """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada."""
-    total = int(db.scalar(select(func.count(func.distinct(func.concat(
-        RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
-        .where(RegistroBronze.quarentena.is_(None))) or 0)
-    t0 = _inicio_etapa(db, ex, "prata", total)
-    # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
-    # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
-    sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
-    confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
-    _log_separado(ex.id, "prata", t0, sres)
-    sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-    _log_separado(ex.id, "ouro", None, None)
-    t1 = time.monotonic()
-    gres = visao.reconstruir(db)
-    _log_separado(ex.id, "ouro", t1, gres)
-    ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
+def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True) -> None:
+    """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada.
+    IN1: se nenhuma entrada mudou desde a última reconstrução (camadas_estado), a reconstrução é pulada (o resultado
+    seria idêntico); a reconciliação da carga completa roda do mesmo jeito."""
+    from app.services import camadas_estado
+    assin = camadas_estado.assinatura(db)
+    if pode_pular and camadas_estado.inalterada(db, assin):
+        ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.atualizado_em = "concluida", 0, 0, datetime.now(UTC)
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=MSG_CAMADAS_MANTIDAS))
+        resumo = MSG_CAMADAS_MANTIDAS
+    else:
+        total = int(db.scalar(select(func.count(func.distinct(func.concat(
+            RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
+            .where(RegistroBronze.quarentena.is_(None))) or 0)
+        t0 = _inicio_etapa(db, ex, "prata", total)  # faz commit: a trava de transação das camadas vem depois
+        from app.services import trava as tv
+        tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
+        # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
+        # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
+        sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
+        confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
+        _log_separado(ex.id, "prata", t0, sres)
+        sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+        _log_separado(ex.id, "ouro", None, None)
+        t1 = time.monotonic()
+        gres = visao.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot))
+        _log_separado(ex.id, "ouro", t1, gres)
+        ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
+        camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
+        resumo = f"silver={sres} gold={gres}"
+    lido = f"lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados} ignorados={ex.ignorados}"
+    if ex.modo == "incremental":  # a reconciliação compara com o COUNT(*) da última completa: não vale aqui
+        return _finaliza(db, ex, "sucesso", f"Carga incremental de {NOMES[conector]} concluída: {lido} {resumo}")
     rec = reconciliacao(db, sistema)
     ok = all(r["ok"] for r in rec.values())
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
@@ -515,8 +541,7 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str) -> None:
                    f"{t} origem={r['origem']} bronze={r['bronze']} quarentena={r['quarentena']}" for t, r in rec.items())))
     quar = sum(r["quarentena"] for r in rec.values())
     res_rec = ("ok com pendências" if quar else "ok") if ok else "divergente"
-    _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: lidos={ex.lidos} novos={ex.novos} "
-                                 f"atualizados={ex.atualizados} ignorados={ex.ignorados} silver={sres} gold={gres} "
+    _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: {lido} {resumo} "
                                  f"reconciliacao={res_rec}"
                                  + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else ""))
 
@@ -566,7 +591,10 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
                 RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
                 RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))) or 0)
         b, q = conta(False), conta(True)
-        ok = cp.total_origem is not None and b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
+        if cp.total_origem is None:  # origem sem contagem (API SIL): não há com o que comparar
+            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ok": True, "status": "sem_contagem"}
+            continue
+        ok = b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
         out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ok": ok,
                           "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
     return out
@@ -630,3 +658,79 @@ def situacao(db: Session, conector: str) -> dict:
         "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
     }
+
+
+def _rotulo(ex: Execucao) -> str:
+    return "incremental" if ex.modo == "incremental" else "completa"
+
+
+def marca_dagua(db: Session, sistema: str, tabela: str):
+    """IN2: maior data de alteração já gravada na bronze para a tabela, menos a margem (CARGA_INCREMENTAL_MARGEM_H).
+    Devolve datetime ingênuo (como a origem guarda) ou None (sem histórico: a tabela é lida por inteiro)."""
+    from datetime import timedelta
+    maior = db.scalar(select(func.max(RegistroBronze.atualizado_origem_em)).where(
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela, RegistroBronze.quarentena.is_(None)))
+    if maior is None:
+        return None
+    return maior.replace(tzinfo=None) - timedelta(hours=get_settings().carga_incremental_margem_h)
+
+
+def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> None:
+    """IN2: lê só as linhas com campo incremental >= marca d'água (keyset em memória, sem checkpoint nem COUNT
+    DISTINCT da chave: a unicidade já foi verificada na última carga completa). Tabela sem campo incremental na
+    política, ou sem histórico na bronze, é lida por inteiro. Exclusões na origem ficam para a completa periódica."""
+    s = get_settings()
+    pol = politica(sistema)
+    tabelas = cc.tabelas_do_conector(sistema)
+    cc._garante_catalogo(db, sistema, tabelas)
+    ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.total_origem = "leitura", 0, None, None
+    ex.atualizado_em = datetime.now(UTC)
+    db.commit()
+    t_leitura = time.monotonic()
+    conn = leitor.abrir()
+    try:
+        for t in tabelas:
+            m = MAPEAMENTOS[(sistema, t)]
+            cols = pol.colunas_select(t)
+            ord_ = ordem(sistema, t)
+            campo = m.get("campo_incremental")
+            marca = marca_dagua(db, sistema, t) if campo and campo in cols else None
+            desde = (campo, marca) if marca is not None else None
+            db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
+                f"{sistema}.{t}: incremental desde {marca:%Y-%m-%d %H:%M} ({campo})" if desde
+                else f"{sistema}.{t}: sem campo incremental ou sem histórico na bronze, leitura completa da tabela")))
+            ex.tabela_atual = t
+            db.commit()
+            ultima = None
+            while True:
+                db.refresh(ex)
+                if ex.cancelar:
+                    ex.tabela_atual = None
+                    return _finaliza(db, ex, "cancelada", f"Carga incremental de {NOMES[conector]} cancelada. "
+                                                          "O que já entrou foi mantido.")
+                disco = recursos.motivo_disco_cheio(recursos.limite_pausa(), exige_leitura=True)
+                if disco:
+                    ex.pausa_motivo, ex.tabela_atual = disco, None
+                    return _finaliza(db, ex, "pausada", f"Carga incremental pausada: {disco}")
+                sinal_de_vida(ex.id, "leitura", ex.processadas_etapa, None)
+                brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
+                          else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
+                linhas = [linha_json(r, cols) for r in brutas]
+                if brutas:
+                    ultima = _valores_chave(brutas[-1], ord_, cols)
+                    c = ingere(db, sistema, t, m["chave"], campo, linhas, ex.id, s.carga_lote,
+                               rowversion=m.get("rowversion"), confirmar=False)
+                    for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
+                        setattr(ex, k, (getattr(ex, k) or 0) + c[k])
+                ex.processadas_etapa = (ex.processadas_etapa or 0) + len(linhas)
+                ex.atualizado_em = datetime.now(UTC)
+                db.commit()
+                if len(linhas) < s.carga_lote:
+                    break
+                if s.carga_pausa_ms:
+                    time.sleep(s.carga_pausa_ms / 1000)
+        ex.tabela_atual = None
+        _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, "modo": "incremental"})
+    finally:
+        conn.close()
+    _camadas(db, ex, conector, sistema)

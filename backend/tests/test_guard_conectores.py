@@ -95,7 +95,8 @@ def test_conexao_com_timeout_de_consulta_e_sem_autocommit(monkeypatch):
     monkeypatch.setitem(sys.modules, "pymssql", fake)
     con = _con()
     assert con.testar_conexao()["ok"] is True
-    assert chamado["timeout"] == 7 and chamado["login_timeout"] == 7 and chamado["autocommit"] is False
+    # login com SQLSERVER_TIMEOUT; cada consulta com SQLSERVER_CONSULTA_TIMEOUT (default 120)
+    assert chamado["timeout"] == 120 and chamado["login_timeout"] == 7 and chamado["autocommit"] is False
 
 
 @pytest.mark.parametrize("pol", [SAUDE, CEMITERIO], ids=["saude", "cemiterio"])

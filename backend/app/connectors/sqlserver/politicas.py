@@ -4,7 +4,9 @@
 - Para cada tabela, só as colunas listadas entram no SELECT. Colunas sensíveis nunca entram.
 """
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 
 class TabelaRecusada(ValueError):
@@ -57,6 +59,22 @@ class Politica:
     recusar: tuple[str, ...] = ()                 # padrões sempre recusados (regex, sem distinção de caixa)
     proibidas: frozenset[str] = field(default_factory=frozenset)
     ordem: dict[str, tuple[str, ...]] = field(default_factory=dict)  # tabela -> ORDER BY estável da amostra
+    # TR1: recorte fixo por tabela, aplicado em TODA consulta (página, contagem, chave, nulos, assinatura, amostra):
+    # tabela -> (coluna, função que devolve o mínimo inteiro). Ex.: Financeiro_Exercicio só dos exercícios recentes.
+    filtros: dict[str, tuple[str, Callable[[], int]]] = field(default_factory=dict)
+
+    def filtro_fixo(self, tabela: str) -> str:
+        """Condição SQL do recorte fixo (só inteiro, nunca texto vindo de fora) ou "" sem recorte."""
+        nome = tabela.split(".")[-1]
+        if nome not in self.filtros:
+            return ""
+        col, minimo = self.filtros[nome]
+        if col not in self.colunas.get(nome, ()):
+            raise TabelaRecusada(f"Recorte de {nome} fora das colunas da política.")
+        v = minimo()
+        if isinstance(v, date):  # data (ex.: últimos 12 meses): literal ISO gerado de um objeto date, nunca de texto
+            return f"([{col}] >= '{v.isoformat()}')"
+        return f"([{col}] >= {int(v)})"
 
     def ordem_amostra(self, tabela: str) -> tuple[str, ...]:
         nome = tabela.split(".")[-1]
@@ -105,8 +123,20 @@ SAUDE = Politica(
         "Medicos": ("Codigo", "Nome", "CPF", "Cartao_SUS", "Tp_Conselho", "Nr_Conselho", "UF_Conselho", "Ativo",
                     "Dt_Inclusao", "Dt_UltimaAtual"),
         "ProfissionaisCNES": ("id", "Codigo", "DataInclusao", "CNES", "INE", "CBO", "Nome", "Ativo"),
+        # Onda 3 (SA-F1): fatos de atendimento SEM conteúdo clínico (queixa, HMA, suspeita, exame, sinais vitais fora)
+        "Consultas": ("Cod_Paciente", "Cons_Paciente", "Dt_Atend", "Cod_Ubs", "Codigo_Especialidade",
+                      "CodigoGrupoAtendimento", "ESUSTipoAtendimento"),
+        "Agendamento_Consulta": ("Cod_Ubs", "Cod_Prof", "Cod_Pac", "Dt_Cons", "Hr_Cons", "Cod_Espec",
+                                 "DataHoraAgendamento", "Data_Hora_SIGS"),
+        "Vacina": ("Matricula", "Cod_Vacina", "Sequencia", "Cod_Unidade", "Dt_Vacina", "DataGravacao"),
+        "Unidades": ("Codigo", "Nome_Fantasia", "Tipo", "Inativo_Ativo", "Cd_Bai"),
+        "Aux_Vacina": ("Cod_Vacina", "Vacina", "Dose"),
+        "Aux_Especialidades": ("Codi_Espe", "Desc_Espe"),
     },
-    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio", "Unidades",
+    filtros={"Consultas": ("Dt_Atend", lambda: date.today() - timedelta(days=365)),
+             "Agendamento_Consulta": ("Dt_Cons", lambda: date.today() - timedelta(days=365)),
+             "Vacina": ("Dt_Vacina", lambda: date.today() - timedelta(days=730))},
+    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
                      "Aux_TpUnidade", "UnidadesESF", "UnidadesESFAgentes", "Aux_profissoes", "Medico_CBO",
                      "Aux_CBO_DePara"}),
     recusar=_RECUSA_COMUM,
@@ -115,7 +145,10 @@ SAUDE = Politica(
                          "TemDoencaCardiaca", "TemDoencaCardiacaInsuficiencia", "TemDoencaCardiacaOutro",
                          "DeficienciaAuditiva", "DeficienciaIntelectual", "DeficienciaVisual", "DeficienciaFisica",
                          "DeficienciaOutros", "TemAlgumaDeficiencia", "Tipo_Sangue", "ObservacaoFraldas",
-                         "LimiteFraldas", "SADAcompanhado", "Observacao", "Cor", "ID_ETNIA", "Visualiz_Senha"}),
+                         "LimiteFraldas", "SADAcompanhado", "Observacao", "Cor", "ID_ETNIA", "Visualiz_Senha",
+                         "Queixa_principal", "HMA", "Suspeita", "Exame_Fisico", "Justif_Exames", "PA", "FC", "Peso",
+                         "Altura", "Temperatura", "Glicosimetria", "FreqResp", "Glasgow", "MotivoExclusao",
+                         "JustificativaExtra", "Lote", "LoteDescricao"}),
 )
 
 _CHAVE_SEP = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
@@ -164,7 +197,58 @@ ISS = Politica(
     proibidas=frozenset({"Senha", "CTPS", "Titulo_Eleitor", "Reservista", "CNH"}),
 )
 
-POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS}
+# ---- Tributário (onda 2, TR1–TR8): só fatos (imóvel, possuidor, lançamento, dívida); nunca cria cidadão ----
+# Colunas escolhidas no dicionário (schema.md) — só o que a ficha e os painéis usam; nada de observação livre.
+IPTU = Politica(
+    sistema="IPTU", base="IPTU",
+    colunas={
+        "Cadastro": ("CODI", "Insc_Imob", "NR_CASE", "COMPLE", "Cd_Bai", "Quadra", "Lote", "STER", "SITU",
+                     "Iptu_Terr_Liqu", "Iptu_Cons_Liqu", "Data_Alte"),
+        "Cadastro_Possuidor": ("CODI", "CPF_CNPJ", "Data_Inclusao", "Data_Baixa", "Tipo_Posse"),
+    },
+    recusar=(r"Integracao", r"Carne", r"Nova_Planta", r"Excluidos", r"Alterado", r"Log") + _RECUSA_COMUM,
+    proibidas=frozenset({"NOME", "Email", "RG", "Celular", "Telefone", "OBS", "Observacao"}),
+)
+
+DIVIDA = Politica(
+    sistema="DIVIDA", base="Divida",
+    colunas={"Divida": ("CODI", "SEQU", "ANO", "Nr_Carne", "Cod_Nat", "DT_INSCR", "DT_VENC", "VR_ORIGEM", "VR_TOTA_DIVI",
+                        "VR_PAGO_TOTAL", "STATUS", "SITUACAO", "DT_PAGAMENTO", "Data_Extincao", "QTDE_PROTESTO",
+                        "NR_PROC", "DT_CALCULO")},
+    recusar=(r"Planilha", r"Finalizados", r"Teste", r"SMS") + _RECUSA_COMUM,
+    proibidas=frozenset({"OBS", "Info_Susp", "Moti_Extincao"}),
+)
+
+
+def _exercicio_minimo() -> int:
+    from datetime import date
+
+    from app.core.config import get_settings
+    v = get_settings().financeiro_exercicio_min
+    return v if v else date.today().year - 1  # padrão: exercício atual e o anterior
+
+
+FINANCEIRO = Politica(
+    sistema="FINANCEIRO", base="Financeiro",
+    colunas={"Financeiro_Exercicio": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia", "Referencia", "Renovacao",
+                                      "Parcela", "Duplicidade", "Contribuinte", "Receita", "Data_Vencimento", "Valor",
+                                      "Data_Pagamento", "Valor_Pago", "Status", "Data_Ultima_Alteracao_Registro")},
+    filtros={"Financeiro_Exercicio": ("Exercicio", _exercicio_minimo)},
+    recusar=(r"Excluid", r"Alterados", r"Integracao", r"MPU_", r"Log_") + _RECUSA_COMUM,
+    proibidas=frozenset({"Documento", "Arquivo", "Linha"}),
+)
+
+# API SIL (REST, não SQL): a política só fixa as colunas gravadas na bronze (o conector já achata o JSON nelas).
+# E-mail, telefone e endereço de entrega da empresa ficam fora.
+SIL = Politica(
+    sistema="SIL", base="API SIL",
+    colunas={"Empresas": ("Ccm", "CNPJCPF", "Nome", "PossuiDebito", "Endereco", "Bairro", "CEP", "Complemento",
+                          "AreaOcupada", "AreaUtilizada")},
+    proibidas=frozenset({"Email", "Telefone", "LocalEntrega"}),
+)
+
+POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
+                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
 
 
 def politica(sistema: str) -> Politica | None:

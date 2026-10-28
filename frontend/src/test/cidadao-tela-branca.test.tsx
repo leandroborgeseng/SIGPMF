@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -57,7 +57,8 @@ describe('ficha do cidadão (tela branca)', () => {
   it('pessoa sem vínculos mostra —', async () => {
     await abrirFicha(ficha(null))
     expect(await screen.findByRole('heading', { name: 'Fulano Sintético' })).toBeInTheDocument()
-    expect(screen.getByText('—')).toBeInTheDocument()
+    const cadastro = screen.getByRole('heading', { name: 'Dados cadastrais' }).closest('section') as HTMLElement
+    expect(within(cadastro).getByText('—')).toBeInTheDocument()
   })
   it('500 na rota de detalhe mostra erro com motivo e volta à busca', async () => {
     await abrirFicha({ detail: 'x' }, 500)

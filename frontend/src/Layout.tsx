@@ -5,13 +5,23 @@ import { ErrorBoundary } from './componentes'
 import { PERFIS_EXPLORADOR } from './explorar'
 
 const GRUPOS: { titulo: string; itens: Item[] }[] = [
-  { titulo: 'Visão', itens: [{ to: '/dashboard', rotulo: 'Dashboard', curto: 'Dashboard' }] },
+  { titulo: 'Gestão', itens: [
+    { to: '/painel', rotulo: 'Visão geral', curto: 'Painel' },
+    { to: '/painel/saude', rotulo: 'Saúde', curto: 'Saúde' },
+    { to: '/painel/fazenda', rotulo: 'Fazenda', curto: 'Fazenda' },
+  ] },
   { titulo: 'Dados', itens: [
+    { to: '/dashboard', rotulo: 'Dashboard das cargas', curto: 'Dashboard' },
+    { to: '/monitor', rotulo: 'Monitor de cargas', curto: 'Monitor' },
     { to: '/conectores', rotulo: 'Conectores', curto: 'Conectores' },
     { to: '/simulador', rotulo: 'Simulador do Cidadão', curto: 'Simulador' },
     { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
+    { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },
+    { to: '/politicas', rotulo: 'Políticas de dados', curto: 'Políticas' },
   ] },
 ]
+// Barra inferior do celular: só os atalhos principais (o menu lateral tem todos)
+const ATALHOS = ['/painel', '/painel/saude', '/painel/fazenda', '/simulador']
 type Item = { to: string; rotulo: string; curto: string; perfis?: string[] }
 const visivel = (i: Item, perfil?: string) => !i.perfis || (!!perfil && i.perfis.includes(perfil))
 
@@ -62,7 +72,7 @@ export default function Layout() {
               <ul>
                 {g.itens.map((i) => (
                   <li key={i.to}>
-                    <NavLink to={i.to} onClick={() => fechar()}>{i.rotulo}</NavLink>
+                    <NavLink to={i.to} end onClick={() => fechar()}>{i.rotulo}</NavLink>
                   </li>
                 ))}
               </ul>
@@ -72,6 +82,7 @@ export default function Layout() {
         <div className="rodape-lateral">
           <div className="usuario-nome">{sessao?.nome}</div>
           <div className="perfil">Perfil: {sessao?.perfil}</div>
+          <div className="perfil" title="Versão publicada">Build {__VERSAO__}</div>
           <button className="btn secundario" onClick={sair}>Sair</button>
         </div>
       </aside>
@@ -81,7 +92,7 @@ export default function Layout() {
         </ErrorBoundary>
       </main>
       <nav className="nav-inferior" aria-label="Atalhos">
-        {ITENS.map((i) => <NavLink key={i.to} to={i.to}>{i.curto}</NavLink>)}
+        {ITENS.filter((i) => ATALHOS.includes(i.to)).map((i) => <NavLink key={i.to} to={i.to} end>{i.curto}</NavLink>)}
       </nav>
     </div>
   )

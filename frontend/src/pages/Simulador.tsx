@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
+import { AcessosCidadao, ImpostosCidadao, LinhaDoTempoCidadao, ResumoPortal, SaudeCidadao, useDadosFicha } from '../FichaPortal'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
 type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
@@ -17,7 +19,8 @@ export default function Simulador() {
   const [lista, setLista] = useState<Item[] | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(false)
-  const [sel, setSel] = useState<string | null>(null)
+  const [params] = useSearchParams()
+  const [sel, setSel] = useState<string | null>(params.get('cid'))  // VN5: "Abrir ficha completa" do explorador
 
   const buscar = async (e?: FormEvent) => {
     e?.preventDefault()
@@ -65,6 +68,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
   const [dialogo, setDialogo] = useState(false)
   const [aviso, setAviso] = useState('')
   const btnRevelar = useRef<HTMLButtonElement>(null)
+  const { trib, saude } = useDadosFicha(id)  // FC1: uma busca de cada, entregue aos blocos
 
   const [motivo, setMotivo] = useState('')
   const carregar = () => {
@@ -101,6 +105,13 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
         )}
       </p>
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
+      <ResumoPortal trib={trib} saude={saude} />
+      <div className="portal-grade">
+        <ImpostosCidadao id={id} dados={trib} />
+        <SaudeCidadao saude={saude} />
+      </div>
+      <section className="cartao portal-bloco" aria-labelledby="t-cadastro">
+      <h3 id="t-cadastro">Dados cadastrais</h3>
       {Object.keys(grupos).length === 0 && <p className="vazio">—</p>}
       {Object.entries(grupos).map(([dom, itens]) => (
         <section key={dom} aria-labelledby={`d-${dom}`}>
@@ -117,6 +128,11 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
           </dl>
         </section>
       ))}
+      </section>
+      <div className="portal-grade">
+        <LinhaDoTempoCidadao id={id} />
+        <AcessosCidadao id={id} />
+      </div>
       {dialogo && <DialogoRevelar id={id} fechar={() => { setDialogo(false); btnRevelar.current?.focus() }} aoRevelar={revelado} />}
     </article>
   )
