@@ -38,6 +38,15 @@ class _Sessao:
 
     def __init__(self, cliente: ClienteSil):
         self.cliente, self.lotes, self.truncado = cliente, 0, False
+        self.ultimo_lote_cheio = False  # o último lote veio com LOTE_API itens: a API provavelmente tem mais
+
+    @property
+    def ha_mais(self) -> bool:
+        """Parou no teto de lotes com a API ainda devolvendo lotes cheios: a execução é PARCIAL."""
+        return self.truncado and self.ultimo_lote_cheio
+
+    def parcial(self) -> dict | None:
+        return {"parcial": True, "lotes_lidos": self.lotes, "ha_mais": True} if self.ha_mais else None
 
     def close(self) -> None:
         self.cliente.fechar()
@@ -82,6 +91,7 @@ class SilConnector:
             amostra_limite = int(get_settings().amostra_limite)
         self.amostra_limite = amostra_limite
         self.max_lotes = max(1, int(max_lotes or self.config.max_lotes_por_execucao or 1))
+        self.ultima_parcial: dict | None = None
 
     # ------------------------------------------------------------------ HTTP (só pelo ClienteSil)
     def abrir(self) -> _Sessao:
@@ -96,6 +106,7 @@ class SilConnector:
         if j is None:  # 404: fim da sequência
             return []
         itens = _empresas(j)
+        s.ultimo_lote_cheio = isinstance(itens, list) and len(itens) >= LOTE_API
         if itens is None:
             if isinstance(j, dict) and not j:
                 return []
@@ -127,6 +138,8 @@ class SilConnector:
             if not lote:
                 break
             out.extend(lote)
+            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+                conn.truncado = True  # teto atingido e a API ainda tem lotes: execução parcial
             prox = lote[-1]["Ccm"] + 1
             if prox <= seq:  # nunca repete a mesma Sequencia
                 break
@@ -136,7 +149,11 @@ class SilConnector:
     def ler_amostra(self, tabela: str, politica=None, campo_incremental=None, desde=None) -> list[dict]:
         conn = self.abrir()
         try:
-            return self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.amostra_limite)[: self.amostra_limite]
+            out = self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.amostra_limite)[: self.amostra_limite]
+            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+                conn.truncado = True
+            self.ultima_parcial = conn.parcial()  # a amostra genérica registra "parcial" na execução e na auditoria
+            return out
         finally:
             conn.close()
 

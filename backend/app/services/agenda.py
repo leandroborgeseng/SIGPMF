@@ -43,7 +43,8 @@ CHAVE_LIDER = zlib.crc32(b"agenda:lider")
 HORARIO = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 JANELA = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
 RESOLVIDOS = ("sucesso", "sem_mudanca")
-STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem", "falha": "Falhou",
+STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem",
+                "parcial": "Parcial (teto de lotes; há mais na origem)", "falha": "Falhou",
                 "bloqueada": "Não liberada", "ocupada": "Conector ocupado", "pausada": "Pausada",
                 "cancelada": "Cancelada", "interrompida": "Interrompida", "demorada": "Ainda em andamento"}
 
@@ -299,6 +300,9 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
                                            f"{(ex.novos or 0) + (ex.atualizados or 0)} gravadas"
                                            + (" (prata e ouro mantidos: nada mudou)." if ccomp.MSG_CAMADAS_MANTIDAS in (ex.mensagem or "")
                                               else "."), agora, resolvido=True)
+    if ex.status == ccomp.STATUS_PARCIAL:  # teto de lotes: não é completa (sem ultima_completa_em nem assinatura)
+        return _encerra(db, ag, "parcial", ex.mensagem or f"Carga de {nome} parcial (teto de lotes).", agora,
+                        resolvido=True)
     return _encerra(db, ag, ex.status if ex.status in STATUS_TEXTO else "falha",
                     ex.mensagem or f"Carga de {nome} terminou como {ex.status}.", agora, resolvido=False)
 
