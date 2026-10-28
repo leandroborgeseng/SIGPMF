@@ -189,7 +189,7 @@ def test_prata_liga_empresa_ao_cidadao_so_pelo_cpf(db, empresas_na_bronze):
 
 def test_ficha_mostra_empresas_do_cpf_mascaradas(client, tokens, empresas_na_bronze):
     cid, _ = empresas_na_bronze
-    r = client.get(f"/api/gold/cidadaos/{cid}/tributario", headers=tokens["admin"])
+    r = client.get(f"/api/gold/cidadaos/{cid}/tributario", headers=tokens["admin_lgpd"])
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["totais"]["empresas"] == 1
@@ -208,3 +208,18 @@ def test_vinculos_pessoa_empresa_e_volta(db, empresas_na_bronze):
     em = explorar(db, "em:900001")
     assert em["no"]["nome"] == "MEI SINTETICO" and "731450" not in em["no"]["doc"]
     assert [v["id"] for v in em["vizinhos"] if v["grupo"] == "Titular"] == [f"pf:{cid}"]
+
+
+@pytest.mark.parametrize("perfil", ["leitura", "operador", "admin"])
+def test_sil16_razao_social_e_endereco_mascarados_fora_do_admin_lgpd(client, tokens, db, empresas_na_bronze, perfil):
+    from sqlalchemy import update
+
+    from app.models.camadas import EmpresaSil
+    cid, _ = empresas_na_bronze
+    db.execute(update(EmpresaSil).where(EmpresaSil.ccm == 900001).values(endereco="RUA SINTETICA, 10"))
+    db.commit()
+    r = client.get(f"/api/gold/cidadaos/{cid}/tributario", headers=tokens[perfil])
+    assert r.status_code == 200, r.text
+    e = r.json()["empresas"][0]
+    assert e["nome"] == "M** S********" and e["endereco"] == "***" and e["mascarado"] is True
+    assert "SINTETIC" not in r.text and "731450" not in e["documento"]

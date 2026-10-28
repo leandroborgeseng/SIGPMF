@@ -659,6 +659,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
     from app.services.vinculos import mascara_doc
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    revela = u.perfil == "admin_lgpd"
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
                              .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
@@ -695,8 +696,11 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
         # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual
-        "empresas": [{"ccm": e.ccm, "nome": e.nome, "documento": mascara_doc(e.documento), "possui_debito": e.possui_debito,
-                      "endereco": e.endereco, "bairro": e.bairro} for e in empresas],
+        # SIL16: razão social e endereço só em claro para admin_lgpd (leitura, operador e admin recebem mascarado).
+        "empresas": [{"ccm": e.ccm, "nome": e.nome if revela else mascara_nome(e.nome),
+                      "documento": mascara_doc(e.documento), "possui_debito": e.possui_debito,
+                      "endereco": e.endereco if revela or not e.endereco else "***", "bairro": e.bairro,
+                      "mascarado": not revela} for e in empresas],
     }
 
 

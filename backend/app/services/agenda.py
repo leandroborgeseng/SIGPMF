@@ -88,21 +88,34 @@ def _utc(d: datetime | None) -> datetime | None:
     return d.replace(tzinfo=UTC) if d is not None and d.tzinfo is None else d
 
 
+def dia_da_janela(local: datetime, ini: int, fim: int) -> date:
+    """Data da "noite" da agenda. Janela que atravessa a meia-noite (ex.: 22:00-06:00): o trecho depois das 00h
+    pertence à janela que começou no dia anterior (SIL17: dispara uma vez por janela e refaz falha depois das 00h)."""
+    m = local.hour * 60 + local.minute
+    if ini > fim and not dia_todo(ini, fim) and m < fim:
+        return local.date() - timedelta(days=1)
+    return local.date()
+
+
 def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
-    """`agora` com fuso. Forçado roda sempre; senão: ativo, dentro da janela, já passou do horário e ainda não resolvido
-    hoje, respeitando a espera entre tentativas."""
-    if ag.forcar:
-        return True
+    """`agora` com fuso. Só agendamento ativo roda (SIL15: `forcar` não liga um desligado). Forçado roda fora do
+    horário e da janela; senão: dentro da janela, já passou do horário e ainda não resolvido nesta janela, respeitando
+    a espera entre tentativas."""
     if not ag.ativo:
         return False
+    if ag.forcar:
+        return True
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
-    if not na_janela(m, ini, fim) or ag.ultima_data == local.date():
+    if not na_janela(m, ini, fim) or ag.ultima_data == dia_da_janela(local, ini, fim):
         return False
     prox = _utc(ag.proxima_tentativa_em)
     if prox is not None and agora < prox:
         return False
-    return m >= minutos(ag.horario)
+    h = minutos(ag.horario)
+    if ini > fim:  # atravessa a meia-noite: compara a posição dentro da janela (22:30 vem antes de 01:00)
+        return (m - ini) % 1440 >= (h - ini) % 1440
+    return m >= h
 
 
 def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
@@ -212,7 +225,8 @@ def _nome(conector: str) -> str:
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
     s = get_settings()
     ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
-    hoje = agora.astimezone(_fuso()).date()
+    ini, fim = janela(s.agenda_janela)
+    hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
     if resolvido:
         ag.ultima_data, ag.tentativas, ag.proxima_tentativa_em = hoje, 0, None
     else:
