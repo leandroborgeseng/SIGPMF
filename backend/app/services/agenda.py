@@ -98,13 +98,12 @@ def dia_da_janela(local: datetime, ini: int, fim: int) -> date:
 
 
 def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
-    """`agora` com fuso. Só agendamento ativo roda (SIL15: `forcar` não liga um desligado). Forçado roda fora do
-    horário e da janela; senão: dentro da janela, já passou do horário e ainda não resolvido nesta janela, respeitando
-    a espera entre tentativas."""
-    if not ag.ativo:
-        return False
+    """`agora` com fuso. Forçado roda sempre; senão: ativo, dentro da janela, já passou do horário e ainda não resolvido
+    nesta janela (SIL17: janela que atravessa a meia-noite conta como uma só), respeitando a espera entre tentativas."""
     if ag.forcar:
         return True
+    if not ag.ativo:
+        return False
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
     if not na_janela(m, ini, fim) or ag.ultima_data == dia_da_janela(local, ini, fim):

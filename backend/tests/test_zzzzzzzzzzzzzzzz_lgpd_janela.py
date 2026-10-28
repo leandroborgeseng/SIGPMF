@@ -1,4 +1,4 @@
-"""SIL15 (forcar não liga agendamento desligado) e SIL17 (janela que atravessa a meia-noite). Sem rede, sem dado real."""
+"""SIL17 (janela que atravessa a meia-noite). Sem rede, sem dado real."""
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -16,13 +16,6 @@ def _agd(**kw):
                 tentativas=0, proxima_tentativa_em=None)
     base.update(kw)
     return Agendamento(**base)
-
-
-def test_sil15_forcar_nao_liga_agendamento_desligado():
-    ini, fim = ag.janela("00:00-06:00")
-    meio_dia = datetime(2026, 10, 28, 12, 0, tzinfo=SP)
-    assert ag.devido(_agd(ativo=False, forcar=True), meio_dia, ini, fim) is False
-    assert ag.devido(_agd(ativo=True, forcar=True), meio_dia, ini, fim) is True
 
 
 def test_sil17_janela_atravessa_meia_noite_dispara_uma_vez_e_refaz_falha():
