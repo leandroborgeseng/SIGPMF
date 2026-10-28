@@ -15,6 +15,26 @@ from app.models.controle import Usuario
 log = logging.getLogger("sigpmf")
 
 
+def configurar_logs() -> logging.Logger:
+    """A aplicação não configura o logging raiz e o uvicorn só configura os loggers dele: sem isto o INFO da medição da
+    prata (app.silver.medicao, só etapa/números, sem PII) era descartado. Handler próprio em stdout, sem propagar para o
+    raiz (não duplica se alguém configurar o raiz). Idempotente."""
+    import sys
+    med = logging.getLogger("app.silver.medicao")
+    med.setLevel(logging.INFO)
+    med.propagate = False
+    if not any(getattr(h, "_sigpmf_medicao", False) for h in med.handlers):
+        h = logging.StreamHandler(sys.stdout)
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        h._sigpmf_medicao = True
+        med.addHandler(h)
+    med.disabled = False
+    return med
+
+
+configurar_logs()
+
+
 def bootstrap_admin() -> None:
     """Cria o primeiro admin a partir de ADMIN_EMAIL/ADMIN_PASSWORD se não houver usuários."""
     s = get_settings()

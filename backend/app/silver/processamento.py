@@ -12,6 +12,10 @@ Ordem dos passes:
    registrada); candidatos por nome + mãe (sexo não pode divergir); nunca associa sozinho. Só a confirmação
    humana (controle.confirmacoes_obito) marca o cidadão como falecido.
 """
+import logging
+import os
+import resource
+import time
 from collections import defaultdict
 from datetime import date
 from itertools import combinations
@@ -35,6 +39,38 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import ConfirmacaoObito, Parametro, Sistema
+
+log = logging.getLogger("app.silver.medicao")
+
+
+def _rss_atual_mb() -> float:
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2**20
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+class Medicao:
+    """Tempo, linhas e memória por etapa da prata. Só nome da etapa, números e contagens: nenhum valor de registro (LGPD)."""
+
+    def __init__(self):
+        self.etapas: list[dict] = []
+        self._t0 = self._ult = time.perf_counter()
+
+    def marca(self, nome: str, entrada: int | None = None, saida: int | None = None) -> None:
+        """Fecha a etapa `nome` (tempo desde a marca anterior)."""
+        agora = time.perf_counter()
+        info = {"etapa": nome, "segundos": round(agora - self._ult, 3), "linhas_entrada": entrada, "linhas_saida": saida,
+                "rss_mb": round(_rss_atual_mb(), 1),
+                "rss_pico_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)}
+        self._ult = agora
+        self.etapas.append(info)
+        log.info("prata etapa=%s segundos=%.3f entrada=%s saida=%s rss_mb=%.1f rss_pico_mb=%.1f", nome,
+                 info["segundos"], entrada, saida, info["rss_mb"], info["rss_pico_mb"])
+
+    def total(self) -> float:
+        return round(time.perf_counter() - self._t0, 3)
 
 
 def _params(db: Session) -> tuple[corr.Parametros, float]:
@@ -182,14 +218,18 @@ class _Indice:
         return sorted(out, key=self.pos.__getitem__)
 
 
-def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str, int]:
+def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Medicao | None = None) -> dict[str, int]:
     """progresso(processados, total): sinal de vida (chamado a cada bloco). indexado=False mantém o algoritmo
-    linear antigo só para o teste de regressão (mesmo resultado)."""
+    linear antigo só para o teste de regressão (mesmo resultado). medicao: recebe tempo/linhas/RSS por etapa (também
+    vai para o log app.silver.medicao, sem PII)."""
+    med = medicao if medicao is not None else Medicao()
     p, peso_prov = _params(db)
     for m in (Endereco, Vinculo, Identificador, CorrelacaoPendente, Inconsistencia, Cidadao, SistemaSilver):
         db.execute(delete(m))
     for s in db.scalars(select(Sistema)):
         db.add(SistemaSilver(codigo=s.codigo, nome=s.nome, dominio=s.dominio))
+    db.flush()
+    med.marca("limpa_prata")
 
     cid_dados: dict[str, dict] = {}
     idx = _Indice()
@@ -225,6 +265,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
             continue
         regs.append((r, canonico(r.sistema_origem, r.tabela, dados), m.get("papel", "pessoa"), m))
     por_papel = defaultdict(list)
+    med.marca("le_bronze_canonico", saida=len(regs))
     for x in regs:
         por_papel[x[2]].append(x)
     total, feitos = len(regs), [0]
@@ -251,6 +292,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         for x in cs:
             donos[x].add(dono)
     cns_ambiguos = {x for x, d in donos.items() if len(d) > 1}
+    med.marca("indice_cns", entrada=len(por_papel["pessoa"]) + len(por_papel["cns_extra"]), saida=len(cns_pessoa))
 
     def cns_de(r):
         return cns_pessoa.get((r.sistema_origem, r.id_origem), set())
@@ -284,6 +326,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
             else:
                 sem_cpf.append((r, c))
 
+    med.marca("passe_cpf", entrada=len(por_papel["pessoa"]) + len(por_papel["terceiro"]), saida=len(vinculos))
     # 2) CNS
     sem_ident = []
     for r, c in sem_cpf:
@@ -310,6 +353,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         for x in validos:
             ident(vinculos[-1][2], "cns", x)
 
+    med.marca("passe_cns", entrada=len(sem_cpf), saida=len(sem_cpf) - len(sem_ident))
     # 3) atributos
     for r, c in sem_ident:  # já contados na etapa 1 (CC11: sem contar de novo)
         melhor, mcid, mattrs = 0.0, None, []
@@ -332,6 +376,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         for x in cns_de(r) - cns_ambiguos:
             ident(cid, "cns", x)
 
+    med.marca("passe_atributos", entrada=len(sem_ident))
     # 4) inconsistências do e-SUS: sempre revisão
     for _ in por_papel["cns_extra"]:  # só alimentam o CNS acima: contam uma vez aqui
         passo()
@@ -341,6 +386,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         cand = [ids[("cns", x)].cidadao_id] if x and ("cns", x) in ids else []
         pendente(r, c, "esus_inconsistencia", cand)
 
+    med.marca("passe_esus", entrada=len(por_papel["revisao"]))
     # 5) óbitos: união + dedupe + candidatos
     confirmados = {(k.sistema, k.chave_origem): k for k in db.scalars(select(ConfirmacaoObito))}
     grupos: dict[tuple[str, str], list] = defaultdict(list)
@@ -382,11 +428,15 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         motivo = "obito_revisao" if len(cand) == 1 else "obito_ambiguo" if cand else "obito_sem_candidato"
         pendente(r, c, motivo, cand, {"tabela_origem": r.tabela, "sinais": sinais, "pre_selecionado": None})
 
+    med.marca("passe_obitos", entrada=len(por_papel["obito"]))
     db.flush()  # SistemaSilver e os DELETEs antes dos INSERTs em lote
     _grava(db, Cidadao, cidadaos.values())
+    med.marca("grava_cidadaos", saida=len(cidadaos))
     _grava(db, Identificador, ids.values())
+    med.marca("grava_identificadores", saida=len(ids))
     _grava(db, CorrelacaoPendente, pend)
     _grava(db, Inconsistencia, inc)
+    med.marca("grava_pendentes_inconsistencias", saida=len(pend) + len(inc))
     enderecos: list[Endereco] = []
 
     def gera_vinculos():
@@ -398,6 +448,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
                 enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
                                           fonte_atualizado_em=r.atualizado_origem_em))
     _grava(db, Vinculo, gera_vinculos())
+    med.marca("grava_vinculos", saida=len(vinculos))
     ultimo: dict[str, Endereco] = {}
     for e in enderecos:
         u = ultimo.get(e.cidadao_id)
@@ -406,6 +457,8 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
     for e in enderecos:
         e.mais_recente = e is ultimo[e.cidadao_id]
     _grava(db, Endereco, enderecos)
+    med.marca("grava_enderecos", saida=len(enderecos))
+    log.info("prata total segundos=%.3f", med.total())
     if progresso:
         progresso(min(feitos[0], total), total)
     from app.silver import tributario  # TR4: fatos tributários ligados aos CPFs já correlacionados
