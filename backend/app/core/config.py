@@ -1,7 +1,7 @@
 """Configuração estruturada lida do ambiente (nenhum segredo tem valor padrão)."""
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VERSION = "0.1.0"
@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     smtp_starttls: bool = Field(True, alias="SMTP_STARTTLS")
     alerta_de: str | None = Field(None, alias="ALERTA_DE")
     alerta_para: str = Field("", alias="ALERTA_PARA")  # e-mails separados por vírgula
+
+    @field_validator("financeiro_exercicio_min", mode="before")
+    @classmethod
+    def _vazio_e_nulo(cls, v):
+        """Variável presente e vazia no .env (como no .env.example) = não definida."""
+        return None if isinstance(v, str) and not v.strip() else v
 
     @property
     def perfis_reveal(self) -> set[str]:
