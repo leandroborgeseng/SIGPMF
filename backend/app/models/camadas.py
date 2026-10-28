@@ -269,3 +269,78 @@ class DividaAtiva(Base):
     protestos: Mapped[int | None] = mapped_column(Integer)
     processo: Mapped[str | None] = mapped_column(String(30))
     extinta: Mapped[bool] = mapped_column(Boolean)
+
+
+# ---------------- Saúde, fatos (onda 3, SA-F2): sem conteúdo clínico; cidadão pela matrícula já correlacionada --------
+class UnidadeSaude(Base):
+    __tablename__ = "unidades_saude"
+    __table_args__ = TR
+    codigo: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nome: Mapped[str | None] = mapped_column(String(250))
+    tipo: Mapped[str | None] = mapped_column(String(5))
+    ativa: Mapped[bool] = mapped_column(Boolean)
+    cd_bairro: Mapped[int | None] = mapped_column(Integer)
+
+
+class Atendimento(Base):
+    __tablename__ = "atendimentos"
+    __table_args__ = (Index("ix_silver_atendimento_cidadao", "cidadao_id"), Index("ix_silver_atendimento_data", "data"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
+    matricula: Mapped[str | None] = mapped_column(String(30))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    data: Mapped[date | None] = mapped_column(Date)
+    unidade: Mapped[int | None] = mapped_column(Integer)
+    especialidade: Mapped[int | None] = mapped_column(Integer)
+
+
+class Agendamento(Base):
+    __tablename__ = "agendamentos"
+    __table_args__ = (Index("ix_silver_agendamento_cidadao", "cidadao_id"), Index("ix_silver_agendamento_data", "data_consulta"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
+    matricula: Mapped[str | None] = mapped_column(String(30))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    data_consulta: Mapped[date | None] = mapped_column(Date)
+    data_marcacao: Mapped[date | None] = mapped_column(Date)
+    dias_espera: Mapped[int | None] = mapped_column(Integer)
+    unidade: Mapped[int | None] = mapped_column(Integer)
+    especialidade: Mapped[int | None] = mapped_column(Integer)
+
+
+class Vacinacao(Base):
+    __tablename__ = "vacinacoes"
+    __table_args__ = (Index("ix_silver_vacinacao_cidadao", "cidadao_id"), Index("ix_silver_vacinacao_data", "data"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
+    matricula: Mapped[str | None] = mapped_column(String(30))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    data: Mapped[date | None] = mapped_column(Date)
+    unidade: Mapped[int | None] = mapped_column(Integer)
+    vacina: Mapped[str | None] = mapped_column(String(60))
+    dose: Mapped[str | None] = mapped_column(String(10))
+
+
+class Evento(Base):
+    """Linha do tempo do cidadão (onda 3, SA-F3): um fato por linha, de qualquer área, com fonte."""
+    __tablename__ = "eventos"
+    __table_args__ = (Index("ix_silver_evento_cidadao_data", "cidadao_id", "data"), TR)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cidadao_id: Mapped[str] = mapped_column(String(36))
+    data: Mapped[date] = mapped_column(Date)
+    area: Mapped[str] = mapped_column(String(20))
+    tipo: Mapped[str] = mapped_column(String(40))
+    titulo: Mapped[str] = mapped_column(String(300))
+    fonte: Mapped[str] = mapped_column(String(50))
+
+
+class Indicador(Base):
+    """Ouro agregado (onda 3, SA-F4): série, período (AAAA-MM ou vazio), dimensão e valor. Sem pessoa."""
+    __tablename__ = "indicadores"
+    __table_args__ = (Index("ix_gold_indicador_serie", "serie", "periodo"), {"schema": "gold"})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    serie: Mapped[str] = mapped_column(String(60))
+    periodo: Mapped[str] = mapped_column(String(7), default="")
+    dim: Mapped[str] = mapped_column(String(200), default="")
+    valor: Mapped[float] = mapped_column(Float)
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

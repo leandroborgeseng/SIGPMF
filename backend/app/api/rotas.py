@@ -640,6 +640,64 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     }
 
 
+@api.get("/gold/cidadaos/{cid}/linha-do-tempo")
+def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None = None, u: Usuario = Depends(usuario_atual),
+                   db: Session = Depends(get_db)):
+    """SA-F3: eventos do cidadão (todas as áreas), do mais novo para o mais antigo, paginados (`antes`=AAAA-MM-DD)."""
+    from datetime import date as _date
+
+    from app.models.camadas import Evento
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    q = select(Evento).where(Evento.cidadao_id == cid)
+    if antes:
+        try:
+            q = q.where(Evento.data < _date.fromisoformat(antes))
+        except ValueError:
+            raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
+    evs = list(db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200)))))
+    audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
+    return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
+                                            "fonte": e.fonte} for e in evs]}
+
+
+@api.get("/gold/cidadaos/{cid}/saude")
+def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """SA-F5: relacionamento com a Saúde (sem conteúdo clínico): próximos agendamentos, vacinas e últimos atendimentos."""
+    from datetime import date as _date
+
+    from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
+    from app.silver.fatos import nomes
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
+    esp = nomes(db)["especialidades"]
+    hoje = _date.today()
+    ag = list(db.scalars(select(Agendamento).where(Agendamento.cidadao_id == cid, Agendamento.data_consulta >= hoje)
+                         .order_by(Agendamento.data_consulta).limit(10)))
+    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc()).limit(10)))
+    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
+    audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
+    return {"cidadao_id": cid,
+            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade),
+                          "dias_espera": a.dias_espera} for a in ag],
+            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade)} for a in at],
+            "vacinas": [{"data": v.data, "vacina": v.vacina, "dose": v.dose, "unidade": uni.get(v.unidade)} for v in va]}
+
+
+@api.get("/indicadores")
+def indicadores_gestao(series: str | None = None, db: Session = Depends(get_db)):
+    """SA-F4: ouro agregado dos painéis (sem pessoa). `series` = lista separada por vírgula (vazio = todas)."""
+    from app.models.camadas import Indicador
+    q = select(Indicador)
+    if series:
+        q = q.where(Indicador.serie.in_([x.strip() for x in series.split(",") if x.strip()]))
+    out: dict[str, list] = {}
+    atualizado = None
+    for i in db.scalars(q.order_by(Indicador.serie, Indicador.periodo, Indicador.dim)):
+        out.setdefault(i.serie, []).append({"periodo": i.periodo, "dim": i.dim, "valor": i.valor})
+        atualizado = max(atualizado, i.atualizado_em) if atualizado else i.atualizado_em
+    return {"atualizado_em": atualizado, "series": out}
+
+
 @api.get("/gold/cidadaos/{cid}/sistemas")
 def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()

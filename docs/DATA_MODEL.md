@@ -15,6 +15,9 @@
 | silver | enderecos | todos os endereços com fonte e data; `mais_recente` marcado |
 | silver | correlacoes_pendentes, inconsistencias | revisão (ambiguo, revisao) e problemas (cpf_invalido, cpf_nascimento_divergente) |
 | silver | imoveis, imovel_possuidores, lancamentos, dividas | prata tributária (0013): fatos de IPTU/Dívida/Financeiro ligados ao cidadão pelo CPF já correlacionado; nunca criam cidadão |
+| silver | unidades_saude, atendimentos, agendamentos, vacinacoes | fatos da Saúde sem conteúdo clínico (0014), cidadão pela matrícula |
+| silver | eventos | linha do tempo do cidadão, todas as áreas (0014) |
+| gold | indicadores | ouro agregado dos painéis: série, período, dimensão, valor; sem pessoa (0014) |
 | gold | cidadao_sistemas, cidadao_dados | por cidadão: sistemas/domínios; valor mais recente por campo com fonte e data (sem CPF) |
 
 Silver e gold são reconstruídas de forma determinística a partir do bronze (idempotente).

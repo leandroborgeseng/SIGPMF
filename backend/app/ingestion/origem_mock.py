@@ -3,12 +3,13 @@ lê no máximo `limite` linhas, só as colunas permitidas pela política do sist
 from app.ingestion import fixture_saude_cemiterio, fixture_tributario
 from app.ingestion.fixture_sintetica import SEED, gerar
 
+PARTES = {"saude", "cemiterio", "tributario", "saude_fatos"}
 CONJUNTOS = ("base", "saude", "cemiterio", "saude+cemiterio", "tributario", "saude+tributario", "saude+cemiterio+tributario")
 
 
 class OrigemMock:
     def __init__(self, seed: int = SEED, conjunto: str = "base"):
-        if conjunto not in CONJUNTOS:
+        if conjunto not in CONJUNTOS and not set(conjunto.split("+")) <= PARTES:
             raise ValueError(f"Conjunto inválido: {conjunto}")
         dados: dict = {}
         if conjunto == "base":
@@ -16,6 +17,7 @@ class OrigemMock:
         else:
             fx = fixture_saude_cemiterio.gerar()
             fx["tributario"] = fixture_tributario.gerar(fx["saude"][("SAUDE", "pacientes")][0]["Cpf"])
+            fx["saude_fatos"] = fixture_tributario.gerar_saude_fatos()
             for parte in conjunto.split("+"):
                 dados.update(fx[parte])
         self._dados = dados
@@ -27,7 +29,7 @@ class OrigemMock:
     def ler(self, sistema: str, tabela: str, limite: int | None, colunas: tuple[str, ...] | None = None) -> list[dict]:
         cols = ", ".join(f"[{c}]" for c in colunas) if colunas else "*"
         self.consultas.append(f"SELECT TOP ({limite}) {cols} FROM [{tabela}]" if limite else f"SELECT {cols} FROM [{tabela}]")
-        linhas = self._dados[(sistema, tabela)]
+        linhas = self._dados.get((sistema, tabela), [])  # tabela da política sem fixture neste conjunto: vazia
         linhas = linhas[:limite] if limite else linhas
         if colunas:
             return [{c: x.get(c) for c in colunas} for x in linhas]

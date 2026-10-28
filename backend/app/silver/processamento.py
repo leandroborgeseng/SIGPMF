@@ -66,12 +66,19 @@ def sistemas_so_fatos() -> tuple[str, ...]:
     return tuple(sorted(s for s, papeis in por.items() if papeis == {"fato"})) or ("",)
 
 
+def tabelas_fato() -> list[str]:
+    """"SISTEMA|tabela" de cada fato (inclusive dentro de sistemas mistos, como a Saúde): fora da correlação."""
+    return sorted(f"{s}|{t}" for (s, t), m in MAPEAMENTOS.items() if m.get("papel") == "fato") or ["|"]
+
+
 def _ultimas_versoes(db: Session):
     """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor). Antes vinham como
     objetos ORM completos (com `dados`) numa lista: centenas de MB a mais por 100 mil linhas."""
     so_fatos = sistemas_so_fatos()  # TR3: fatos tributários (milhões de linhas) nem saem do banco
     sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None),  # CC9
-                                                    RegistroBronze.sistema_origem.not_in(so_fatos)).group_by(
+                                                    RegistroBronze.sistema_origem.not_in(so_fatos),
+                                                    func.concat(RegistroBronze.sistema_origem, "|", RegistroBronze.tabela)
+                                                    .not_in(tabelas_fato())).group_by(
         RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
     q = (select(RegistroBronze.id, RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem,
                 RegistroBronze.atualizado_origem_em, RegistroBronze.dados)
@@ -403,5 +410,9 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True) -> dict[str,
         progresso(min(feitos[0], total), total)
     from app.silver import tributario  # TR4: fatos tributários ligados aos CPFs já correlacionados
     trib = tributario.reconstruir(db)
+    from app.gold import indicadores
+    from app.silver import fatos  # onda 3: fatos da Saúde + linha do tempo; depois o ouro agregado dos painéis
+    trib.update(fatos.reconstruir(db))
+    trib.update(indicadores.reconstruir(db))
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
             "feitos": feitos[0], "total_bronze": total, "tributario": trib}

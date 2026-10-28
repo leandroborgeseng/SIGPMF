@@ -61,3 +61,35 @@ def gerar(cpf_sa1: str) -> dict[tuple[str, str], list[dict]]:
             div("02222020020200", "00", 2022, 0.0, True, 0),
         ],
     }
+
+
+def gerar_saude_fatos() -> dict[tuple[str, str], list[dict]]:
+    """Onda 3: fatos sintéticos da Saúde (sem conteúdo clínico na política). Matrícula 1001 = SA1.
+    F1 duas consultas de SA1; F2 consulta de paciente sem vínculo (só agregado); F3 agendamento futuro de SA1 com
+    espera de 30 dias; F4 vacina de SA1; colunas clínicas presentes na origem nunca entram na bronze."""
+    from datetime import date, timedelta
+    hoje = date.today()
+    d = lambda n: (hoje + timedelta(days=n)).isoformat() + " 08:00:00"  # noqa: E731
+    clin = {"Queixa_principal": "texto clinico sintetico", "HMA": "x", "Suspeita": "y", "PA": "12x8", "Peso": 80.0}
+    return {
+        ("SAUDE", "Unidades"): [{"Codigo": 10, "Nome_Fantasia": "UBS Sintetica Centro", "Tipo": "U", "Inativo_Ativo": "A", "Cd_Bai": 10},
+                                {"Codigo": 20, "Nome_Fantasia": "PS Sintetico", "Tipo": "P", "Inativo_Ativo": "A", "Cd_Bai": 11}],
+        ("SAUDE", "Aux_Especialidades"): [{"Codi_Espe": 1, "Desc_Espe": "Clinica Geral"}, {"Codi_Espe": 2, "Desc_Espe": "Oftalmologia"}],
+        ("SAUDE", "Aux_Vacina"): [{"Cod_Vacina": 7, "Vacina": "Influenza", "Dose": "D1"}],
+        ("SAUDE", "Consultas"): [
+            {"Cod_Paciente": 1001, "Cons_Paciente": 1, "Dt_Atend": d(-40), "Cod_Ubs": 10, "Codigo_Especialidade": 1,
+             "CodigoGrupoAtendimento": 1, "ESUSTipoAtendimento": 1, **clin},
+            {"Cod_Paciente": 1001, "Cons_Paciente": 2, "Dt_Atend": d(-5), "Cod_Ubs": 20, "Codigo_Especialidade": 1,
+             "CodigoGrupoAtendimento": 1, "ESUSTipoAtendimento": 2, **clin},
+            {"Cod_Paciente": 424242, "Cons_Paciente": 1, "Dt_Atend": d(-3), "Cod_Ubs": 10, "Codigo_Especialidade": 1,
+             "CodigoGrupoAtendimento": 1, "ESUSTipoAtendimento": 1, **clin},
+        ],
+        ("SAUDE", "Agendamento_Consulta"): [
+            {"Cod_Ubs": 10, "Cod_Prof": 5, "Cod_Pac": 1001, "Dt_Cons": d(15), "Hr_Cons": 900, "Cod_Espec": 2,
+             "DataHoraAgendamento": d(-15), "Data_Hora_SIGS": d(-15), "MotivoExclusao": "nunca entra"},
+        ],
+        ("SAUDE", "Vacina"): [
+            {"Matricula": 1001, "Cod_Vacina": 7, "Sequencia": 1, "Cod_Unidade": 10, "Dt_Vacina": d(-60),
+             "DataGravacao": d(-60), "Lote": "nunca entra", "Observacao": "nunca entra"},
+        ],
+    }

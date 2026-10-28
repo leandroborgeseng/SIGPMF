@@ -6,6 +6,7 @@
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 
 class TabelaRecusada(ValueError):
@@ -70,7 +71,10 @@ class Politica:
         col, minimo = self.filtros[nome]
         if col not in self.colunas.get(nome, ()):
             raise TabelaRecusada(f"Recorte de {nome} fora das colunas da política.")
-        return f"([{col}] >= {int(minimo())})"
+        v = minimo()
+        if isinstance(v, date):  # data (ex.: últimos 12 meses): literal ISO gerado de um objeto date, nunca de texto
+            return f"([{col}] >= '{v.isoformat()}')"
+        return f"([{col}] >= {int(v)})"
 
     def ordem_amostra(self, tabela: str) -> tuple[str, ...]:
         nome = tabela.split(".")[-1]
@@ -119,8 +123,20 @@ SAUDE = Politica(
         "Medicos": ("Codigo", "Nome", "CPF", "Cartao_SUS", "Tp_Conselho", "Nr_Conselho", "UF_Conselho", "Ativo",
                     "Dt_Inclusao", "Dt_UltimaAtual"),
         "ProfissionaisCNES": ("id", "Codigo", "DataInclusao", "CNES", "INE", "CBO", "Nome", "Ativo"),
+        # Onda 3 (SA-F1): fatos de atendimento SEM conteúdo clínico (queixa, HMA, suspeita, exame, sinais vitais fora)
+        "Consultas": ("Cod_Paciente", "Cons_Paciente", "Dt_Atend", "Cod_Ubs", "Codigo_Especialidade",
+                      "CodigoGrupoAtendimento", "ESUSTipoAtendimento"),
+        "Agendamento_Consulta": ("Cod_Ubs", "Cod_Prof", "Cod_Pac", "Dt_Cons", "Hr_Cons", "Cod_Espec",
+                                 "DataHoraAgendamento", "Data_Hora_SIGS"),
+        "Vacina": ("Matricula", "Cod_Vacina", "Sequencia", "Cod_Unidade", "Dt_Vacina", "DataGravacao"),
+        "Unidades": ("Codigo", "Nome_Fantasia", "Tipo", "Inativo_Ativo", "Cd_Bai"),
+        "Aux_Vacina": ("Cod_Vacina", "Vacina", "Dose"),
+        "Aux_Especialidades": ("Codi_Espe", "Desc_Espe"),
     },
-    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio", "Unidades",
+    filtros={"Consultas": ("Dt_Atend", lambda: date.today() - timedelta(days=365)),
+             "Agendamento_Consulta": ("Dt_Cons", lambda: date.today() - timedelta(days=365)),
+             "Vacina": ("Dt_Vacina", lambda: date.today() - timedelta(days=730))},
+    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
                      "Aux_TpUnidade", "UnidadesESF", "UnidadesESFAgentes", "Aux_profissoes", "Medico_CBO",
                      "Aux_CBO_DePara"}),
     recusar=_RECUSA_COMUM,
@@ -129,7 +145,10 @@ SAUDE = Politica(
                          "TemDoencaCardiaca", "TemDoencaCardiacaInsuficiencia", "TemDoencaCardiacaOutro",
                          "DeficienciaAuditiva", "DeficienciaIntelectual", "DeficienciaVisual", "DeficienciaFisica",
                          "DeficienciaOutros", "TemAlgumaDeficiencia", "Tipo_Sangue", "ObservacaoFraldas",
-                         "LimiteFraldas", "SADAcompanhado", "Observacao", "Cor", "ID_ETNIA", "Visualiz_Senha"}),
+                         "LimiteFraldas", "SADAcompanhado", "Observacao", "Cor", "ID_ETNIA", "Visualiz_Senha",
+                         "Queixa_principal", "HMA", "Suspeita", "Exame_Fisico", "Justif_Exames", "PA", "FC", "Peso",
+                         "Altura", "Temperatura", "Glicosimetria", "FreqResp", "Glasgow", "MotivoExclusao",
+                         "JustificativaExtra", "Lote", "LoteDescricao"}),
 )
 
 _CHAVE_SEP = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")

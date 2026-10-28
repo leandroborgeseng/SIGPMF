@@ -67,3 +67,15 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   `imovel_possuidores`, `lancamentos`, `dividas`) liga o fato ao cidadão só pelo CPF já correlacionado; o lançamento e a
   dívida vão para o possuidor principal ativo do imóvel. PJ e CPF sem cidadão ficam só com o documento.
 - Ficha: `GET /api/gold/cidadaos/{id}/tributario` (todos os perfis autenticados, auditado como `consulta_tributario`).
+
+## Saúde (fatos), linha do tempo e ouro agregado (onda 3, SA-F1..SA-F6)
+- Saúde passa a trazer, **sem conteúdo clínico**, `Consultas` (12 meses), `Agendamento_Consulta` (12 meses), `Vacina`
+  (24 meses) e as dimensões `Unidades`, `Aux_Vacina`, `Aux_Especialidades`. Queixa, HMA, suspeita, exame físico, sinais
+  vitais, lote e observações estão na lista de colunas proibidas.
+- São fatos: não passam pela correlação de pessoas; ligam ao cidadão pela matrícula do paciente já correlacionada.
+  ❓ confirmar com a Saúde que `Consultas.Cod_Paciente` e `Agendamento_Consulta.Cod_Pac` são a `Matricula`.
+- Linha do tempo: `silver.eventos` (consulta, agendamento, vacina, posse de imóvel, pagamento, parcela vencida,
+  inscrição em dívida). API `GET /api/gold/cidadaos/{id}/linha-do-tempo?limite=&antes=AAAA-MM-DD` (auditada).
+- Saúde do cidadão: `GET /api/gold/cidadaos/{id}/saude` (próximos agendamentos, atendimentos, vacinas; auditada).
+- Ouro agregado: `gold.indicadores` (série, período, dimensão, valor; sem pessoa; grupos de saúde com menos de 5 casos
+  suprimidos). API `GET /api/indicadores?series=kpi,saude_atend_mes,...` para os painéis.
