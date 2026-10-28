@@ -1,7 +1,7 @@
 """Medição por etapa da prata (bronze -> prata) com bronze SINTÉTICA ZZTESTE (padrão 500 mil linhas).
 
 Uso (só banco de TESTE, nome terminando em _test):
-    TEST_DATABASE_URL=postgresql+psycopg://.../sigpmf_prata_perf_test python -m tests.bench_prata 500000 [--json saida.json]
+    TEST_DATABASE_URL=postgresql+psycopg://.../sigpmf_prata_perf_test python -m tests.bench_prata 500000 [--json saida.json] [--allow-remote]
 Imprime a tabela etapa / segundos / % do total / RSS atual / RSS pico. Nenhum dado real, nenhum valor de registro."""
 import json
 import os
@@ -10,7 +10,12 @@ import time
 
 if __name__ == "__main__":
     url = os.environ["TEST_DATABASE_URL"]
-    assert url.rsplit("/", 1)[-1].endswith("_test"), "só banco *_test"
+    from sqlalchemy.engine import make_url
+    u = make_url(url)
+    if not (u.database or "").endswith("_test"):
+        sys.exit("bench_prata: só banco com nome terminando em _test")
+    if u.host not in ("localhost", "127.0.0.1", "::1") and "--allow-remote" not in sys.argv:
+        sys.exit("bench_prata: só Postgres local (localhost/127.0.0.1); para outro host use --allow-remote")
     os.environ["DATABASE_URL"] = url
     os.environ.setdefault("JWT_SECRET", "segredo-de-benchmark-somente-teste")
     n = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 500000

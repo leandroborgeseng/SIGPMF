@@ -2,7 +2,7 @@
 etapa só registra nome, tempo, contagens e RSS (sem PII). Dados sintéticos ZZTESTE, transação desfeita no fim."""
 import logging
 
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, insert, select
 
 from app.models.camadas import Inconsistencia, RegistroBronze
 from app.models.controle import Execucao
@@ -77,4 +77,35 @@ def test_medicao_por_etapa_sem_pii(db, caplog):
         for proibido in ("SECRETO", "OCULTA", "PRIVADA", "00000000191", "12345678900", "ZZM1", "1980"):
             assert proibido not in texto
     finally:
+        db.rollback()
+
+
+def test_reconstruir_real_grava_vinculos_e_enderecos_em_lotes_de_5000(db):
+    """Ciclo 1 do QA: conta os INSERTs numa reconstrução de verdade (volta para add_all/flush e o teste quebra)."""
+    n = 12_001
+    ex = Execucao(tipo="zzteste_prata_lotes", sistema="SAUDE", status="sucesso", usuario="zzteste")
+    db.add(ex)
+    db.flush()
+    db.execute(insert(RegistroBronze), [
+        {"sistema_origem": "SAUDE", "tabela": "pacientes", "id_origem": f"ZZL{i}", "hash": f"zzl{i}", "execucao_id": ex.id,
+         "dados": {"Matricula": f"ZZL{i}", "Nome": f"ZZTESTE LOTE {i}", "Dt_Nasc": None, "Mae": f"ZZTESTE MAE {i}",
+                   "Cpf": None, "Cartao_Sus": None, "Sexo": "F", "Complemento": f"RUA ZZTESTE {i}", "Nr": "1", "Cep": None}}
+        for i in range(n)])
+    db.flush()
+    contagens = {}
+    solta = []
+    for tabela in ("vinculos", "enderecos", "cidadaos"):
+        contagens[tabela], s = _conta_inserts(db, tabela)
+        solta.append(s)
+    try:
+        r = processamento.reconstruir(db)
+        assert r["vinculos"] >= n
+        for tabela in ("vinculos", "enderecos", "cidadaos"):
+            lotes = contagens[tabela]
+            assert lotes and all(x == 5000 for x in lotes[:-1]) and 0 < lotes[-1] <= 5000, (tabela, lotes)
+            assert len(lotes) == -(-sum(lotes) // 5000), (tabela, lotes)  # nenhum INSERT por linha / lote menor no meio
+        assert sum(contagens["vinculos"]) == r["vinculos"]
+    finally:
+        for s in solta:
+            s()
         db.rollback()
