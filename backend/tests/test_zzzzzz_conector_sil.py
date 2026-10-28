@@ -188,28 +188,17 @@ def test_credencial_recusada_na_autenticacao(cliente):
         c.get("/franca/imoveis", {"InscrFisico": "ZZT1"})
 
 
-# ---------- TL 27/10: sondagem sandbox -> produção ----------
-def test_sondagem_tenta_sandbox_primeiro_e_cai_para_producao(mock):
+# ---------- TL 28/10: sandbox primeiro; produção só em erro de rede ----------
+def test_sondagem_sandbox_aceita_nao_toca_producao(mock):
     estado_prod, url_prod = mock
     est_sb = EstadoMock()
-    est_sb.auth_ok = False  # homologação recusa
     sb = servidor(est_sb)
     try:
         rel = Relogio()
         c = ClienteSil(cfg(url_prod, base_url_sandbox=f"http://127.0.0.1:{sb.server_address[1]}"), relogio=rel,
                        dormir=rel.dormir)
-        assert c.sondar() == "producao"
-        assert est_sb.conta("POST", "/api/authenticate") == 1 and estado_prod.conta("POST", "/api/authenticate") == 1
         c.get("/franca/imoveis", {"InscrFisico": "ZZT1"})
-        assert estado_prod.conta("GET", "/franca/imoveis") == 1 and est_sb.conta("GET", "/franca/imoveis") == 0
-        c.fechar()
-        # sandbox aceita: fica na homologação e não toca a produção
-        est_sb.auth_ok = True
-        estado_prod.req.clear()
-        c = ClienteSil(cfg(url_prod, base_url_sandbox=f"http://127.0.0.1:{sb.server_address[1]}"), relogio=rel,
-                       dormir=rel.dormir)
-        c.get("/franca/imoveis", {"InscrFisico": "ZZT1"})
-        assert c.ambiente == "sandbox" and estado_prod.req == []
+        assert c.ambiente == "sandbox" and estado_prod.req == [] and est_sb.conta("GET", "/franca/imoveis") == 1
         c.fechar()
     finally:
         sb.shutdown()
@@ -547,3 +536,51 @@ def test_amostra_sil_excecao_marca_etapa_falha(client, tokens, db, sil_env, sil_
     ex = db.get(Execucao, r.json()["id"])
     db.refresh(ex)
     assert ex.status == "falha" and ex.etapa == "falha"
+
+
+def _sondagem_rede(sandbox):
+    """Transporte mock: 'sandbox' decide a resposta da homologação; a produção sempre autentica."""
+    vistos = []
+
+    def h(r):
+        vistos.append(r.url.host)
+        if r.url.host == "sandbox.zzteste.invalid":
+            if isinstance(sandbox, Exception):
+                raise sandbox
+            return httpx.Response(sandbox, json={"status": "Falha"})
+        return httpx.Response(200, json={"access_token": "ZZTOKEN", "expires_in": "600s"})
+    rel = Relogio()
+    c = ClienteSil(ConfigSil(base_url="https://prod.zzteste.invalid/v1", client_id="zz-id",
+                             client_secret=SEGREDO_SINTETICO, scope="zz",
+                             base_url_sandbox="https://sandbox.zzteste.invalid/v1", tentativas=0),
+                   transport=httpx.MockTransport(h), relogio=rel, dormir=rel.dormir)
+    return c, vistos
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_sandbox_401_403_nao_tenta_producao(status):
+    c, vistos = _sondagem_rede(status)
+    with pytest.raises(FalhaCredencial, match="produção não foi tentada"):
+        c.sondar()
+    assert c.ambiente is None and vistos == ["sandbox.zzteste.invalid"]
+
+
+def test_sandbox_500_nao_tenta_producao():
+    c, vistos = _sondagem_rede(500)
+    with pytest.raises(FalhaSil):
+        c.sondar()
+    assert set(vistos) == {"sandbox.zzteste.invalid"}
+
+
+@pytest.mark.parametrize("erro", [httpx.ReadTimeout("zz https://sandbox.zzteste.invalid/v1?x=1"),
+                                  httpx.ConnectError("zz https://sandbox.zzteste.invalid/v1")])
+def test_sandbox_rede_cai_para_producao_com_warning_limpo(erro, caplog):
+    c, vistos = _sondagem_rede(erro)
+    with caplog.at_level(logging.DEBUG, logger="sigpmf.conector.sil"):
+        assert c.sondar() == "producao"
+    assert vistos == ["sandbox.zzteste.invalid", "prod.zzteste.invalid"]
+    avisos = [r for r in caplog.records if r.levelno == logging.WARNING and "tentando o próximo" in r.getMessage()]
+    assert len(avisos) == 1 and "sandbox" in avisos[0].getMessage()
+    tudo = " ".join(r.getMessage() for r in caplog.records)
+    for proibido in ("zzteste.invalid", "http", SEGREDO_SINTETICO, "zz-id", "ZZTOKEN"):
+        assert proibido not in tudo

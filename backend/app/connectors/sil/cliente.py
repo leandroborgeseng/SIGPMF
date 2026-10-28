@@ -94,6 +94,10 @@ class FalhaSil(ErroSil):
         self.motivo, self.status = motivo, status
 
 
+class FalhaRede(FalhaSil):
+    """Timeout ou erro de conexão (sem resposta HTTP): único caso em que a sondagem cai para o próximo ambiente."""
+
+
 def _normaliza(caminho: str) -> str:
     if not caminho.startswith("/") or "?" in caminho or "#" in caminho or "\\" in caminho:
         raise OperacaoProibida("caminho inválido para a SIL")
@@ -155,8 +159,9 @@ class ClienteSil:
                             follow_redirects=False, headers={"Accept": "application/json"})
 
     def sondar(self) -> str:
-        """Sondagem de autenticação (só leitura): tenta a homologação (sandbox) e, se ela falhar (rede, status ou
-        credencial recusada), a produção. Fica no primeiro ambiente que autenticar. Devolve o ambiente."""
+        """Sondagem de autenticação (só leitura): tenta a homologação (sandbox) primeiro. Decisão TL 28/10: só cai
+        para a produção em erro de REDE (timeout/conexão), com WARNING sem URL, token ou segredo. Credencial recusada
+        (401/403), outro status ou resposta inválida param aqui, sem tocar a produção. Devolve o ambiente."""
         ultimo: ErroSil | None = None
         for nome, url in self._bases:
             if self._http.base_url != httpx.URL(url):
@@ -164,11 +169,14 @@ class ClienteSil:
                 self._http = self._cliente_http(url)
             try:
                 self._autentica()
-            except RespostaAuthInvalida:
-                raise  # o ambiente autenticou: nunca cai para o próximo (produção)
-            except ErroSil as exc:
-                log.warning("SIL: autenticação no ambiente %s falhou (%s)%s", nome, type(exc).__name__,
-                            "; tentando o próximo" if (nome, url) != self._bases[-1] else "")
+            except FalhaCredencial:
+                log.error("SIL: credencial recusada na autenticação do ambiente %s; o próximo não será tentado", nome)
+                raise FalhaCredencial(f"credencial da SIL recusada na autenticação ({nome}); "
+                                      "a produção não foi tentada") from None
+            except FalhaRede as exc:
+                ultimo_amb = (nome, url) == self._bases[-1]
+                log.warning("SIL: autenticação no ambiente %s sem resposta de rede (%s)%s", nome, exc.motivo,
+                            "" if ultimo_amb else "; tentando o próximo")
                 ultimo = exc
                 continue
             self.ambiente = nome
@@ -237,10 +245,10 @@ class ClienteSil:
             try:
                 r = self._http.request(metodo, caminho, **kw)
             except httpx.TimeoutException:  # a exceção do httpx traz a URL com a query: não é encadeada
-                ultimo = FalhaSil("SIL não respondeu (timeout)")
+                ultimo = FalhaRede("SIL não respondeu (timeout)")
                 log.warning("SIL %s %s timeout (tentativa %d)", metodo, caminho, tentativa + 1)
             except httpx.TransportError as exc:
-                ultimo = FalhaSil(f"erro de conexão com a SIL ({type(exc).__name__})")
+                ultimo = FalhaRede(f"erro de conexão com a SIL ({type(exc).__name__})")
                 log.warning("SIL %s %s erro de conexão %s (tentativa %d)", metodo, caminho, type(exc).__name__,
                             tentativa + 1)
             else:
