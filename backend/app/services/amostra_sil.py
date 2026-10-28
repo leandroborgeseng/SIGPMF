@@ -23,6 +23,7 @@ from app.models.controle import Execucao, Log
 CHAVE_TRAVA = zlib.crc32(b"amostra:SIL")
 ENDPOINT_AMOSTRA = "empresas_lote"
 LOTES_POR_EXECUCAO = 1  # TL: um lote por execução, independentemente de SIL_CONSULTARLOTE_MAX_LOTES
+STATUS_SUCESSO = ("sucesso", "sem_novidades")  # demais (falha, interrompida, origem vazia...) -> etapa "falha"
 
 
 class Conflito(RuntimeError):
@@ -88,7 +89,7 @@ def rodar(ex_id: int, usuario: str, nome_endpoint: str, trava, cliente=None) -> 
     try:
         ex = carga.executar_enriquecimento(db, usuario, endpoint(nome_endpoint), cliente=cliente,
                                            execucao_id=ex_id, max_lotes=LOTES_POR_EXECUCAO)
-        ex.etapa = "concluida"
+        ex.etapa = "concluida" if ex.status in STATUS_SUCESSO else "falha"
         db.commit()
         audita(db, usuario, "amostra_sil_executada", f"execucao:{ex_id}",
                {"status": ex.status, "lidos": ex.lidos, "novos": ex.novos, "lotes": ex.lotes})
@@ -96,7 +97,7 @@ def rodar(ex_id: int, usuario: str, nome_endpoint: str, trava, cliente=None) -> 
         db.rollback()
         ex = db.get(Execucao, ex_id)
         if ex is not None and ex.status == "em_andamento":
-            ex.status, ex.finalizado_em = "falha", datetime.now(UTC)
+            ex.status, ex.finalizado_em, ex.etapa = "falha", datetime.now(UTC), "falha"
             ex.mensagem = f"Falha na amostra SIL: {type(exc).__name__}"
             db.add(Log(execucao_id=ex.id, nivel="ERROR", mensagem=ex.mensagem))
             db.commit()

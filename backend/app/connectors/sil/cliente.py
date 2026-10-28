@@ -52,6 +52,30 @@ class ErroSil(RuntimeError):
     """Erro do conector com mensagem segura (sem segredo, token, URL completa nem chave consultada)."""
 
 
+class RespostaAuthInvalida(ErroSil):
+    """Sandbox autenticou (200) mas a resposta não é utilizável: não tenta a produção."""
+
+
+def parse_expires_in(valor: Any) -> float:
+    """expires_in da SIL: 600, "600" ou "600s" (formato da especificação). Ausente -> 600. Inválido -> ValueError."""
+    if valor is None or valor == "":
+        return 600.0
+    if isinstance(valor, bool):
+        raise ValueError("expires_in inválido")
+    if isinstance(valor, (int, float)):
+        n = float(valor)
+    elif isinstance(valor, str):
+        t = valor.strip()
+        if t[-1:].lower() == "s":
+            t = t[:-1].strip()
+        n = float(t)
+    else:
+        raise ValueError("expires_in inválido")
+    if not (n > 0) or n == float("inf"):
+        raise ValueError("expires_in inválido")
+    return n
+
+
 class SilDesabilitado(ErroSil):
     pass
 
@@ -140,6 +164,8 @@ class ClienteSil:
                 self._http = self._cliente_http(url)
             try:
                 self._autentica()
+            except RespostaAuthInvalida:
+                raise  # o ambiente autenticou: nunca cai para o próximo (produção)
             except ErroSil as exc:
                 log.warning("SIL: autenticação no ambiente %s falhou (%s)%s", nome, type(exc).__name__,
                             "; tentando o próximo" if (nome, url) != self._bases[-1] else "")
@@ -176,9 +202,16 @@ class ClienteSil:
             raise FalhaSil(f"autenticação da SIL respondeu {r.status_code}", r.status_code)
         try:
             j = r.json()
-            token, expira = j["access_token"], float(j.get("expires_in") or 600)
+            token = j["access_token"]
+            if not isinstance(token, str) or not token:
+                raise ValueError
         except Exception:  # noqa: BLE001 - corpo nunca vai para a mensagem
             raise FalhaSil("resposta de autenticação da SIL inválida") from None
+        try:
+            expira = parse_expires_in(j.get("expires_in"))
+        except (ValueError, TypeError):
+            raise RespostaAuthInvalida("expires_in da autenticação da SIL em formato não reconhecido "
+                                       "(esperado 600, \"600\" ou \"600s\")") from None
         self._token = str(token)
         self._expira_em = self.relogio() + max(expira - self.config.margem_token_s, 1.0)
 

@@ -14,8 +14,10 @@ from app.connectors.sil.cliente import (
     FalhaCredencial,
     FalhaSil,
     OperacaoProibida,
+    RespostaAuthInvalida,
     SilDesabilitado,
     checa_operacao,
+    parse_expires_in,
 )
 from app.connectors.sil.config import ConfigSil
 from app.connectors.sil.endpoints import ENDPOINTS, EndpointSil, endpoint, registrar
@@ -481,3 +483,64 @@ def test_amostra_sil_desligada_409_sem_chamar(client, tokens, monkeypatch, sil_s
     r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
     assert r.status_code == 409 and "desligado" in r.json()["detail"]
     assert _auditoria(db, "amostra_sil_recusada")[-1].detalhe == {"motivo": "desligado"}
+
+
+# ---------- QA PR23 ciclo 1: expires_in "600s" e sem queda para produção ----------
+def _sondagem_mock(valor):
+    vistos = []
+
+    def h(r):
+        vistos.append((r.url.host, r.method, r.url.path))
+        if r.method == "POST":
+            return httpx.Response(200, json={"access_token": "ZZTOKEN", "token_type": "Bearer", "expires_in": valor})
+        return httpx.Response(200, json={"data": {}})
+    rel = Relogio()
+    c = ClienteSil(ConfigSil(base_url="https://prod.zzteste.invalid/v1", client_id="zz-id", client_secret="zz-secret",
+                             scope="zz", base_url_sandbox="https://sandbox.zzteste.invalid/v1"),
+                   transport=httpx.MockTransport(h), relogio=rel, dormir=rel.dormir)
+    return c, rel, vistos
+
+
+@pytest.mark.parametrize("valor", [600, "600", "600s", " 600s ", "600 s", 600.0])
+def test_expires_in_formatos_aceitos_fica_no_sandbox(valor):
+    c, rel, vistos = _sondagem_mock(valor)
+    c.get("/franca/imoveis", {"InscrFisico": "000"})
+    assert c.ambiente == "sandbox"
+    assert round(c._expira_em - rel.t) == 600 - c.config.margem_token_s
+    assert all(h == "sandbox.zzteste.invalid" for h, _, _ in vistos)
+
+
+@pytest.mark.parametrize("valor", ["dez minutos", "s", "-5s", "0", [600], True, "nan"])
+def test_expires_in_invalido_erro_claro_sem_producao(valor):
+    c, _, vistos = _sondagem_mock(valor)
+    with pytest.raises(RespostaAuthInvalida, match="expires_in"):
+        c.sondar()
+    assert c.ambiente is None
+    assert vistos and all(h == "sandbox.zzteste.invalid" for h, _, _ in vistos)  # nunca tenta a produção
+
+
+def test_parse_expires_in_ausente_assume_600():
+    assert parse_expires_in(None) == 600.0 and parse_expires_in("") == 600.0 and parse_expires_in("120S") == 120.0
+
+
+def test_amostra_sil_falha_marca_etapa_falha(client, tokens, db, sil_env, sil_sincrono):
+    """QA PR23 ciclo 1: execução que falha não pode ficar com etapa 'concluida'."""
+    from app.models.controle import Execucao
+    sil_env.respostas_forcadas = [(500, {"status": "Falha"}, {})] * 20
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    ex = db.get(Execucao, r.json()["id"])
+    db.refresh(ex)
+    assert ex.status == "falha" and ex.etapa == "falha"
+
+
+def test_amostra_sil_excecao_marca_etapa_falha(client, tokens, db, sil_env, sil_sincrono, monkeypatch):
+    from app.models.controle import Execucao
+
+    def explode(*a, **k):
+        raise RuntimeError("zz")
+    monkeypatch.setattr(carga, "executar_enriquecimento", explode)
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    ex = db.get(Execucao, r.json()["id"])
+    db.refresh(ex)
+    assert ex.status == "falha" and ex.etapa == "falha"
