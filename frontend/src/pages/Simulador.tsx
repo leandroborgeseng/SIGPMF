@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
-import ImpostosCidadao from '../ImpostosCidadao'
+import { AcessosCidadao, ImpostosCidadao, LinhaDoTempoCidadao, ResumoPortal, SaudeCidadao, useDadosFicha } from '../FichaPortal'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
 type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
@@ -66,6 +66,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
   const [dialogo, setDialogo] = useState(false)
   const [aviso, setAviso] = useState('')
   const btnRevelar = useRef<HTMLButtonElement>(null)
+  const { trib, saude } = useDadosFicha(id)  // FC1: uma busca de cada, entregue aos blocos
 
   const [motivo, setMotivo] = useState('')
   const carregar = () => {
@@ -102,6 +103,13 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
         )}
       </p>
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
+      <ResumoPortal trib={trib} saude={saude} />
+      <div className="portal-grade">
+        <ImpostosCidadao id={id} dados={trib} />
+        <SaudeCidadao saude={saude} />
+      </div>
+      <section className="cartao portal-bloco" aria-labelledby="t-cadastro">
+      <h3 id="t-cadastro">Dados cadastrais</h3>
       {Object.keys(grupos).length === 0 && <p className="vazio">—</p>}
       {Object.entries(grupos).map(([dom, itens]) => (
         <section key={dom} aria-labelledby={`d-${dom}`}>
@@ -118,7 +126,11 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
           </dl>
         </section>
       ))}
-      <ImpostosCidadao id={id} />
+      </section>
+      <div className="portal-grade">
+        <LinhaDoTempoCidadao id={id} />
+        <AcessosCidadao id={id} />
+      </div>
       {dialogo && <DialogoRevelar id={id} fechar={() => { setDialogo(false); btnRevelar.current?.focus() }} aoRevelar={revelado} />}
     </article>
   )

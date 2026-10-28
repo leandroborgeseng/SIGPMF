@@ -11,21 +11,25 @@ type DivT = { codi: string; ano: number | null; natureza: number | null; inscric
   valor_origem: number | null; protestos: number; extinta: boolean }
 export type RespTributario = { cidadao_id: string; totais: Totais; imoveis: ImovelT[]; lancamentos: LancT[]; dividas: DivT[] }
 
-const valida = (r: unknown): r is RespTributario => !!r && typeof (r as RespTributario).totais === 'object'
+export const validaTributario = (r: unknown): r is RespTributario => !!r && typeof (r as RespTributario).totais === 'object'
   && Array.isArray((r as RespTributario).imoveis) && Array.isArray((r as RespTributario).lancamentos) && Array.isArray((r as RespTributario).dividas)
 export const reais = (v: number | null | undefined) => v == null ? '—'
   : new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
 const SITUACAO: Record<string, [string, string]> = { pago: ['sucesso', 'Pago'], vencido: ['falha', 'Vencido'], a_vencer: ['em_andamento', 'A vencer'] }
 
 /** TR7: bloco "Impostos e imóveis" da ficha (prata tributária). Consulta auditada no backend. */
-export default function ImpostosCidadao({ id }: { id: string }) {
-  const [d, setD] = useState<RespTributario | null>(null)
-  const [falhou, setFalhou] = useState(false)
+export default function ImpostosCidadao({ id, dados }: { id: string; dados?: RespTributario | null | false }) {
+  const [buscado, setD] = useState<RespTributario | null>(null)
+  const [erro, setFalhou] = useState(false)
+  const externo = dados !== undefined  // a ficha já buscou: não busca de novo (nem registra a consulta duas vezes)
   useEffect(() => {
+    if (externo) return
     setD(null); setFalhou(false)
     api<unknown>(`/gold/cidadaos/${encodeURIComponent(id)}/tributario`)
-      .then((r) => (valida(r) ? setD(r) : setFalhou(true))).catch(() => setFalhou(true))
-  }, [id])
+      .then((r) => (validaTributario(r) ? setD(r) : setFalhou(true))).catch(() => setFalhou(true))
+  }, [id, externo])
+  const d = externo ? (dados || null) : buscado
+  const falhou = externo ? dados === false : erro
 
   if (falhou) return <section className="cartao impostos" aria-labelledby="t-impostos"><h3 id="t-impostos">Impostos e imóveis</h3><p className="sutil">Sem leitura dos dados tributários.</p></section>
   if (!d) return <section className="cartao impostos" aria-labelledby="t-impostos"><h3 id="t-impostos">Impostos e imóveis</h3><p className="sutil">Carregando…</p></section>

@@ -307,3 +307,33 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
   .colunas-grade { height: 160px; gap: 4px; }
   .colunas-rotulo { font-size: 9.5px; }
 }
+
+/* Onda 5: ficha do cidadão no formato do portal */
+.ficha { display: grid; gap: 16px; }
+.ficha > h2 { margin: 4px 0 0; }
+.portal-resumo { display: grid; gap: 12px; }
+.portal-pendencias h3, .portal-bloco h3 { margin: 0 0 10px; }
+.portal-pendencias ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.pend { display: grid; gap: 2px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--line); }
+.pend-alerta { background: var(--danger-bg); border-color: var(--danger-line); }
+.pend-info { background: var(--brand-soft); border-color: #C7DCF5; }
+.pend-area { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.portal-cartoes { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.portal-cartoes .cartao { display: grid; gap: 2px; }
+.portal-cartoes .cartao-valor { font-size: 22px; }
+.portal-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+.portal-grade > * { min-width: 0; margin-top: 0; }
+.portal-bloco h4 { margin: 12px 0 6px; font-size: 13px; color: var(--ink-2); }
+.agenda-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.agenda-lista li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; font-size: 14px; }
+.agenda-lista .dia { color: var(--ink-2); }
+.chips-vacina { display: flex; flex-wrap: wrap; gap: 6px; }
+.linha-tempo { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.linha-tempo li { display: grid; grid-template-columns: 92px 12px 1fr; gap: 10px; align-items: start; font-size: 14px; }
+.lt-data { color: var(--ink-3); font-size: 12.5px; padding-top: 2px; }
+.lt-ponto { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--brand); }
+.area-saude .lt-ponto { background: var(--ok); }
+.area-impostos .lt-ponto { background: var(--brand); }
+.acessos { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.acessos li { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line-2); padding-bottom: 6px; }
+@media (max-width: 760px) { .portal-grade { grid-template-columns: 1fr; } .linha-tempo li { grid-template-columns: 78px 10px 1fr; } }

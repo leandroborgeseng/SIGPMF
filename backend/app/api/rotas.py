@@ -582,8 +582,9 @@ def inconsistencias(db: Session = Depends(get_db)):
 
 
 @api.get("/gold/cidadaos/{cid}")
-def simulador(cid: str, db: Session = Depends(get_db)):
+def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()
+    audita(db, u.email, "consulta_ficha", f"cidadao:{cid}", ip=_ip(req))  # FC4: toda abertura de ficha fica registrada
     dados = list(db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo)))
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
     return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
@@ -696,6 +697,23 @@ def indicadores_gestao(series: str | None = None, db: Session = Depends(get_db))
         out.setdefault(i.serie, []).append({"periodo": i.periodo, "dim": i.dim, "valor": i.valor})
         atualizado = max(atualizado, i.atualizado_em) if atualizado else i.atualizado_em
     return {"atualizado_em": atualizado, "series": out}
+
+
+@api.get("/gold/cidadaos/{cid}/acessos")
+def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """FC4: quem consultou a ficha deste cidadão (auditoria), mais recente primeiro. Só admin e admin_lgpd; a própria
+    consulta também fica registrada."""
+    if u.perfil not in ("admin", "admin_lgpd"):
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
+              "revelar_cpf": "Revelou o CPF", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
+    regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
+                           .order_by(Auditoria.id.desc()).limit(50)))
+    audita(db, u.email, "consulta_acessos", f"cidadao:{cid}", {"listados": len(regs)}, _ip(req))
+    return {"cidadao_id": cid, "acessos": [{"usuario": a.usuario, "acao": a.acao, "o_que": ROTULO.get(a.acao, a.acao),
+                                            "quando": a.criado_em} for a in regs]}
 
 
 @api.get("/gold/cidadaos/{cid}/sistemas")
