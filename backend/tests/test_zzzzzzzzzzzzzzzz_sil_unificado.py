@@ -35,6 +35,7 @@ class Api:
     def __init__(self, ccms=range(1, 151), auth_status=None, rede_sandbox=False):
         self.ccms, self.auth_status, self.rede_sandbox = sorted(ccms), auth_status or {}, rede_sandbox
         self.hits: list[tuple[str, str, str]] = []
+        self.sequencias: list[int] = []
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         host, path = req.url.host, req.url.path
@@ -47,6 +48,7 @@ class Api:
                 return httpx.Response(st, json={"error": "zz"})
             return httpx.Response(200, json={"access_token": f"ZZTOKEN-{host}", "expires_in": "600s"})
         seq = int(req.url.params["Sequencia"])
+        self.sequencias.append(seq)
         lote = [c for c in self.ccms if c >= seq][:50]
         return httpx.Response(200, json={"empresas": [{"empresa": {"Ccm": str(c), "Nome": f"EMPRESA ZZ {c}"}}
                                                       for c in lote]})
@@ -388,3 +390,55 @@ def test_sil15_executar_agora_sil_desligado_409_auditado_sem_rede(client, tokens
         assert sil_mock.hits == []
     finally:
         get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------- QA #25 ciclo 1
+
+def test_risco_teto_1_lote_marca_carga_completa_como_concluida(db, sil_mock):
+    """ACH-1 (QA #25 @18f8fb1): 150 empresas na API, teto 1. A carga NÃO pode virar "concluída": fica parcial, o
+    checkpoint não fecha e a 2ª execução continua do CCM 51."""
+    from app.models.controle import CheckpointCarga
+    _zera_checkpoint_sil(db)
+    cc.executar_amostra(db, "admin@aion.local", "sil")
+    ex1 = ccomp.iniciar(db, "admin@aion.local", "sil")
+    db.expire_all()
+    ex1 = db.get(Execucao, ex1.id)
+    cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
+    assert not (ex1.status == "sucesso" and "concluída" in (ex1.mensagem or "")), "teto de 1 lote vira 'concluída'"
+    assert ex1.status == "parcial" and "reconciliacao" not in ex1.mensagem
+    assert cp.concluida is False and cp.ultima_chave == [50]
+    n0 = len(sil_mock.gets())
+    ex2 = ccomp.iniciar(db, "admin@aion.local", "sil")
+    db.expire_all()
+    seqs = sil_mock.gets()[n0:]
+    cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
+    assert db.get(Execucao, ex2.id).status == "parcial" and len(seqs) == 1, sil_mock.sequencias
+    assert sil_mock.sequencias[-1] == 51 and cp.concluida is False and cp.ultima_chave == [100]
+    # 3ª execução: lote 101-150 (cheio) ainda parcial; a 4ª acha o fim (lote vazio) e conclui com reconciliação
+    ccomp.iniciar(db, "admin@aion.local", "sil")
+    ex4 = ccomp.iniciar(db, "admin@aion.local", "sil")
+    db.expire_all()
+    ex4 = db.get(Execucao, ex4.id)
+    assert ex4.status == "sucesso" and "reconciliacao=" in ex4.mensagem, ex4.mensagem
+    assert sil_mock.sequencias[-1] == 151
+    _zera_checkpoint_sil(db)
+
+
+@pytest.mark.parametrize("erro", [httpx.ReadTimeout("zz"), httpx.ConnectError("zz")])
+def test_r1_retentativa_de_get_loga_info_sem_warning(caplog, erro):
+    """R1 trava: timeout/erro de conexão de cada tentativa de GET é INFO; sem queda de ambiente, nenhum WARNING."""
+    falhas = {"n": 2}
+    api = Api()
+
+    def transporte(req):
+        if req.method == "GET" and falhas["n"]:
+            falhas["n"] -= 1
+            raise erro
+        return api(req)
+    con = SilConnector(_cfg(), transporte=httpx.MockTransport(transporte), esperar=lambda s: None, amostra_limite=1000)
+    with caplog.at_level(logging.DEBUG, logger="sigpmf.conector.sil"):
+        assert len(con.ler_amostra("Empresas")) == 50
+    tentativas = [r for r in caplog.records if "(tentativa" in r.getMessage()
+                  and ("timeout" in r.getMessage() or "erro de conexão" in r.getMessage())]
+    assert len(tentativas) == 2 and all(r.levelno == logging.INFO for r in tentativas)
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
