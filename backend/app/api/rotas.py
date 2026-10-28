@@ -291,9 +291,20 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     except cc.Conflito as exc:
         audita(db, u.email, "amostra_conector_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}", {"conector": conector, **_origem_api(conector)},
+           _ip(req))
     db.expire_all()  # se o disparo foi síncrono (testes), devolve o estado final
     return _exec_amostra(db.get(Execucao, ex.id))
+
+
+def _origem_api(conector: str) -> dict:
+    """SIL pela rota genérica (id "sil" ou id numérico da base "API SIL"): unificação TL 28/10, o leitor só fala
+    com a SIL pelo ClienteSil (allowlist, sandbox primeiro) e lê no máximo SIL_MAX_LOTES_POR_EXECUCAO lotes."""
+    if conector not in cc.CONECTORES_API:
+        return {}
+    from app.connectors.sil.config import ConfigSil
+    return {"cliente": "ClienteSil", "allowlist": True,
+            "max_lotes_por_execucao": ConfigSil.do_ambiente().max_lotes_por_execucao}
 
 
 def _exec_amostra(ex: Execucao) -> dict:
@@ -505,7 +516,8 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     except cc.Conflito as exc:
         audita(db, u.email, "carga_completa_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "carga_completa_iniciada", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    audita(db, u.email, "carga_completa_iniciada", f"execucao:{ex.id}", {"conector": conector, **_origem_api(conector)},
+           _ip(req))
     return ccomp.situacao(db, conector)
 
 
@@ -946,6 +958,15 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
     """AG6: o próximo ciclo da agenda (até AGENDA_INTERVALO_S) roda o conector, mesmo fora do horário e da janela."""
     if not get_settings().agenda_habilitada:
         raise HTTPException(409, "A agenda está desligada neste ambiente (AGENDA_HABILITADA).")
+    from app.models.controle import Agendamento
+    item = db.scalar(select(Agendamento).where(Agendamento.conector == conector))
+    if item is None:
+        _404()
+    if not item.ativo:  # QA main 3094209: agendamento desligado (ex.: sil, 0015) não roda por "Executar agora"
+        audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}", {"motivo": "desligado"},
+               _ip(req))
+        raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
+                                 "executar agora.")
     try:
         ag.forcar(db, conector, u.email)
     except LookupError:

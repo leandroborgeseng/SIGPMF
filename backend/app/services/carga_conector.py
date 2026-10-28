@@ -262,7 +262,15 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
             ex.mensagem = (f"banco={'fallback' if fallback else 'conector'} lidos={tot['lidos']} novos={tot['novos']} "
                            f"atualizados={tot['atualizados']} ignorados={tot['ignorados']} silver={sres} gold={gres}")
             ex.finalizado_em = datetime.now(UTC)
+            parcial = getattr(leitor, "ultima_parcial", None)
+            if parcial:  # teto de lotes da SIL: amostra de 1 lote com mais dados na origem (não é a base inteira)
+                ex.mensagem = (f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem. " + ex.mensagem)
+                db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"Amostra parcial de {conector}: "
+                           f"{parcial['lotes_lidos']} lote(s) lido(s), há mais (teto SIL_MAX_LOTES_POR_EXECUCAO)"))
             db.commit()  # bronze + silver + gold + controle de uma vez
+            if parcial:
+                from app.core.audit import audita
+                audita(db, usuario, "amostra_conector_parcial", f"execucao:{ex.id}", {"conector": conector, **parcial})
         except Exception as exc:  # noqa: BLE001
             db.rollback()  # nada parcial na bronze/silver
             ex = db.get(Execucao, ex.id)

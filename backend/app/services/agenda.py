@@ -43,7 +43,8 @@ CHAVE_LIDER = zlib.crc32(b"agenda:lider")
 HORARIO = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 JANELA = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
 RESOLVIDOS = ("sucesso", "sem_mudanca")
-STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem", "falha": "Falhou",
+STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem",
+                "parcial": "Parcial (teto de lotes; há mais na origem)", "falha": "Falhou",
                 "bloqueada": "Não liberada", "ocupada": "Conector ocupado", "pausada": "Pausada",
                 "cancelada": "Cancelada", "interrompida": "Interrompida", "demorada": "Ainda em andamento"}
 
@@ -98,12 +99,13 @@ def dia_da_janela(local: datetime, ini: int, fim: int) -> date:
 
 
 def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
-    """`agora` com fuso. Forçado roda sempre; senão: ativo, dentro da janela, já passou do horário e ainda não resolvido
-    hoje, respeitando a espera entre tentativas."""
-    if ag.forcar:
-        return True
+    """`agora` com fuso. Só agendamento ativo roda (SIL15: `forcar` não liga um desligado). Forçado roda fora do
+    horário e da janela; senão: dentro da janela, já passou do horário e ainda não resolvido hoje, respeitando
+    a espera entre tentativas."""
     if not ag.ativo:
         return False
+    if ag.forcar:
+        return True
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
     if not na_janela(m, ini, fim) or ag.ultima_data == dia_da_janela(local, ini, fim):
@@ -311,6 +313,9 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
                                            f"{(ex.novos or 0) + (ex.atualizados or 0)} gravadas"
                                            + (" (prata e ouro mantidos: nada mudou)." if ccomp.MSG_CAMADAS_MANTIDAS in (ex.mensagem or "")
                                               else "."), agora, resolvido=True)
+    if ex.status == ccomp.STATUS_PARCIAL:  # teto de lotes: não é completa (sem ultima_completa_em nem assinatura)
+        return _encerra(db, ag, "parcial", ex.mensagem or f"Carga de {nome} parcial (teto de lotes).", agora,
+                        resolvido=True)
     return _encerra(db, ag, ex.status if ex.status in STATUS_TEXTO else "falha",
                     ex.mensagem or f"Carga de {nome} terminou como {ex.status}.", agora, resolvido=False)
 

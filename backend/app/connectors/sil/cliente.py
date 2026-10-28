@@ -246,10 +246,10 @@ class ClienteSil:
                 r = self._http.request(metodo, caminho, **kw)
             except httpx.TimeoutException:  # a exceção do httpx traz a URL com a query: não é encadeada
                 ultimo = FalhaRede("SIL não respondeu (timeout)")
-                log.warning("SIL %s %s timeout (tentativa %d)", metodo, caminho, tentativa + 1)
+                log.info("SIL %s %s timeout (tentativa %d)", metodo, caminho, tentativa + 1)
             except httpx.TransportError as exc:
                 ultimo = FalhaRede(f"erro de conexão com a SIL ({type(exc).__name__})")
-                log.warning("SIL %s %s erro de conexão %s (tentativa %d)", metodo, caminho, type(exc).__name__,
+                log.info("SIL %s %s erro de conexão %s (tentativa %d)", metodo, caminho, type(exc).__name__,
                             tentativa + 1)
             else:
                 log.info("SIL %s %s -> %d em %.0f ms (tentativa %d)", metodo, caminho, r.status_code,
