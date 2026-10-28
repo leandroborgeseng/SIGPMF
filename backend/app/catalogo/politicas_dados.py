@@ -5,7 +5,7 @@ proposta técnica; a palavra final é do encarregado (DPO) e da Procuradoria —
 """
 REGRAS = [
     {"camada": "Bronze", "titulo": "Só a versão atual de cada registro fica",
-     "texto": "Versões antigas substituídas há mais de RETENCAO_BRONZE_VERSOES_DIAS são apagadas todo dia. A versão atual "
+     "texto": "Versões antigas substituídas há mais de {bronze_dias} dias são apagadas todo dia. A versão atual "
               "fica (a prata é reconstruída dela)."},
     {"camada": "Prata", "titulo": "Enquanto houver finalidade",
      "texto": "Cadastros e fatos ligados ao cidadão. Revisão anual de necessidade com o DPO."},

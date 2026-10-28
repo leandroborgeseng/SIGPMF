@@ -46,7 +46,7 @@ export default function Politicas() {
       <p className="aviso-ambar">Prazos e bases legais são a proposta técnica: a palavra final é do encarregado (DPO) e da Procuradoria.</p>
       {falhou ? <Erro texto="Não foi possível carregar as políticas." onRetry={carregar} /> : !d ? <Esqueleto linhas={4} /> : (
         <>
-          <div className="kpis">
+          <div className="kpis pol-regras">
             {d.regras.map((r) => (
               <div key={r.camada} className="cartao pol-regra">
                 <span className="kicker">{r.camada}</span>

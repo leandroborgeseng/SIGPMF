@@ -340,7 +340,9 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 
 /* Onda 6: explorador de vínculos */
 .vinculos { display: grid; gap: 14px; }
-.vinc-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 6px 14px; align-items: end; }
+.vinc-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-width: 560px; }
+.vinc-form small { margin-bottom: 8px; }
+.vinc-form .btn { margin-top: 10px; justify-self: start; }
 .vinc-form label { font-weight: 600; font-size: 14px; }
 .vinc-form input { min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit; }
 .vinc-caminho { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
@@ -368,7 +370,8 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .vinc-resumo h2 { margin: 0; font-size: 18px; }
 
 /* Onda 7: políticas de dados */
-.pol-regra { display: grid; gap: 4px; }
+.pol-regras { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.pol-regra { display: grid; gap: 4px; align-content: start; overflow-wrap: anywhere; }
 .pol-regra .kicker { margin: 0; }
 .pol-rolagem { overflow-x: auto; }
 .pol-tabela { min-width: 900px; font-size: 13.5px; }

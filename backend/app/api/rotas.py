@@ -746,7 +746,8 @@ def politicas_dados(db: Session = Depends(get_db)):
     from app.services import retencao
     s = get_settings()
     ult = db.scalar(select(Execucao).where(Execucao.tipo == retencao.TIPO).order_by(Execucao.id.desc()).limit(1))
-    return {"regras": pd.REGRAS, "conjuntos": pd.CONJUNTOS, "areas": pd.AREAS, "perfis": pd.PERFIS,
+    regras = [{**r, "texto": r["texto"].format(bronze_dias=s.retencao_bronze_versoes_dias)} for r in pd.REGRAS]
+    return {"regras": regras, "conjuntos": pd.CONJUNTOS, "areas": pd.AREAS, "perfis": pd.PERFIS,
             "retencao": {"bronze_versoes_dias": s.retencao_bronze_versoes_dias, "logs_dias": s.retencao_logs_dias,
                          "ultima": None if ult is None else {"status": ult.status, "iniciado_em": ult.iniciado_em,
                                                              "mensagem": ult.mensagem, "apagados": ult.lidos}}}
