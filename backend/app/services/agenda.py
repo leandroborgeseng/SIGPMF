@@ -99,7 +99,7 @@ def dia_da_janela(local: datetime, ini: int, fim: int) -> date:
 
 def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
     """`agora` com fuso. Forçado roda sempre; senão: ativo, dentro da janela, já passou do horário e ainda não resolvido
-    nesta janela (SIL17: janela que atravessa a meia-noite conta como uma só), respeitando a espera entre tentativas."""
+    hoje, respeitando a espera entre tentativas."""
     if ag.forcar:
         return True
     if not ag.ativo:
