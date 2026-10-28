@@ -16,7 +16,8 @@ from app.core.config import get_settings
 from app.core.db import get_engine
 from app.models.controle import Execucao, Log
 
-NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iss": "ISS"}
+NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iss": "ISS", "iptu": "IPTU", "divida": "Dívida ativa",
+         "financeiro": "Financeiro", "sil": "API SIL"}
 TIPO_COMPLETA = "carga_completa_conector"
 TIPOS_AMOSTRA = ("amostra_conector", "carga_municipe_amostra")
 TIPOS_CARGA = (*TIPOS_AMOSTRA, TIPO_COMPLETA)

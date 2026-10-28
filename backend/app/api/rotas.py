@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    AgendaIn,
     CargaIn,
     ConfirmaObitoIn,
     ExecutarBaseIn,
@@ -41,6 +42,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services import agenda as ag
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
 from app.services.indicadores import TIPOS_AMOSTRA, bloqueio, indicadores, totais, ultima_execucao
@@ -201,6 +203,9 @@ def _banco_origem(codigo: str, db: Session | None = None) -> dict:
     cid = next((k for k, (sis, _b) in cc.CONECTORES.items() if sis == codigo), None)
     if cid is None:
         return {}
+    if cid in cc.CONECTORES_API:
+        return {"conector_id": cid, "banco_origem": "API SIL", "banco_origem_esperado": cc.CONECTORES[cid][1],
+                "banco_origem_fallback": False}
     c, fallback = cc.config_do_conector(cid, db)
     return {"conector_id": cid, "banco_origem": c.database, "banco_origem_esperado": cc.CONECTORES[cid][1],
             "banco_origem_fallback": fallback}
@@ -377,6 +382,10 @@ def _diagnostica(conector: str, cfg, fallback: bool) -> dict:
     """Conexão (SELECT 1 + DB_NAME()) e estrutura (política x INFORMATION_SCHEMA), tudo pelo guard."""
     from app.connectors.sqlserver.politicas import politica as pol_de
     from app.services.diagnostico import categoria, motivo
+    if conector in cc.CONECTORES_API:  # REST: autenticar já é o teste (não há estrutura SQL a comparar)
+        r = cc.leitor_de(conector, cfg).diagnostico()
+        r.update({"conector": conector, "banco_configurado": "API SIL", "banco_fallback": False, "estrutura": None})
+        return r
     con = SqlServerConnector(cfg, nome=conector)
     r = con.diagnostico()
     r.update({"conector": conector, "banco_configurado": cfg.database, "banco_fallback": fallback, "estrutura": None})
@@ -580,8 +589,9 @@ def inconsistencias(db: Session = Depends(get_db)):
 
 
 @api.get("/gold/cidadaos/{cid}")
-def simulador(cid: str, db: Session = Depends(get_db)):
+def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()
+    audita(db, u.email, "consulta_ficha", f"cidadao:{cid}", ip=_ip(req))  # FC4: toda abertura de ficha fica registrada
     dados = list(db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo)))
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
     return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
@@ -591,6 +601,176 @@ def simulador(cid: str, db: Session = Depends(get_db)):
                        "atualizado_em": d.fonte_atualizado_em} for d in dados],
             "enderecos": [{"valor": e.logradouro, "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
                            "mais_recente": e.mais_recente} for e in ends]}
+
+
+@api.get("/gold/cidadaos/{cid}/tributario")
+def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """TR7: imóveis (posse ativa e histórica), lançamentos e dívida ativa ligados ao cidadão (prata tributária).
+    Documento de outros possuidores sai mascarado; a consulta é auditada (dado pessoal + fiscal)."""
+    from datetime import date as _date
+
+    from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    from app.services.vinculos import mascara_doc
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
+    posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
+                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
+    imoveis = {i.codi: i for i in db.scalars(select(Imovel).where(Imovel.codi.in_([p.codi for p in posses])))} if posses else {}
+    lancs = list(db.scalars(select(Lancamento).where(Lancamento.cidadao_id == cid)
+                            .order_by(Lancamento.vencimento.desc().nulls_last()).limit(200)))
+    divs = list(db.scalars(select(DividaAtiva).where(DividaAtiva.cidadao_id == cid).order_by(DividaAtiva.ano.desc())))
+    hoje = _date.today()
+    f = lambda v: None if v is None else float(v)  # noqa: E731
+    em_aberto = [x for x in lancs if not x.pago]
+    vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
+    ativa = [d for d in divs if not d.extinta]
+    audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
+                                                                  "dividas": len(divs), "empresas": len(empresas)}, _ip(req))
+    return {
+        "cidadao_id": cid,
+        "totais": {"imoveis": len({p.codi for p in posses if p.ativo}),
+                   "em_aberto": round(sum(f(x.valor) or 0 for x in em_aberto), 2), "parcelas_em_aberto": len(em_aberto),
+                   "vencido": round(sum(f(x.valor) or 0 for x in vencido), 2), "parcelas_vencidas": len(vencido),
+                   "divida_ativa": round(sum(f(d.saldo) or 0 for d in ativa), 2), "inscricoes_divida": len(ativa),
+                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas)},
+        "imoveis": [{"codi": p.codi, "inscricao": getattr(imoveis.get(p.codi), "inscricao", None),
+                     "numero": getattr(imoveis.get(p.codi), "numero", None),
+                     "complemento": getattr(imoveis.get(p.codi), "complemento", None),
+                     "cd_bairro": getattr(imoveis.get(p.codi), "cd_bairro", None),
+                     "iptu_anual": f(getattr(imoveis.get(p.codi), "iptu_anual", None)),
+                     "tipo_posse": p.tipo_posse, "desde": p.desde, "ate": p.ate, "ativo": p.ativo} for p in posses],
+        "lancamentos": [{"exercicio": x.exercicio, "tributo": x.tributo, "parcela": x.parcela, "codi": x.codi,
+                         "vencimento": x.vencimento, "valor": f(x.valor), "valor_pago": f(x.valor_pago),
+                         "pagamento": x.pagamento, "pago": x.pago,
+                         "situacao": "pago" if x.pago else ("vencido" if x.vencimento and x.vencimento < hoje else "a_vencer")}
+                        for x in lancs],
+        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "inscricao": d.inscricao, "saldo": f(d.saldo),
+                     "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
+                    for d in divs],
+        # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual
+        "empresas": [{"ccm": e.ccm, "nome": e.nome, "documento": mascara_doc(e.documento), "possui_debito": e.possui_debito,
+                      "endereco": e.endereco, "bairro": e.bairro} for e in empresas],
+    }
+
+
+@api.get("/gold/cidadaos/{cid}/linha-do-tempo")
+def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None = None, u: Usuario = Depends(usuario_atual),
+                   db: Session = Depends(get_db)):
+    """SA-F3: eventos do cidadão (todas as áreas), do mais novo para o mais antigo, paginados (`antes`=AAAA-MM-DD)."""
+    from datetime import date as _date
+
+    from app.models.camadas import Evento
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    q = select(Evento).where(Evento.cidadao_id == cid)
+    if antes:
+        try:
+            q = q.where(Evento.data < _date.fromisoformat(antes))
+        except ValueError:
+            raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
+    evs = list(db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200)))))
+    audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
+    return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
+                                            "fonte": e.fonte} for e in evs]}
+
+
+@api.get("/gold/cidadaos/{cid}/saude")
+def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """SA-F5: relacionamento com a Saúde (sem conteúdo clínico): próximos agendamentos, vacinas e últimos atendimentos."""
+    from datetime import date as _date
+
+    from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
+    from app.silver.fatos import nomes
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
+    esp = nomes(db)["especialidades"]
+    hoje = _date.today()
+    ag = list(db.scalars(select(Agendamento).where(Agendamento.cidadao_id == cid, Agendamento.data_consulta >= hoje)
+                         .order_by(Agendamento.data_consulta).limit(10)))
+    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc()).limit(10)))
+    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
+    audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
+    return {"cidadao_id": cid,
+            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade),
+                          "dias_espera": a.dias_espera} for a in ag],
+            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade)} for a in at],
+            "vacinas": [{"data": v.data, "vacina": v.vacina, "dose": v.dose, "unidade": uni.get(v.unidade)} for v in va]}
+
+
+@api.get("/indicadores")
+def indicadores_gestao(series: str | None = None, db: Session = Depends(get_db)):
+    """SA-F4: ouro agregado dos painéis (sem pessoa). `series` = lista separada por vírgula (vazio = todas)."""
+    from app.models.camadas import Indicador
+    q = select(Indicador)
+    if series:
+        q = q.where(Indicador.serie.in_([x.strip() for x in series.split(",") if x.strip()]))
+    out: dict[str, list] = {}
+    atualizado = None
+    for i in db.scalars(q.order_by(Indicador.serie, Indicador.periodo, Indicador.dim)):
+        out.setdefault(i.serie, []).append({"periodo": i.periodo, "dim": i.dim, "valor": i.valor})
+        atualizado = max(atualizado, i.atualizado_em) if atualizado else i.atualizado_em
+    return {"atualizado_em": atualizado, "series": out}
+
+
+@api.get("/gold/cidadaos/{cid}/acessos")
+def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """FC4: quem consultou a ficha deste cidadão (auditoria), mais recente primeiro. Só admin e admin_lgpd; a própria
+    consulta também fica registrada."""
+    if u.perfil not in ("admin", "admin_lgpd"):
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
+              "revelar_cpf": "Revelou o CPF", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
+    regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
+                           .order_by(Auditoria.id.desc()).limit(50)))
+    audita(db, u.email, "consulta_acessos", f"cidadao:{cid}", {"listados": len(regs)}, _ip(req))
+    return {"cidadao_id": cid, "acessos": [{"usuario": a.usuario, "acao": a.acao, "o_que": ROTULO.get(a.acao, a.acao),
+                                            "quando": a.criado_em} for a in regs]}
+
+
+@api.get("/vinculos/{no_id}")
+def explorar_vinculos(no_id: str, req: Request, motivo: str = "", processo: str = "", nivel: int = 0,
+                      u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """VN1–VN4: vizinhos diretos de um nó (pessoa, imóvel ou possuidor). Só admin e admin_lgpd; motivo obrigatório;
+    até NIVEL_MAXIMO níveis a partir do ponto de partida; cada abertura auditada (alvo = cidadão quando é pessoa)."""
+    from app.services import vinculos as vn
+    if u.perfil not in ("admin", "admin_lgpd"):
+        audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Perfil sem permissão para esta ação")
+    if len(motivo.strip()) < get_settings().revelar_motivo_min:
+        raise HTTPException(422, f"Informe o motivo da consulta (mínimo de {get_settings().revelar_motivo_min} caracteres).")
+    if nivel > vn.NIVEL_MAXIMO:
+        raise HTTPException(422, f"Limite de {vn.NIVEL_MAXIMO} níveis a partir do ponto de partida.")
+    try:
+        r = vn.explorar(db, no_id)
+    except vn.NoInvalido:
+        _404()
+    alvo = f"cidadao:{r['no']['cidadao_id']}" if r["no"]["cidadao_id"] else f"vinculo:{r['no']['id']}"
+    audita(db, u.email, "consulta_vinculos", alvo, {"no": r["no"]["id"], "nivel": nivel, "motivo": motivo.strip()[:300],
+                                                    "processo": processo.strip()[:60], "vizinhos": len(r["vizinhos"])}, _ip(req))
+    return {**r, "nivel": nivel, "nivel_maximo": vn.NIVEL_MAXIMO}
+
+
+@api.get("/politicas")
+def politicas_dados(db: Session = Depends(get_db)):
+    """PL1: políticas de dados (configuração versionada no código) e a última execução da retenção."""
+    from app.catalogo import politicas_dados as pd
+    from app.services import retencao
+    s = get_settings()
+    ult = db.scalar(select(Execucao).where(Execucao.tipo == retencao.TIPO).order_by(Execucao.id.desc()).limit(1))
+    regras = [{**r, "texto": r["texto"].format(bronze_dias=s.retencao_bronze_versoes_dias)} for r in pd.REGRAS]
+    return {"regras": regras, "conjuntos": pd.CONJUNTOS, "areas": pd.AREAS, "perfis": pd.PERFIS,
+            "retencao": {"bronze_versoes_dias": s.retencao_bronze_versoes_dias, "logs_dias": s.retencao_logs_dias,
+                         "ultima": None if ult is None else {"status": ult.status, "iniciado_em": ult.iniciado_em,
+                                                             "mensagem": ult.mensagem, "apagados": ult.lidos}}}
+
+
+@api.post("/politicas/retencao/executar")
+def politicas_retencao_executar(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """PL2: executa a retenção agora (admin, auditado). Só apaga versões antigas da bronze e logs técnicos."""
+    from app.services import retencao
+    ex = retencao.executar(db, u.email)
+    return {"status": ex.status, "mensagem": ex.mensagem, "apagados": ex.lidos}
 
 
 @api.get("/gold/cidadaos/{cid}/sistemas")
@@ -666,3 +846,37 @@ def auditoria(limite: int = 100, u: Usuario = Depends(ADMIN), db: Session = Depe
 
 
 
+
+
+# ---------- Agenda das cargas (AG1–AG6) ----------
+@api.get("/agenda")
+def agenda_estado(db: Session = Depends(get_db)):
+    """Agendamentos, próxima execução, última carga e histórico das últimas 24 h (qualquer perfil autenticado)."""
+    try:
+        return ag.estado(db)
+    except ag.AgendaInvalida as exc:
+        raise HTTPException(500, str(exc)) from None
+
+
+@api.put("/agenda/{conector}")
+def agenda_alterar(conector: str, dados: AgendaIn, req: Request, u: Usuario = Depends(admin_auditado),
+                   db: Session = Depends(get_db)):
+    try:
+        ag.atualizar(db, conector, u.email, **dados.model_dump())
+    except LookupError:
+        _404()
+    except ag.AgendaInvalida as exc:
+        raise HTTPException(422, str(exc)) from None
+    return ag.estado(db)
+
+
+@api.post("/agenda/{conector}/executar-agora", status_code=202)
+def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """AG6: o próximo ciclo da agenda (até AGENDA_INTERVALO_S) roda o conector, mesmo fora do horário e da janela."""
+    if not get_settings().agenda_habilitada:
+        raise HTTPException(409, "A agenda está desligada neste ambiente (AGENDA_HABILITADA).")
+    try:
+        ag.forcar(db, conector, u.email)
+    except LookupError:
+        _404()
+    return ag.estado(db)

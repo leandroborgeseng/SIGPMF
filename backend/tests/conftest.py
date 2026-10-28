@@ -84,3 +84,18 @@ def _amostra_sincrona(monkeypatch):
     def sincrono(ex_id, conector, usuario, trava):
         cc.rodar_amostra(ex_id, conector, usuario, trava)
     monkeypatch.setattr(cc, "disparar_amostra", sincrono)
+
+
+@pytest.fixture(autouse=True)
+def _camadas_sem_assinatura(request):
+    """IN1: cada teste começa sem a assinatura da última prata/ouro, para que uma carga completa reconstrua as camadas
+    como antes (os testes compartilham o banco). Os testes de IN1 provam o "pular" dentro do próprio teste."""
+    if "banco" not in request.fixturenames and "client" not in request.fixturenames and "db" not in request.fixturenames:
+        yield
+        return
+    request.getfixturevalue("banco")  # garante que as migrações já rodaram (banco novo no CI)
+    eng = create_engine(TEST_URL)
+    with eng.begin() as c:
+        c.execute(text("DELETE FROM controle.camadas_estado"))
+    eng.dispose()
+    yield

@@ -59,3 +59,10 @@ class ExecutarBaseIn(BaseModel):
 class InterromperIn(BaseModel):
     """CC12: motivo obrigatório (auditado). Sem dado pessoal."""
     motivo: str = Field(min_length=5, max_length=300)
+
+
+class AgendaIn(BaseModel):
+    """AG1: alteração de um agendamento (admin, auditada). Campos ausentes ficam como estão."""
+    horario: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    ativo: bool | None = None
+    ordem: int | None = Field(None, ge=0, le=100)

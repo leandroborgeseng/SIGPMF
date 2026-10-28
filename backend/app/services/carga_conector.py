@@ -27,7 +27,18 @@ from app.services.diagnostico import MSG_ORIGEM_VAZIA, ORIGEM_VAZIA, FalhaLeitur
 from app.silver import processamento
 
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
-CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS")}
+CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS"),
+              "iptu": ("IPTU", "IPTU"), "divida": ("DIVIDA", "Divida"), "financeiro": ("FINANCEIRO", "Financeiro"),
+              "sil": ("SIL", "API SIL")}
+CONECTORES_API = ("sil",)  # origem REST: leitor próprio, sem banco SQL Server
+
+
+def leitor_de(conector: str, cfg):
+    """Leitor da origem do conector: API SIL ou SQL Server (mesma interface)."""
+    if conector == "sil":
+        from app.connectors.sil.conector import SilConnector
+        return SilConnector(nome=conector)
+    return SqlServerConnector(cfg, nome=conector)
 TIPO_AMOSTRA = "amostra_conector"
 TIPO_AMOSTRA_ISS = "carga_municipe_amostra"  # ISS usa a carga do Munícipe (#6) com a política ISS
 TIPOS_AMOSTRA = (TIPO_AMOSTRA, TIPO_AMOSTRA_ISS)
@@ -206,10 +217,12 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
                           atualizado_em=datetime.now(UTC))
             db.add(ex)
             db.commit()
-        db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem="Origem do conector sil: API SIL (REST, só leitura)")
+               if conector in CONECTORES_API else
+               Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                    mensagem=f"Banco de origem do conector {conector}: {cfg.database or '-'} via {origem_banco}"))
         db.commit()
-        leitor = leitor or SqlServerConnector(cfg, nome=conector)
+        leitor = leitor or leitor_de(conector, cfg)
         tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
         try:
             lidas = {}

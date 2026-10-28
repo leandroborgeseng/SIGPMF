@@ -15,7 +15,28 @@ _OBITO = {"dominio": "cemiterio", "chave": CHAVE_SEPULTAMENTO, "campo_incrementa
           "campos": {"nome": "FALECIDO", "nome_mae": "MAE", "nome_pai": "PAI", "sexo": "SEXO", "data_obito": "DT_MORTE",
                      "atualizado_em": "Data_Ultima_Alteracao"}}
 
+# Tributário (onda 2): papel "fato" — não correlaciona pessoa; vira tabelas próprias da prata (app.silver.tributario)
+_FATO = {"dominio": "tributario", "papel": "fato", "campos": {}}
+
+_FATO_SAUDE = {"dominio": "saude", "papel": "fato", "campos": {}}
+
 MAPEAMENTOS: dict[tuple[str, str], dict] = {
+    # ---- Saúde, fatos (onda 3): atendimentos, agenda, vacinas e dimensões; ligados ao cidadão pela matrícula ----
+    ("SAUDE", "Consultas"): {**_FATO_SAUDE, "chave": ("Cod_Paciente", "Cons_Paciente"), "campo_incremental": "Dt_Atend"},
+    ("SAUDE", "Agendamento_Consulta"): {**_FATO_SAUDE, "chave": ("Cod_Ubs", "Cod_Prof", "Cod_Pac", "Dt_Cons", "Hr_Cons"),
+                                        "campo_incremental": "Data_Hora_SIGS"},
+    ("SAUDE", "Vacina"): {**_FATO_SAUDE, "chave": ("Matricula", "Cod_Vacina", "Sequencia"), "campo_incremental": "DataGravacao"},
+    ("SAUDE", "Unidades"): {**_FATO_SAUDE, "chave": "Codigo", "campo_incremental": None},
+    ("SAUDE", "Aux_Vacina"): {**_FATO_SAUDE, "chave": "Cod_Vacina", "campo_incremental": None},
+    ("SAUDE", "Aux_Especialidades"): {**_FATO_SAUDE, "chave": "Codi_Espe", "campo_incremental": None},
+    ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
+    ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
+    ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
+    # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
+    ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
+    ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",
+                                                               "Referencia", "Renovacao", "Parcela", "Duplicidade"),
+                                             "campo_incremental": "Data_Ultima_Alteracao_Registro"},
     ("DEMO_SAUDE", "prontuario"): {
         "dominio": "saude", "chave": "id", "campo_incremental": "atualizado_em",
         "campos": {"nome": "nome", "data_nascimento": "nascimento", "cpf": "cpf", "nome_mae": "nome_mae",
@@ -58,7 +79,9 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
 }
 
 NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
-                  "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)"}
+                  "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)",
+                  "IPTU": "IPTU — imóveis e possuidores", "DIVIDA": "Dívida ativa", "FINANCEIRO": "Lançamentos tributários",
+                  "SIL": "API SIL — empresas"}
 
 
 def chave_origem(m: dict, dados: dict) -> str:

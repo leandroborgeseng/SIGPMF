@@ -94,10 +94,27 @@ class _Reg(NamedTuple):
     atualizado_origem_em: object
 
 
+def sistemas_so_fatos() -> tuple[str, ...]:
+    """Sistemas em que todo mapeamento é "fato" (tributário): a correlação de pessoas não os lê."""
+    por: dict[str, set] = defaultdict(set)
+    for (sis, _t), m in MAPEAMENTOS.items():
+        por[sis].add(m.get("papel", "pessoa"))
+    return tuple(sorted(s for s, papeis in por.items() if papeis == {"fato"})) or ("",)
+
+
+def tabelas_fato() -> list[str]:
+    """"SISTEMA|tabela" de cada fato (inclusive dentro de sistemas mistos, como a Saúde): fora da correlação."""
+    return sorted(f"{s}|{t}" for (s, t), m in MAPEAMENTOS.items() if m.get("papel") == "fato") or ["|"]
+
+
 def _ultimas_versoes(db: Session):
     """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor). Antes vinham como
     objetos ORM completos (com `dados`) numa lista: centenas de MB a mais por 100 mil linhas."""
-    sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None)).group_by(  # CC9
+    so_fatos = sistemas_so_fatos()  # TR3: fatos tributários (milhões de linhas) nem saem do banco
+    sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None),  # CC9
+                                                    RegistroBronze.sistema_origem.not_in(so_fatos),
+                                                    func.concat(RegistroBronze.sistema_origem, "|", RegistroBronze.tabela)
+                                                    .not_in(tabelas_fato())).group_by(
         RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
     q = (select(RegistroBronze.id, RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem,
                 RegistroBronze.atualizado_origem_em, RegistroBronze.dados)
@@ -244,7 +261,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     regs = []
     for r, dados in _ultimas_versoes(db):
         m = MAPEAMENTOS.get((r.sistema_origem, r.tabela), {})
-        if not m:  # bronze sem mapeamento para a silver (ex.: ISS.Municipes, que tem silver própria): não correlaciona
+        if not m or m.get("papel") == "fato":  # sem mapeamento (ISS.Municipes) ou fato tributário: silver própria
             continue
         regs.append((r, canonico(r.sistema_origem, r.tabela, dados), m.get("papel", "pessoa"), m))
     por_papel = defaultdict(list)
@@ -444,5 +461,11 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     log.info("prata total segundos=%.3f", med.total())
     if progresso:
         progresso(min(feitos[0], total), total)
+    from app.silver import tributario  # TR4: fatos tributários ligados aos CPFs já correlacionados
+    trib = tributario.reconstruir(db)
+    from app.gold import indicadores
+    from app.silver import fatos  # onda 3: fatos da Saúde + linha do tempo; depois o ouro agregado dos painéis
+    trib.update(fatos.reconstruir(db))
+    trib.update(indicadores.reconstruir(db))
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
-            "feitos": feitos[0], "total_bronze": total}
+            "feitos": feitos[0], "total_bronze": total, "tributario": trib}

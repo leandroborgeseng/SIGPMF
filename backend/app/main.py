@@ -61,6 +61,17 @@ def interromper_cargas_orfas() -> int:
         db.close()
 
 
+def iniciar_agenda():
+    """AG1/AG5: agenda das cargas só com AGENDA_HABILITADA=true e nunca em APP_ENV=test (os testes chamam o ciclo)."""
+    s = get_settings()
+    if not s.agenda_habilitada or s.app_env == "test":
+        return None
+    from app.services.agenda import Agendador
+    a = Agendador()
+    a.iniciar()
+    return a
+
+
 def create_app() -> FastAPI:
     s = get_settings()
     docs = s.app_env == "dev" and s.docs_habilitado
@@ -74,7 +85,10 @@ def create_app() -> FastAPI:
             interromper_cargas_orfas()
         except Exception as exc:  # noqa: BLE001
             log.warning("interromper_cargas_orfas falhou: %s", type(exc).__name__)
+        agendador = iniciar_agenda()
         yield
+        if agendador is not None:
+            agendador.parar()
 
     app = FastAPI(title="SIGPMF", lifespan=lifespan, version=VERSION, docs_url="/api/docs" if docs else None,
                   redoc_url=None, openapi_url="/api/openapi.json" if docs else None)

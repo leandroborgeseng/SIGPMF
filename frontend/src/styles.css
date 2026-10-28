@@ -35,6 +35,7 @@ h2 { font-size: 16px; font-weight: 600; margin: 1.5rem 0 .75rem; }
 .btn[disabled] { background: var(--muted-bg); color: var(--muted); border-color: var(--line); cursor: not-allowed; }
 .btn.secundario, .btn.outlined { background: var(--surface); color: var(--brand-hover); border-color: var(--brand); }
 .btn.secundario:hover, .btn.outlined:hover { background: var(--brand-soft); }
+.btn.secundario[disabled], .btn.outlined[disabled], .btn.secundario[disabled]:hover { background: var(--muted-bg); color: var(--muted); border-color: var(--line); }
 .btn.tonal { background: var(--brand-soft); color: var(--brand-hover); }
 .btn.ghost { background: transparent; color: var(--brand-hover); }
 .btn.danger { background: var(--danger-ink); }
@@ -212,3 +213,170 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .banco-camadas dt { color: var(--ink-3); font-size: 11.5px; } .banco-camadas dd { margin: 0; font-weight: 600; }
 .tabela-quarentena { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: .4rem; }
 .tabela-quarentena th, .tabela-quarentena td { text-align: left; padding: .2rem .4rem; border-bottom: 1px solid #e3e7ec; }
+
+/* AG1–AG6: agenda das cargas (Conectores) — mesmo visual do Monitor de cargas */
+.agenda { margin-bottom: 16px; display: grid; gap: 12px; min-width: 0; }
+.agenda > * { min-width: 0; }
+.agenda-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.agenda-cab h2 { margin: 0 0 .25rem; }
+.agenda-cab .sutil { margin: 0; }
+.selo.atencao { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-ink); }
+.selo.atencao > i { background: var(--warn); }
+.agenda-tabela th[scope="row"] { font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; font-size: 14px; background: transparent; }
+.tabela.agenda-tabela td { vertical-align: top; font-family: var(--font-sans); }
+.agenda-rolagem { overflow-x: auto; }
+.agenda-horario { display: grid; gap: 4px; justify-items: start; }
+.agenda-tabela td .btn { white-space: nowrap; }
+.agenda-hora { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); font: 500 14px var(--font-mono); color: var(--ink); background: var(--surface); }
+.agenda-hora:focus-visible, .agenda-chave input:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.agenda-nota { display: block; margin-top: 4px; font-size: 12px; color: var(--warn-ink); }
+.agenda-chave { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; cursor: pointer; font-weight: 500; }
+.agenda-chave input { width: 18px; height: 18px; accent-color: var(--brand); }
+.agenda-ultima { display: grid; gap: 4px; justify-items: start; }
+.agenda-modo { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); }
+.agenda-msg { font-size: 12px; color: var(--ink-2); max-width: 36ch; }
+.agenda-tempo h3 { margin: 4px 0 8px; font-size: 14px; color: var(--ink-2); }
+.gantt { display: grid; gap: 6px; overflow-x: auto; }
+.gantt-eixo, .gantt-linha { display: grid; grid-template-columns: 110px minmax(420px, 1fr); gap: 10px; align-items: center; }
+.gantt-eixo { grid-template-columns: 110px repeat(5, minmax(84px, 1fr)); font: 500 11px var(--font-mono); color: var(--ink-3); }
+.gantt-rotulo { font-size: 13px; color: var(--ink-2); }
+.gantt-trilho { position: relative; height: 18px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); }
+.gantt-barra { position: absolute; top: 2px; bottom: 2px; border-radius: 4px; background: var(--brand); min-width: 4px; }
+.gantt-barra.sucesso { background: var(--brand); }
+.gantt-barra.em_andamento { background: var(--brand-bright); }
+.gantt-barra.falha { background: var(--danger); }
+.gantt-barra.atencao { background: var(--warn); }
+.gantt-barra.neutro { background: var(--off); }
+@media (max-width: 760px) {
+  .agenda-tabela th[scope="row"] { display: block; padding: 4px 0 6px; border: 0; font-size: 15px; }
+  .tabela.agenda-tabela td { display: grid; gap: 4px; justify-content: stretch; padding: 8px 0; border-top: 1px solid var(--line-2); }
+  .tabela.agenda-tabela td .btn { width: 100%; min-height: 44px; }
+  .agenda-msg { max-width: none; }
+  .gantt-eixo, .gantt-linha { grid-template-columns: 84px minmax(360px, 1fr); }
+  .gantt-eixo { grid-template-columns: 84px repeat(5, minmax(72px, 1fr)); }
+}
+
+/* TR7: Impostos e imóveis na ficha */
+.impostos { display: grid; gap: 12px; margin-top: 16px; }
+.impostos h3 { margin: 0; }
+.impostos-totais { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.impostos-totais .cartao { display: grid; gap: 2px; box-shadow: none; }
+.impostos-imoveis { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.impostos-imoveis li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; }
+.impostos-imoveis li.inativo { background: var(--surface-2); color: var(--ink-2); }
+
+/* Onda 4: painéis de gestão (mesmo visual do canvas) */
+.painel { display: grid; gap: 16px; }
+.painel-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.kpi { display: grid; gap: 4px; }
+.kpi .cartao-valor { font-size: 26px; color: var(--brand-hover); }
+.kpi-alerta .cartao-valor { color: var(--danger-ink); }
+.kpi-bom .cartao-valor { color: var(--ok-ink); }
+.kpi-nota { font-size: 12px; color: var(--ink-3); }
+.painel-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.painel-bloco { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.painel-bloco.largo { grid-column: 1 / -1; }
+.painel-bloco-cab { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.painel-bloco-cab h2 { margin: 0; font-size: 16px; }
+.painel-vazio { margin: 0; padding: 18px 0; text-align: center; }
+.painel-atalhos { display: flex; flex-wrap: wrap; gap: 8px; }
+.destaque { margin: 0; padding: 10px 12px; border-radius: var(--r-md); background: var(--brand-soft); color: var(--ink); font-size: 14px; }
+.barras-h { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.barras-h li { display: grid; grid-template-columns: minmax(110px, 38%) minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 13.5px; }
+.barras-h-rotulo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barras-h-trilho { height: 12px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; }
+.barras-h-barra { display: block; height: 100%; border-radius: 4px; background: var(--brand); }
+.barras-h-barra.alerta { background: var(--warn); }
+.barras-h-barra.ok { background: var(--ok); }
+.barras-h-valor { min-width: 64px; text-align: right; color: var(--ink-2); }
+.colunas { display: grid; gap: 8px; }
+.colunas-legenda { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-3); }
+.colunas-legenda span { display: inline-flex; align-items: center; gap: 6px; }
+.leg { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+.leg.a, .col.a { background: var(--brand); }
+.leg.b, .col.b { background: #9BC2EE; }
+.colunas-grade { display: grid; gap: 8px; height: 200px; align-items: end; border-bottom: 1px solid var(--line); }
+.colunas-mes { display: grid; grid-template-rows: 1fr auto; height: 100%; min-width: 0; }
+.colunas-barras { display: flex; gap: 3px; align-items: flex-end; height: 100%; }
+.col { flex: 1; border-radius: 3px 3px 0 0; min-height: 2px; }
+.colunas-rotulo { font: 500 11px var(--font-mono); color: var(--ink-3); text-align: center; padding-top: 6px; }
+@media (max-width: 760px) {
+  .painel-grade { grid-template-columns: 1fr; }
+  .colunas-grade { height: 160px; gap: 4px; }
+  .colunas-rotulo { font-size: 9.5px; }
+}
+
+/* Onda 5: ficha do cidadão no formato do portal */
+.ficha { display: grid; gap: 16px; }
+.ficha > h2 { margin: 4px 0 0; }
+.portal-resumo { display: grid; gap: 12px; }
+.portal-pendencias h3, .portal-bloco h3 { margin: 0 0 10px; }
+.portal-pendencias ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.pend { display: grid; gap: 2px; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--line); }
+.pend-alerta { background: var(--danger-bg); border-color: var(--danger-line); }
+.pend-info { background: var(--brand-soft); border-color: #C7DCF5; }
+.pend-area { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.portal-cartoes { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.portal-cartoes .cartao { display: grid; gap: 2px; }
+.portal-cartoes .cartao-valor { font-size: 22px; }
+.portal-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+.portal-grade > * { min-width: 0; margin-top: 0; }
+.portal-bloco h4 { margin: 12px 0 6px; font-size: 13px; color: var(--ink-2); }
+.agenda-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.agenda-lista li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; font-size: 14px; }
+.agenda-lista .dia { color: var(--ink-2); }
+.chips-vacina { display: flex; flex-wrap: wrap; gap: 6px; }
+.linha-tempo { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.linha-tempo li { display: grid; grid-template-columns: 92px 12px 1fr; gap: 10px; align-items: start; font-size: 14px; }
+.lt-data { color: var(--ink-3); font-size: 12.5px; padding-top: 2px; }
+.lt-ponto { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--brand); }
+.area-saude .lt-ponto { background: var(--ok); }
+.area-impostos .lt-ponto { background: var(--brand); }
+.acessos { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.acessos li { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line-2); padding-bottom: 6px; }
+@media (max-width: 760px) { .portal-grade { grid-template-columns: 1fr; } .linha-tempo li { grid-template-columns: 78px 10px 1fr; } }
+
+/* Onda 6: explorador de vínculos */
+.vinculos { display: grid; gap: 14px; }
+.vinc-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; max-width: 560px; }
+.vinc-form small { margin-bottom: 8px; }
+.vinc-form .btn { margin-top: 10px; justify-self: start; }
+.vinc-form label { font-weight: 600; font-size: 14px; }
+.vinc-form input { min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit; }
+.vinc-caminho { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.vinc-passo { display: inline-flex; align-items: center; gap: 4px; }
+.vinc-seta { color: var(--ink-3); font-size: 18px; }
+.vinc-area { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.vinc-colunas { flex: 999 1 560px; min-width: 0; display: flex; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); }
+.vinc-coluna { flex: none; width: 300px; border-right: 1px solid var(--line); }
+.vinc-coluna > header { display: grid; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.vinc-coluna ul { list-style: none; margin: 0; padding: 6px; display: grid; gap: 4px; }
+.vinc-grupo { display: block; padding: 8px 8px 2px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.vinc-item { width: 100%; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; text-align: left; padding: 8px 10px; min-height: 56px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); font: inherit; color: var(--ink); cursor: pointer; }
+.vinc-item:hover { background: var(--surface-2); }
+.vinc-item.ativo { border-color: var(--brand); background: var(--brand-soft); }
+.vinc-item[disabled] { cursor: not-allowed; opacity: .6; }
+.vinc-texto { display: grid; gap: 1px; font-size: 13px; min-width: 0; }
+.vinc-tipo { align-self: start; padding: 0 6px; border-radius: 4px; font: 700 10px var(--font-mono); color: #fff; background: var(--brand); }
+.vinc-tipo.t-PJ { background: #14365F; }
+.vinc-tipo.t-IM { background: #7A5B00; }
+.vinc-tipo.t-EM { background: #1F6B4F; }
+.impostos-sub { margin: 14px 0 4px; font-size: 15px; }
+.vinc-abre { color: var(--ink-4); }
+.vinc-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.vinc-vazio { padding: 14px; }
+.vinc-resumo { flex: 1 1 280px; display: grid; gap: 8px; align-content: start; }
+.vinc-resumo h2 { margin: 0; font-size: 18px; }
+
+/* Onda 7: políticas de dados */
+.pol-regras { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.pol-regra { display: grid; gap: 4px; align-content: start; overflow-wrap: anywhere; }
+.pol-regra .kicker { margin: 0; }
+.pol-rolagem { overflow-x: auto; }
+.pol-tabela { min-width: 900px; font-size: 13.5px; }
+.pol-tabela th[scope="row"], .pol-matriz th[scope="row"] { text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--ink); background: transparent; }
+.tabela.pol-tabela td, .tabela.pol-matriz td { font-family: var(--font-sans); vertical-align: top; }
+.pol-matriz td { text-align: center; }
