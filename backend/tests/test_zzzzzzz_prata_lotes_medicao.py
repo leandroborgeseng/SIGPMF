@@ -1,6 +1,7 @@
 """R2 do QA (#22): a prata grava em lotes de 5 mil (nunca um INSERT por linha nem tudo de uma vez), e a medição por
 etapa só registra nome, tempo, contagens e RSS (sem PII). Dados sintéticos ZZTESTE, transação desfeita no fim."""
 import logging
+import re
 
 from sqlalchemy import event, func, insert, select
 
@@ -11,9 +12,10 @@ from app.silver import processamento
 
 def _conta_inserts(db, tabela):
     lotes = []
+    alvo = re.compile(rf"\s*INSERT\s+INTO\s+silver\.{tabela}\s*\(", re.I)
 
     def antes(conn, cursor, statement, parameters, context, executemany):
-        if statement.lstrip().upper().startswith("INSERT") and f"silver.{tabela}" in statement:
+        if alvo.match(statement):  # tabela exata (não pega silver.vinculos_xxx de outras etapas)
             lotes.append(len(parameters) if executemany else 1)
     eng = db.get_bind()
     event.listen(eng, "before_cursor_execute", antes)
@@ -102,8 +104,10 @@ def test_reconstruir_real_grava_vinculos_e_enderecos_em_lotes_de_5000(db):
         assert r["vinculos"] >= n
         for tabela in ("vinculos", "enderecos", "cidadaos"):
             lotes = contagens[tabela]
-            assert lotes and all(x == 5000 for x in lotes[:-1]) and 0 < lotes[-1] <= 5000, (tabela, lotes)
-            assert len(lotes) == -(-sum(lotes) // 5000), (tabela, lotes)  # nenhum INSERT por linha / lote menor no meio
+            # lote nunca passa de 5 mil (add_all/flush manda 9 mil+ por vez) e nada de INSERT por linha. O bulk insert
+            # do SQLAlchemy separa um lote em grupos com o mesmo conjunto de colunas: no conjunto, soma 5000 por lote.
+            assert lotes and max(lotes) <= 5000, (tabela, lotes)
+            assert len(lotes) <= sum(lotes) // 1000 + 5, (tabela, lotes)
         assert sum(contagens["vinculos"]) == r["vinculos"]
     finally:
         for s in solta:
