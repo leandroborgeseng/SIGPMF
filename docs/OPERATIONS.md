@@ -87,3 +87,12 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   (`pf:` cidadão, `im:` imóvel, `ps:` possuidor sem cidadão) — CPF/CNPJ nunca vão na URL e saem mascarados; cada
   abertura auditada como `consulta_vinculos` (alvo = cidadão quando é pessoa).
 - Sócios de empresas (ISS) e família (Senior/CadÚnico) entram como novos tipos de vínculo quando esses conectores forem ligados.
+
+## Políticas de dados e retenção (onda 7, PL1–PL4)
+- Tela **Dados → Políticas de dados**: regras gerais, conjuntos (classificação, base legal, retenção, tratamento, quem vê),
+  matriz perfis × áreas e a limpeza automática. Configuração versionada em `app/catalogo/politicas_dados.py` (muda por PR).
+- Retenção (`app/services/retencao.py`): uma vez por dia, depois das cargas da agenda (ou **Executar agora**, admin,
+  auditado). Apaga só **versões antigas** da bronze (com versão mais nova e extraídas há mais de
+  `RETENCAO_BRONZE_VERSOES_DIAS`, padrão 7) e logs técnicos com mais de `RETENCAO_LOGS_DIAS` (90). Nunca apaga a versão
+  atual de um registro, linha citada pela prata, quarentena nem a auditoria. Cada execução fica em `controle.execucoes`
+  (tipo `retencao`).

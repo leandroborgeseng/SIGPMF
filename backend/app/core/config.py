@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     agenda_espera_max_h: int = Field(20, alias="AGENDA_ESPERA_MAX_H", ge=1, le=72)
     # IN3: a agenda faz carga incremental e, a cada N dias, uma completa (pega exclusões na origem).
     agenda_completa_dias: int = Field(7, alias="AGENDA_COMPLETA_DIAS", ge=1, le=90)
+    # PL2: retenção diária (versões antigas da bronze e logs técnicos; a auditoria nunca é apagada)
+    retencao_bronze_versoes_dias: int = Field(7, alias="RETENCAO_BRONZE_VERSOES_DIAS", ge=1, le=3650)
+    retencao_logs_dias: int = Field(90, alias="RETENCAO_LOGS_DIAS", ge=7, le=3650)
     # IN2: a incremental relê desde (maior data já gravada na bronze − margem), para não perder alterações tardias.
     carga_incremental_margem_h: int = Field(24, alias="CARGA_INCREMENTAL_MARGEM_H", ge=0, le=720)
     # Alerta de falha por e-mail (opcional: sem SMTP_HOST, só fica registrado na tela e na auditoria).

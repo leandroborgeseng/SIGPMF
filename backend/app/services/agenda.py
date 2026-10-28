@@ -288,6 +288,13 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
+    # PL3: retenção uma vez por dia, depois das cargas, só dentro da janela e com a agenda ligada
+    from app.services import retencao
+    momento = agora if relogio_fixo else datetime.now(UTC)
+    local = momento.astimezone(_fuso())
+    if (s.agenda_habilitada and not (parar is not None and parar.is_set())
+            and na_janela(local.hour * 60 + local.minute, ini, fim) and not retencao.ja_rodou_hoje(db, momento)):
+        feitos.append(("retencao", retencao.executar(db, USUARIO, momento).status))
     return feitos
 
 

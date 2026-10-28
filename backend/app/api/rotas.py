@@ -739,6 +739,27 @@ def explorar_vinculos(no_id: str, req: Request, motivo: str = "", processo: str 
     return {**r, "nivel": nivel, "nivel_maximo": vn.NIVEL_MAXIMO}
 
 
+@api.get("/politicas")
+def politicas_dados(db: Session = Depends(get_db)):
+    """PL1: políticas de dados (configuração versionada no código) e a última execução da retenção."""
+    from app.catalogo import politicas_dados as pd
+    from app.services import retencao
+    s = get_settings()
+    ult = db.scalar(select(Execucao).where(Execucao.tipo == retencao.TIPO).order_by(Execucao.id.desc()).limit(1))
+    return {"regras": pd.REGRAS, "conjuntos": pd.CONJUNTOS, "areas": pd.AREAS, "perfis": pd.PERFIS,
+            "retencao": {"bronze_versoes_dias": s.retencao_bronze_versoes_dias, "logs_dias": s.retencao_logs_dias,
+                         "ultima": None if ult is None else {"status": ult.status, "iniciado_em": ult.iniciado_em,
+                                                             "mensagem": ult.mensagem, "apagados": ult.lidos}}}
+
+
+@api.post("/politicas/retencao/executar")
+def politicas_retencao_executar(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """PL2: executa a retenção agora (admin, auditado). Só apaga versões antigas da bronze e logs técnicos."""
+    from app.services import retencao
+    ex = retencao.executar(db, u.email)
+    return {"status": ex.status, "mensagem": ex.mensagem, "apagados": ex.lidos}
+
+
 @api.get("/gold/cidadaos/{cid}/sistemas")
 def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
     c = db.get(CidadaoSistemas, cid) or _404()
