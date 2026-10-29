@@ -82,10 +82,12 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     const linhas = within(t).getAllByRole('row').slice(1)
     expect(linhas).toHaveLength(2)
     for (const l of linhas) {
-      expect(l).toHaveTextContent(/de \d{2}\/\d{2}\/\d{4} até/)
-      expect(l).toHaveTextContent('ZZTESTE Admin ·')
+      expect(l).toHaveTextContent(/de \d{2}\/\d{2}\/\d{4}/)
+      expect(l).toHaveTextContent(/ZZTESTE Admin · \d{2}\/\d{2}\/\d{4} \d{2}:\d{2} BRT/)
     }
-    expect(linhas[0]).toHaveTextContent('sem fim')
+    expect(linhas[0]).toHaveTextContent(/de 01\/01\/2026, sem data de fim/)
+    expect(linhas[0]).not.toHaveTextContent('até sem fim')
+    expect(linhas[1]).toHaveTextContent(/de 01\/01\/2026 até 01\/02\/2026/)
     expect(within(linhas[1]).getByText('Vencido')).toBeVisible()
   })
 
@@ -170,6 +172,7 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     await abreUsuario()
     const det = screen.getByText('Ver histórico de alterações').closest('details')!
     expect(det.open).toBe(false)
+    expect(det.querySelector('time')).toHaveTextContent(/ BRT$/)
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations).toEqual([])
   })

@@ -432,3 +432,4 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
   .as-tabela td[data-rotulo]::before { content: attr(data-rotulo); display: block; font-size: 12px; color: var(--ink-3); }
   .as-acoes .btn { flex: 1 1 auto; }
 }
+.btn.danger[disabled], .btn.danger[disabled]:hover { background: var(--muted-bg); color: var(--muted); border-color: var(--line); } /* B1 PR-06: desabilitado padrão (AA) */

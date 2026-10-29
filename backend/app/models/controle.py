@@ -281,4 +281,30 @@ class AuditoriaAcesso(Base):
     recurso: Mapped[str] = mapped_column(String(50))
     alvo: Mapped[str | None] = mapped_column(String(300))
     ip: Mapped[str | None] = mapped_column(String(64))
+    revelou_cpf: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SecretariaRef(Base):
+    """PR-06 (0033): tabela de referência das secretarias, ajustável pela TI sem deploy."""
+    __tablename__ = "secretarias"
+    __table_args__ = S
+    codigo: Mapped[str] = mapped_column(String(40), primary_key=True)
+    nome: Mapped[str] = mapped_column(String(200))
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    a_confirmar: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    obs: Mapped[str | None] = mapped_column(Text)
+    atualizado_por: Mapped[str | None] = mapped_column(String(200))
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DominioSecretaria(Base):
+    """PR-06 (0033): domínio do ouro -> secretaria dona do dado nominal (a_confirmar = valor inicial pendente)."""
+    __tablename__ = "dominio_secretaria"
+    __table_args__ = S
+    dominio: Mapped[str] = mapped_column(String(50), primary_key=True)
+    secretaria: Mapped[str] = mapped_column(ForeignKey("controle.secretarias.codigo"))
+    a_confirmar: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    obs: Mapped[str | None] = mapped_column(Text)
+    atualizado_por: Mapped[str | None] = mapped_column(String(200))
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())

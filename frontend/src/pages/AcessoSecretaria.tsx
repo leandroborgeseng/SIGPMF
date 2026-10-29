@@ -40,7 +40,7 @@ function useFocoPreso(ref: React.RefObject<HTMLDivElement | null>, fechar: () =>
 function Vigencia({ v }: { v: Vinculo }) {
   return (
     <>
-      de {dataBR(v.inicio)} até {v.fim ? dataBR(v.fim) : 'sem fim'}
+      {v.fim ? `de ${dataBR(v.inicio)} até ${dataBR(v.fim)}` : `de ${dataBR(v.inicio)}, sem data de fim`}
       {v.vencido && <> <span className="selo falha">Vencido</span></>}
       {v.futuro && <> <span className="selo neutro">Ainda não começou</span></>}
     </>
@@ -158,7 +158,7 @@ function PainelUsuario({ usuario }: { usuario: UsuarioAchado }) {
               <tr key={v.id} className={v.vencido ? 'vencido' : undefined}>
                 <th scope="row" data-rotulo="Secretaria">{v.secretaria_nome}</th>
                 <td data-rotulo="Vigência"><Vigencia v={v} /></td>
-                <td data-rotulo="Cadastrado por">{v.cadastrado_por} · {dataHoraBR(v.cadastrado_em)}</td>
+                <td data-rotulo="Cadastrado por">{v.cadastrado_por} · {dataHoraBR(v.cadastrado_em)} BRT</td>
                 <td data-rotulo="Ações" className="as-acoes">
                   <button className="btn secundario" onClick={() => setEditar(v)}
                     aria-label={`Editar vigência de ${v.secretaria_nome}`}>Editar vigência</button>
@@ -184,7 +184,7 @@ function PainelUsuario({ usuario }: { usuario: UsuarioAchado }) {
         {historico.length === 0 ? <p className="sutil">Nenhuma alteração registrada.</p> : (
           <ul>
             {historico.map((h, i) => (
-              <li key={i}><time>{dataHoraBR(h.quando)}</time> · {h.quem} · {h.acao} · {h.secretaria}{h.motivo ? ` · Motivo: ${h.motivo}` : ''}</li>
+              <li key={i}><time>{dataHoraBR(h.quando)} BRT</time> · {h.quem} · {h.acao} · {h.secretaria}{h.motivo ? ` · Motivo: ${h.motivo}` : ''}</li>
             ))}
           </ul>
         )}

@@ -1,10 +1,13 @@
 """PR-06: acesso por secretaria (R1–R4) e manutenção dos vínculos pela tela de TI (R5/R6).
 
 Regra (com SIGPMF_RBAC_SECRETARIA=true):
+- Domínio -> secretaria vem de controle.dominio_secretaria (TI ajusta sem deploy).
+- Com vínculo vigente o dado nominal sai SEM máscara, inclusive o CPF completo (TL 29/10), e a linha de
+  controle.auditoria_acesso marca revelou_cpf.
 - Dado nominal de um domínio só sai para quem tem vínculo VIGENTE (não removido, início <= hoje <= fim) com a secretaria
   dona do domínio (R1). Outra secretaria, sem vínculo ou vínculo vencido = 403 sem nenhum dado nem contagem (R2).
 - O vínculo "TODAS" é o do prefeito: vê todas as secretarias, com auditoria (R3).
-- Menor de idade só para Educação e Saúde (e prefeito); dado clínico só agregado e só para a Saúde (R4) — a API nominal
+- Menor de idade só para a Educação (e prefeito); dado clínico só para a Saúde (R4, decisão do TL 29/10) — a API nominal
   da Saúde não devolve conteúdo clínico, e os indicadores clínicos são agregados.
 - Toda consulta liberada grava uma linha em controle.auditoria_acesso (R1/R3); toda recusa vai para controle.auditoria.
 
@@ -22,19 +25,9 @@ from app.core.audit import audita
 from app.models.controle import AuditoriaAcesso, Usuario, UsuarioSecretaria
 
 TODAS = "TODAS"
-SECRETARIAS: dict[str, str] = {
-    "EDUCACAO": "Secretaria de Educação",
-    "SAUDE": "Secretaria de Saúde",
-    "FAZENDA": "Secretaria da Fazenda",
-    "ASSISTENCIA_SOCIAL": "Secretaria de Assistência Social",
-    "ADMINISTRACAO": "Secretaria de Administração",
-    "SERVICOS_URBANOS": "Secretaria de Serviços Urbanos",
-}
 NOME_TODAS = "Todas as secretarias (prefeito)"
-# Domínio do ouro -> secretaria dona do dado nominal. Domínio sem dono (ex.: identificacao) = qualquer vínculo vigente.
-DOMINIO_SECRETARIA = {"educacao": "EDUCACAO", "saude": "SAUDE", "tributario": "FAZENDA", "impostos": "FAZENDA",
-                      "cemiterio": "SERVICOS_URBANOS"}
-VEEM_MENORES = {"EDUCACAO", "SAUDE"}
+SEC_MENORES = "EDUCACAO"  # menores: só a Educação (TL 29/10); clínico: só a Saúde
+SEC_CLINICO = "SAUDE"
 MOTIVO_MIN = 10
 
 
@@ -42,8 +35,28 @@ def rbac_ativo() -> bool:
     return (os.environ.get("SIGPMF_RBAC_SECRETARIA") or "").strip().lower() == "true"
 
 
-def nome_secretaria(codigo: str) -> str:
-    return NOME_TODAS if codigo == TODAS else SECRETARIAS.get(codigo, codigo)
+def secretarias(db: Session, so_ativas: bool = True) -> dict[str, str]:
+    """Tabela de referência controle.secretarias (a TI ajusta sem deploy)."""
+    from app.models.controle import SecretariaRef
+    q = select(SecretariaRef)
+    if so_ativas:
+        q = q.where(SecretariaRef.ativo.is_(True))
+    return {x.codigo: x.nome for x in db.scalars(q.order_by(SecretariaRef.nome))}
+
+
+def nome_secretaria(codigo: str, db: Session | None = None) -> str:
+    if db is not None:
+        from app.models.controle import SecretariaRef
+        r = db.get(SecretariaRef, codigo)
+        if r is not None:
+            return r.nome
+    return NOME_TODAS if codigo == TODAS else codigo
+
+
+def dono_dominio(db: Session, dominio: str) -> str | None:
+    from app.models.controle import DominioSecretaria
+    r = db.get(DominioSecretaria, dominio)
+    return r.secretaria if r else None
 
 
 def vigente(v: UsuarioSecretaria, hoje: date | None = None) -> bool:
@@ -68,7 +81,7 @@ def _negar(db: Session, u: Usuario, req: Request, recurso: str, alvo: str | None
 
 
 def exige(db: Session, u: Usuario, req: Request, recurso: str, *, secretaria: str | None,
-          alvo: str | None = None, menor: bool = False) -> set[str] | None:
+          alvo: str | None = None, menor: bool = False, revelou_cpf: bool = False) -> set[str] | None:
     """Confere o acesso antes de qualquer leitura. `secretaria=None` = qualquer vínculo vigente basta.
     Devolve as secretarias vigentes (None se a regra estiver desligada) e grava a auditoria de acesso."""
     if not rbac_ativo():
@@ -79,17 +92,17 @@ def exige(db: Session, u: Usuario, req: Request, recurso: str, *, secretaria: st
         _negar(db, u, req, recurso, alvo, "sem_vinculo_vigente")
     if not prefeito and secretaria is not None and secretaria not in sec:
         _negar(db, u, req, recurso, alvo, "outra_secretaria")
-    if menor and not prefeito and not (sec & VEEM_MENORES):
+    if menor and not prefeito and SEC_MENORES not in sec:
         _negar(db, u, req, recurso, alvo, "menor_fora_educacao_saude")
     registrada = TODAS if prefeito else (secretaria or sorted(sec)[0])
-    db.add(AuditoriaAcesso(usuario=u.email, secretaria=registrada, recurso=recurso, alvo=alvo,
+    db.add(AuditoriaAcesso(usuario=u.email, secretaria=registrada, recurso=recurso, alvo=alvo, revelou_cpf=revelou_cpf,
                            ip=req.client.host if req.client else None))
     db.commit()
     return sec
 
 
-def dominios_permitidos(sec: set[str] | None, dominio: str) -> bool:
+def dominios_permitidos(sec: set[str] | None, dominio: str, db: Session | None = None) -> bool:
     if sec is None or TODAS in sec:
         return True
-    dono = DOMINIO_SECRETARIA.get(dominio)
+    dono = dono_dominio(db, dominio) if db is not None else None
     return dono is None or dono in sec

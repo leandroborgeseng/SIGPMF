@@ -16,12 +16,12 @@ from sqlalchemy.orm import Session
 from app.core.audit import audita
 from app.core.db import get_db
 from app.core.security import usuario_atual
-from app.models.controle import Auditoria, Usuario, UsuarioSecretaria
+from app.models.controle import Auditoria, DominioSecretaria, SecretariaRef, Usuario, UsuarioSecretaria
 from app.services import acesso_secretaria as acs
 
 ti = APIRouter(prefix="/ti/acesso-secretaria", tags=["ti"])
 ACOES = {"vinculo_secretaria_adicionar": "Adicionou", "vinculo_secretaria_editar": "Editou a vigência",
-         "vinculo_secretaria_remover": "Removeu"}
+         "vinculo_secretaria_remover": "Removeu", "vinculo_prefeito_remover": "Removeu (admin_lgpd)"}
 CONFLITO = "Este vínculo foi alterado por outra pessoa. Recarregue para ver a versão atual."
 
 
@@ -34,6 +34,29 @@ def admin_ti(req: Request, u: Usuario = Depends(usuario_atual), db: Session = De
         audita(db, u.email, "acesso_negado", "ti:acesso-secretaria", {"perfil": u.perfil}, _ip(req))
         raise HTTPException(403, "Você não tem permissão para esta tela.")
     return u
+
+
+def lgpd_prefeito(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Usuario:
+    """TL 29/10: só o admin_lgpd remove o vínculo TODAS (prefeito), com motivo, auditado."""
+    if u.perfil != "admin_lgpd":
+        audita(db, u.email, "acesso_negado", "ti:prefeito-remover", {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Só o perfil admin_lgpd remove o acesso do prefeito.")
+    return u
+
+
+class SecretariaIn(BaseModel):
+    codigo: str = Field(min_length=2, max_length=40, pattern=r"^[A-Z_]+$")
+    nome: str = Field(min_length=3, max_length=200)
+    ativo: bool = True
+    a_confirmar: bool = False
+    obs: str | None = Field(None, max_length=500)
+
+
+class DominioIn(BaseModel):
+    dominio: str = Field(min_length=2, max_length=50, pattern=r"^[a-z_]+$")
+    secretaria: str = Field(min_length=2, max_length=40)
+    a_confirmar: bool = False
+    obs: str | None = Field(None, max_length=500)
 
 
 class BuscaIn(BaseModel):
@@ -76,8 +99,8 @@ def _usuario(db: Session, uid: int) -> Usuario:
     return alvo
 
 
-def _vinculo_publico(v: UsuarioSecretaria, nomes: dict[str, str]) -> dict:
-    return {"id": v.id, "secretaria": v.secretaria, "secretaria_nome": acs.nome_secretaria(v.secretaria),
+def _vinculo_publico(v: UsuarioSecretaria, nomes: dict[str, str], db: Session | None = None) -> dict:
+    return {"id": v.id, "secretaria": v.secretaria, "secretaria_nome": acs.nome_secretaria(v.secretaria, db),
             "prefeito": v.secretaria == acs.TODAS, "inicio": v.vigencia_inicio, "fim": v.vigencia_fim,
             "vencido": not acs.vigente(v) and v.vigencia_inicio <= date.today(),
             "futuro": v.vigencia_inicio > date.today(),
@@ -92,8 +115,54 @@ def _nomes(db: Session, emails: set[str]) -> dict[str, str]:
 
 
 @ti.post("/secretarias")
-def secretarias(_u: Usuario = Depends(admin_ti)):
-    return [{"codigo": c, "nome": n} for c, n in acs.SECRETARIAS.items()] + [{"codigo": acs.TODAS, "nome": acs.NOME_TODAS}]
+def secretarias(_u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
+    """Ativas da tabela de referência (controle.secretarias), para o select da tela."""
+    return [{"codigo": c, "nome": n} for c, n in acs.secretarias(db).items()]
+
+
+@ti.post("/referencia/listar")
+def referencia(_u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
+    """Tabela de referência completa (inclusive inativas) e o mapa domínio -> secretaria, com `a_confirmar`."""
+    return {"secretarias": [{"codigo": x.codigo, "nome": x.nome, "ativo": x.ativo, "a_confirmar": x.a_confirmar, "obs": x.obs}
+                            for x in db.scalars(select(SecretariaRef).order_by(SecretariaRef.codigo))],
+            "dominios": [{"dominio": d.dominio, "secretaria": d.secretaria, "a_confirmar": d.a_confirmar, "obs": d.obs}
+                         for d in db.scalars(select(DominioSecretaria).order_by(DominioSecretaria.dominio))]}
+
+
+@ti.post("/referencia/secretaria")
+def salvar_secretaria(dados: SecretariaIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
+    """TI ajusta a tabela sem deploy (upsert, nunca DELETE: desativar = ativo=false). TODAS não é desativada."""
+    if dados.codigo == acs.TODAS and not dados.ativo:
+        raise HTTPException(422, "A linha do prefeito não é desativada.")
+    x = db.get(SecretariaRef, dados.codigo)
+    antes = None if x is None else {"nome": x.nome, "ativo": x.ativo, "a_confirmar": x.a_confirmar}
+    if x is None:
+        x = SecretariaRef(codigo=dados.codigo)
+        db.add(x)
+    x.nome, x.ativo, x.a_confirmar, x.obs = dados.nome, dados.ativo, dados.a_confirmar, dados.obs
+    x.atualizado_por, x.atualizado_em = u.email, datetime.now(UTC)
+    audita(db, u.email, "secretaria_referencia_salvar", f"secretaria:{dados.codigo}",
+           {"antes": antes, "depois": {"nome": dados.nome, "ativo": dados.ativo, "a_confirmar": dados.a_confirmar}},
+           _ip(req), commit=False)
+    db.commit()
+    return {"codigo": x.codigo, "nome": x.nome, "ativo": x.ativo, "a_confirmar": x.a_confirmar, "obs": x.obs}
+
+
+@ti.post("/referencia/dominio")
+def salvar_dominio(dados: DominioIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
+    if dados.secretaria not in acs.secretarias(db) or dados.secretaria == acs.TODAS:
+        raise HTTPException(422, "Secretaria desconhecida.")
+    d = db.get(DominioSecretaria, dados.dominio)
+    antes = None if d is None else {"secretaria": d.secretaria, "a_confirmar": d.a_confirmar}
+    if d is None:
+        d = DominioSecretaria(dominio=dados.dominio)
+        db.add(d)
+    d.secretaria, d.a_confirmar, d.obs = dados.secretaria, dados.a_confirmar, dados.obs
+    d.atualizado_por, d.atualizado_em = u.email, datetime.now(UTC)
+    audita(db, u.email, "dominio_secretaria_salvar", f"dominio:{dados.dominio}",
+           {"antes": antes, "depois": {"secretaria": dados.secretaria, "a_confirmar": dados.a_confirmar}}, _ip(req), commit=False)
+    db.commit()
+    return {"dominio": d.dominio, "secretaria": d.secretaria, "a_confirmar": d.a_confirmar, "obs": d.obs}
 
 
 @ti.post("/usuarios/buscar")
@@ -118,13 +187,13 @@ def listar(dados: UsuarioRef, _u: Usuario = Depends(admin_ti), db: Session = Dep
                          .order_by(UsuarioSecretaria.secretaria)))
     nomes = _nomes(db, {v.cadastrado_por for v in vs})
     return {"usuario": {"id": alvo.id, "nome": alvo.nome, "email": alvo.email, "perfil": alvo.perfil},
-            "vinculos": [_vinculo_publico(v, nomes) for v in vs]}
+            "vinculos": [_vinculo_publico(v, nomes, db) for v in vs]}
 
 
 @ti.post("/vinculos/adicionar", status_code=201)
 def adicionar(dados: AdicionarIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
     alvo = _usuario(db, dados.usuario_id)
-    if dados.secretaria != acs.TODAS and dados.secretaria not in acs.SECRETARIAS:
+    if dados.secretaria not in acs.secretarias(db):  # valida contra a tabela de referência (só ativas)
         raise HTTPException(422, "Secretaria desconhecida.")
     inicio = dados.inicio or date.today()
     _valida_vigencia(inicio, dados.fim)
@@ -141,7 +210,7 @@ def adicionar(dados: AdicionarIn, req: Request, u: Usuario = Depends(admin_ti), 
            _ip(req), commit=False)
     db.commit()
     db.refresh(v)
-    return _vinculo_publico(v, _nomes(db, {u.email}))
+    return _vinculo_publico(v, _nomes(db, {u.email}), db)
 
 
 def _vinculo_versao(db: Session, vid: int, versao: int) -> UsuarioSecretaria:
@@ -164,7 +233,7 @@ def editar(dados: EditarIn, req: Request, u: Usuario = Depends(admin_ti), db: Se
            _ip(req), commit=False)
     db.commit()
     db.refresh(v)
-    return _vinculo_publico(v, _nomes(db, {v.cadastrado_por}))
+    return _vinculo_publico(v, _nomes(db, {v.cadastrado_por}), db)
 
 
 @ti.post("/vinculos/remover")
@@ -174,7 +243,7 @@ def remover(dados: RemoverIn, req: Request, u: Usuario = Depends(admin_ti), db: 
         raise HTTPException(422, f"Informe o motivo (mínimo de {acs.MOTIVO_MIN} caracteres).")
     v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
     if v.secretaria == acs.TODAS:
-        raise HTTPException(422, "O acesso do prefeito não é removido por esta tela.")
+        raise HTTPException(422, "O acesso do prefeito não é removido por esta tela. Só o perfil admin_lgpd remove.")
     v.removido_por, v.removido_em, v.motivo_remocao = u.email, datetime.now(UTC), motivo
     v.versao += 1
     audita(db, u.email, "vinculo_secretaria_remover", f"usuario:{v.usuario_id}",
@@ -190,5 +259,23 @@ def historico(dados: UsuarioRef, _u: Usuario = Depends(admin_ti), db: Session = 
                            .order_by(Auditoria.id.desc()).limit(100)))
     nomes = _nomes(db, {a.usuario for a in regs if a.usuario})
     return [{"quando": a.criado_em, "quem": nomes.get(a.usuario or "", a.usuario), "acao": ACOES[a.acao],
-             "secretaria": acs.nome_secretaria((a.detalhe or {}).get("secretaria", "")),
+             "secretaria": acs.nome_secretaria((a.detalhe or {}).get("secretaria", ""), db),
              "motivo": (a.detalhe or {}).get("motivo")} for a in regs]
+
+
+@ti.post("/vinculos/remover-prefeito")
+def remover_prefeito(dados: RemoverIn, req: Request, u: Usuario = Depends(lgpd_prefeito), db: Session = Depends(get_db)):
+    """TL 29/10: o vínculo TODAS (prefeito) só é removido pelo admin_lgpd, com motivo obrigatório, auditado."""
+    motivo = dados.motivo.strip()
+    if len(motivo) < acs.MOTIVO_MIN:
+        audita(db, u.email, "vinculo_prefeito_remover_negado", None, {"razao": "motivo_invalido"}, _ip(req))
+        raise HTTPException(422, f"Informe o motivo (mínimo de {acs.MOTIVO_MIN} caracteres).")
+    v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
+    if v.secretaria != acs.TODAS:
+        raise HTTPException(422, "Esta rota remove só o acesso do prefeito.")
+    v.removido_por, v.removido_em, v.motivo_remocao = u.email, datetime.now(UTC), motivo
+    v.versao += 1
+    audita(db, u.email, "vinculo_prefeito_remover", f"usuario:{v.usuario_id}",
+           {"secretaria": v.secretaria, "motivo": motivo[:300]}, _ip(req), commit=False)
+    db.commit()
+    return {"id": v.id, "removido": True}

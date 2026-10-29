@@ -81,7 +81,10 @@ def test_r1_educacao_sem_mascara_para_secretaria(client, db, rbac):
     assert r.status_code == 200
     al = r.json()["alunos"][0]
     assert al["nome"] == "ZZTESTE ALUNO MENOR" and al["mascarado"] is False
-    assert al["cpf"] != "00000000191"  # CPF segue mascarado (só admin_lgpd revela)
+    assert al["cpf"] == "00000000191"  # TL 29/10: CPF completo para a secretaria vinculada
+    db.expire_all()
+    a = db.scalar(select(AuditoriaAcesso).where(AuditoriaAcesso.usuario == u.email))
+    assert a.revelou_cpf is True and a.recurso == "educacao"
 
 
 # ---------- R2: teste negativo obrigatório ----------
@@ -148,7 +151,7 @@ def test_r3_prefeito_ve_tudo_com_auditoria(client, db, rbac):
 
 
 # ---------- R4 ----------
-def test_r4_menor_so_educacao_e_saude(client, db, rbac):
+def test_r4_menor_so_educacao_clinico_so_saude(client, db, rbac):
     cid = _cidadao(db, nasc=HOJE - timedelta(days=365 * 12))
     fz, hf = _usuario(db, client)
     _vinculo(db, fz, "FAZENDA")
@@ -156,7 +159,12 @@ def test_r4_menor_so_educacao_e_saude(client, db, rbac):
     assert client.get(f"/api/gold/cidadaos/{cid}/tributario", headers=hf).status_code == 403
     sa, hs = _usuario(db, client)
     _vinculo(db, sa, "SAUDE")
-    assert client.get(f"/api/gold/cidadaos/{cid}", headers=hs).status_code == 200
+    assert client.get(f"/api/gold/cidadaos/{cid}", headers=hs).status_code == 403  # TL 29/10: menor só Educação
+    assert client.get(f"/api/gold/cidadaos/{cid}/saude", headers=hs).status_code == 200  # clínico é da Saúde
+    ed, he = _usuario(db, client)
+    _vinculo(db, ed, "EDUCACAO")
+    assert client.get(f"/api/gold/cidadaos/{cid}", headers=he).status_code == 200
+    assert client.get(f"/api/gold/cidadaos/{cid}/saude", headers=he).status_code == 403  # clínico só Saúde
     adulto = _cidadao(db)
     assert client.get(f"/api/gold/cidadaos/{adulto}/tributario", headers=hf).status_code == 200
 
@@ -257,7 +265,7 @@ def test_r5_vinculo_removido_corta_acesso_na_hora(client, db, tokens, rbac):
 def test_uxv1_rotas_ti_sem_termo_nem_id_na_url(client):
     from app.api.acesso_ti import ti
     rotas = list(ti.routes)
-    assert len(rotas) == 7 and all("{" not in r.path and r.methods == {"POST"} for r in rotas)
+    assert len(rotas) == 11 and all("{" not in r.path and r.methods == {"POST"} for r in rotas)
 
 
 def test_auditoria_acesso_somente_insercao(db, client, rbac):
@@ -267,3 +275,97 @@ def test_auditoria_acesso_somente_insercao(db, client, rbac):
     with pytest.raises(Exception):  # noqa: B017
         db.execute(text("DELETE FROM controle.auditoria_acesso"))
     db.rollback()
+
+
+# ---------- TL 29/10: CPF completo, tabela de referência e prefeito ----------
+def _cpf(db, cid, valor="52998224725"):
+    from app.models.camadas import Identificador
+    db.add(Identificador(cidadao_id=cid, tipo="cpf", valor=valor))
+    db.commit()
+
+
+def test_cpf_completo_para_secretaria_vinculada_e_auditado(client, db, rbac):
+    u, h = _usuario(db, client)
+    _vinculo(db, u, "SAUDE")
+    cid = _cidadao(db)
+    _cpf(db, cid, "39053344705")
+    r = client.get(f"/api/gold/cidadaos/{cid}", headers=h).json()
+    assert r["cpf"] == "39053344705" and r["cpf_mascarado"] is False
+    db.expire_all()
+    a = db.scalar(select(AuditoriaAcesso).where(AuditoriaAcesso.usuario == u.email))
+    assert a.revelou_cpf is True and a.recurso == "ficha"
+
+
+def test_cpf_mascarado_com_regra_desligada(client, db, monkeypatch):
+    monkeypatch.delenv("SIGPMF_RBAC_SECRETARIA", raising=False)
+    _u, h = _usuario(db, client)
+    cid = _cidadao(db)
+    _cpf(db, cid, "11144477735")
+    r = client.get(f"/api/gold/cidadaos/{cid}", headers=h).json()
+    assert r["cpf"] != "11144477735" and r["cpf_mascarado"] is True
+
+
+def test_admin_sem_vinculo_403(client, db, tokens, rbac):
+    cid = _cidadao(db)
+    assert client.get(f"/api/gold/cidadaos/{cid}", headers=tokens["admin"]).status_code == 403
+
+
+def test_referencia_seed_e_cemiterio_a_confirmar(client, tokens):
+    r = client.post(B + "/referencia/listar", json={}, headers=tokens["admin"]).json()
+    assert {x["codigo"] for x in r["secretarias"]} >= {"EDUCACAO", "SAUDE", "FAZENDA", "ASSISTENCIA_SOCIAL", "ADMINISTRACAO",
+                                                       "SERVICOS_URBANOS", "TODAS"}
+    cem = next(d for d in r["dominios"] if d["dominio"] == "cemiterio")
+    assert cem["secretaria"] == "SERVICOS_URBANOS" and cem["a_confirmar"] is True
+
+
+def test_ti_ajusta_referencia_sem_deploy_e_vinculo_valida_tabela(client, db, tokens, rbac):
+    h = tokens["admin"]
+    assert client.post(B + "/referencia/secretaria", json={"codigo": "ZZTESTE_SEC", "nome": "ZZTESTE Secretaria"},
+                       headers=h).status_code == 200
+    alvo, ha = _usuario(db, client)
+    assert client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "ZZTESTE_SEC"}, headers=h).status_code == 201
+    assert client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "INEXISTENTE"}, headers=h).status_code == 422
+    client.post(B + "/referencia/secretaria", json={"codigo": "ZZTESTE_SEC", "nome": "ZZTESTE Secretaria", "ativo": False}, headers=h)
+    outro, _ = _usuario(db, client)
+    assert client.post(B + "/vinculos/adicionar", json={"usuario_id": outro.id, "secretaria": "ZZTESTE_SEC"}, headers=h).status_code == 422
+    assert client.post(B + "/referencia/secretaria", json={"codigo": "TODAS", "nome": "Todas as secretarias (prefeito)", "ativo": False},
+                       headers=h).status_code == 422
+    # domínio remapeado sem deploy: tributário passa a ser da ZZTESTE_SEGUNDA e a ficha acompanha
+    client.post(B + "/referencia/secretaria", json={"codigo": "ZZTESTE_SEGUNDA", "nome": "ZZTESTE Sec 2"}, headers=h)
+    u, hu = _usuario(db, client)
+    _vinculo(db, u, "ZZTESTE_SEGUNDA")
+    cid = _cidadao(db)
+    assert client.post(B + "/referencia/dominio", json={"dominio": "tributario", "secretaria": "ZZTESTE_SEGUNDA"}, headers=h).status_code == 200
+    try:
+        assert {d["dominio"] for d in client.get(f"/api/gold/cidadaos/{cid}", headers=hu).json()["dados"]} == {"tributario"}
+    finally:
+        client.post(B + "/referencia/dominio", json={"dominio": "tributario", "secretaria": "FAZENDA"}, headers=h)
+    assert client.post(B + "/referencia/dominio", json={"dominio": "x_y", "secretaria": "NAO_EXISTE"}, headers=h).status_code == 422
+    db.expire_all()
+    assert db.scalar(select(Auditoria).where(Auditoria.acao == "dominio_secretaria_salvar")) is not None
+    for perfil in ("admin_lgpd", "operador"):
+        assert client.post(B + "/referencia/secretaria", json={"codigo": "ZZ_X", "nome": "ZZTESTE X"},
+                           headers=tokens[perfil]).status_code == 403
+
+
+def test_prefeito_so_admin_lgpd_remove_com_motivo_auditado(client, db, tokens):
+    alvo, _ = _usuario(db, client)
+    v = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "TODAS"}, headers=tokens["admin"]).json()
+    corpo = {"vinculo_id": v["id"], "versao": 1, "motivo": "ZZTESTE fim do mandato"}
+    assert client.post(B + "/vinculos/remover", json=corpo, headers=tokens["admin"]).status_code == 422
+    for perfil in ("admin", "operador", "leitura"):
+        assert client.post(B + "/vinculos/remover-prefeito", json=corpo, headers=tokens[perfil]).status_code == 403
+    r = client.post(B + "/vinculos/remover-prefeito", json={**corpo, "motivo": "curto"}, headers=tokens["admin_lgpd"])
+    assert r.status_code == 422
+    r = client.post(B + "/vinculos/remover-prefeito", json=corpo, headers=tokens["admin_lgpd"])
+    assert r.status_code == 200
+    db.expire_all()
+    linha = db.get(UsuarioSecretaria, v["id"])
+    assert linha.removido_em is not None and linha.removido_por == "admin_lgpd@aion.local"
+    a = db.scalar(select(Auditoria).where(Auditoria.acao == "vinculo_prefeito_remover", Auditoria.alvo == f"usuario:{alvo.id}"))
+    assert a.detalhe["motivo"] == "ZZTESTE fim do mandato"
+    # admin_lgpd não usa esta rota para outras secretarias
+    s = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "SAUDE"}, headers=tokens["admin"]).json()
+    r = client.post(B + "/vinculos/remover-prefeito", json={"vinculo_id": s["id"], "versao": 1, "motivo": "ZZTESTE motivo longo"},
+                    headers=tokens["admin_lgpd"])
+    assert r.status_code == 422

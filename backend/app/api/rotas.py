@@ -667,13 +667,15 @@ def inconsistencias(db: Session = Depends(get_db)):
 
 @api.get("/gold/cidadaos/{cid}")
 def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    sec = acs.exige(db, u, req, "ficha", secretaria=None, alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    sec = acs.exige(db, u, req, "ficha", secretaria=None, alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid),
+                    revelou_cpf=acs.rbac_ativo())
     c = db.get(CidadaoSistemas, cid) or _404()
     audita(db, u.email, "consulta_ficha", f"cidadao:{cid}", ip=_ip(req))  # FC4: toda abertura de ficha fica registrada
     dados = [d for d in db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo))
-             if acs.dominios_permitidos(sec, d.dominio)]
+             if acs.dominios_permitidos(sec, d.dominio, db)]
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
-    return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
+    return {"cidadao_id": cid, "nome": c.nome or "", "cpf": (_cpfs(db, [cid]).get(cid) if sec is not None else mascara(_cpfs(db, [cid]).get(cid))),
+            "cpf_mascarado": sec is None, "sistemas": c.sistemas or [],
             "dominios": c.dominios or [],
             "dados": [{"dominio": d.dominio, "campo": d.campo,
                        "valor": (normaliza_data_iso(d.valor) or d.valor) if d.campo in CAMPOS_DATA else d.valor, "fonte": d.sistema,
@@ -778,7 +780,7 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
         except ValueError:
             raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
     evs = [e for e in db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200))))
-           if acs.dominios_permitidos(sec, (e.area or "").lower())]
+           if acs.dominios_permitidos(sec, (e.area or "").lower(), db)]
     audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
     return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
                                             "fonte": e.fonte} for e in evs]}
@@ -1042,7 +1044,7 @@ def _menor(nasc, hoje=None) -> bool:
     return (h.year - nasc.year - ((h.month, h.day) < (nasc.month, nasc.day))) < 18
 
 
-def _educacao(db: Session, cid: str, *, revela: bool, claro_secretaria: bool = False) -> list[dict]:
+def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
     """GE4: aluno menor sai com nome, CPF, endereço e responsáveis mascarados, salvo `revela` (admin_lgpd + motivo).
     GE9: situação 1 = ativo; situação 3 = exclusão lógica, fora da ficha (aluno e matrícula); qualquer outra
     situação = inativo, visível como histórico e marcado `inativo`. Só a matrícula com situação 1 é a atual."""
@@ -1052,7 +1054,7 @@ def _educacao(db: Session, cid: str, *, revela: bool, claro_secretaria: bool = F
     for a in db.scalars(select(EscolaAluno).where(EscolaAluno.cidadao_id == cid, EscolaAluno.status_vinculo == "vinculado",
                                                   EscolaAluno.excluido.is_(False))
                         .order_by(EscolaAluno.alu_id)):
-        claro = revela or claro_secretaria or not _menor(a.data_nascimento)
+        claro = revela or not _menor(a.data_nascimento)
         mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == a.alu_id,
                                                              EscolaMatricula.excluida.is_(False))
                                .order_by(EscolaMatricula.mtu_id.desc())))
@@ -1081,10 +1083,10 @@ def _educacao(db: Session, cid: str, *, revela: bool, claro_secretaria: bool = F
 
 @api.get("/gold/cidadaos/{cid}/educacao")
 def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    sec = acs.exige(db, u, req, "educacao", secretaria="EDUCACAO", alvo=f"cidadao:{cid}")
+    sec = acs.exige(db, u, req, "educacao", secretaria="EDUCACAO", alvo=f"cidadao:{cid}", revelou_cpf=acs.rbac_ativo())
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    # R1: com vínculo vigente à Educação, nome/endereço/responsáveis saem sem máscara; o CPF segue mascarado (só admin_lgpd).
-    alunos = _educacao(db, cid, revela=False, claro_secretaria=sec is not None)
+    # R1 (TL 29/10): com vínculo vigente à Educação, tudo sai sem máscara, inclusive o CPF completo (auditado).
+    alunos = _educacao(db, cid, revela=sec is not None)
     audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
     return {"cidadao_id": cid, "alunos": alunos}
 

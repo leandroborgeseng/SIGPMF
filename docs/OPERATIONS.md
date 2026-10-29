@@ -252,5 +252,14 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
   3) só então `SIGPMF_RBAC_SECRETARIA=true` e redeploy. Ligar antes corta o acesso de quem ainda não tem vínculo (403).
 - Com a regra ligada, toda consulta liberada grava `controle.auditoria_acesso` (somente inserção) e toda recusa grava
   `acesso_secretaria_negado` em `controle.auditoria` (sem PII). Vínculo vencido, futuro ou removido = 403 na hora.
-- Domínios → secretaria: saúde → SAUDE; tributário/impostos → FAZENDA; educação → EDUCACAO; cemitério → SERVICOS_URBANOS;
-  identificação → qualquer vínculo vigente. Menor de idade só para EDUCACAO e SAUDE (e prefeito).
+- Secretarias e mapa domínio → secretaria ficam nas tabelas `controle.secretarias` e `controle.dominio_secretaria`
+  (seed na 0033: EDUCACAO, SAUDE, FAZENDA, ASSISTENCIA_SOCIAL, ADMINISTRACAO, SERVICOS_URBANOS, TODAS; saúde → SAUDE,
+  tributário/impostos → FAZENDA, educação → EDUCACAO, **cemitério → SERVICOS_URBANOS com `a_confirmar=true`**).
+  A TI (admin) ajusta sem deploy por `POST /api/ti/acesso-secretaria/referencia/secretaria|dominio` (upsert auditado,
+  sem DELETE; desativar = `ativo=false`). Vínculo novo só aceita secretaria ativa da tabela. Domínio sem dono = qualquer
+  vínculo vigente.
+- Com vínculo vigente o dado nominal sai **sem máscara, inclusive o CPF completo** (TL 29/10), e a linha de
+  `controle.auditoria_acesso` marca `revelou_cpf`. Admin sem vínculo recebe 403 (confirmado).
+- **Menores só para a Educação; dado clínico (rota da Saúde) só para a Saúde** (prefeito vê tudo, com auditoria).
+- Vínculo do prefeito (TODAS): não sai pela tela de TI; só o perfil `admin_lgpd` remove, por
+  `POST /api/ti/acesso-secretaria/vinculos/remover-prefeito`, com motivo (10+ caracteres), auditado.
