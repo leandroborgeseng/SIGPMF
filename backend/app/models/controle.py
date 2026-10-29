@@ -83,6 +83,9 @@ class Execucao(Base):
     def alerta_publico(self) -> dict | None:
         """Aviso sem falha (ex.: `tabela_vazia`), com código fixo e só nomes de tabela."""
         from app.services.tabelas_vazias import alerta
+        if self.tipo == "releitura_deploy":
+            from app.services.releitura_deploy import alerta as alerta_releitura
+            return alerta_releitura(self)
         return alerta(self)
 
     def erro_publico(self) -> dict | None:
@@ -228,4 +231,21 @@ class SeiPaiPendente(Base):
     tentativas: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     situacao: Mapped[str] = mapped_column(String(20), default="pendente", server_default="pendente")
     execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AcaoUnica(Base):
+    """Marcador de ação de uso único no boot (0026): `concluida` em (acao, fonte, token=SHA do deploy) impede repetir."""
+    __tablename__ = "acoes_unicas"
+    __table_args__ = (UniqueConstraint("acao", "fonte", "token", name="uq_acoes_unicas_acao_fonte_token"), S)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    acao: Mapped[str] = mapped_column(String(50))
+    fonte: Mapped[str] = mapped_column(String(200))
+    token: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20))
+    codigo: Mapped[str | None] = mapped_column(String(50))
+    execucao_id: Mapped[int | None] = mapped_column(Integer)
+    usuario: Mapped[str | None] = mapped_column(String(200))
+    tentativas: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

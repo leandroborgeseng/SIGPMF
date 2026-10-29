@@ -87,6 +87,11 @@ def create_app() -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             log.warning("interromper_cargas_orfas falhou: %s", type(exc).__name__)
         agendador = iniciar_agenda()
+        try:  # releitura de uso único (SIGPMF_RELEITURA_FONTE): thread que só começa após o /health; não bloqueia
+            from app.services.releitura_deploy import iniciar_em_fundo
+            iniciar_em_fundo()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("releitura_deploy não iniciou: %s", type(exc).__name__)
         yield
         if agendador is not None:
             agendador.parar()
