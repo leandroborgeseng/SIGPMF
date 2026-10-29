@@ -31,8 +31,36 @@ SEM_AMOSTRA = "Rode a amostra do conector de educação com sucesso antes da car
 FORA_JANELA = "Carga completa do conector de educação só roda na janela noturna ({janela})."
 
 
+MAX_MENSAGEM = 300
+SEM_CREDENCIAL = ("Credencial do conector de educação não configurada ou recusada "
+                  "(verifique SIGPMF_SRC_GESTAOESCOLAR_*).")
+
+
 class CargaRecusada(RuntimeError):
-    pass
+    """Recusa com motivo fixo: `codigo` em ("sem_amostra", "fora_janela")."""
+
+    def __init__(self, mensagem: str, codigo: str = "recusada") -> None:
+        super().__init__(mensagem)
+        self.codigo = codigo
+
+
+def corta(texto: str | None, limite: int = MAX_MENSAGEM) -> str | None:
+    if texto is None or len(texto) <= limite:
+        return texto
+    return texto[: limite - 1] + "…"
+
+
+def mensagem_segura(exc: BaseException) -> str:
+    """Texto fixo por tipo de erro (nunca str(exc): pode trazer host, usuário ou senha), até MAX_MENSAGEM."""
+    if isinstance(exc, CargaRecusada):
+        if exc.codigo == "sem_amostra":
+            return corta(SEM_AMOSTRA)
+        if exc.codigo == "fora_janela":
+            return corta(FORA_JANELA.format(janela=get_settings().agenda_janela))
+        return corta("Carga do conector de educação recusada.")
+    if isinstance(exc, PermissionError):
+        return corta(SEM_CREDENCIAL)
+    return corta(f"Falha no conector de educação ({type(exc).__name__}).")
 
 
 def _chave(f: Fonte, r: dict) -> list:
@@ -98,10 +126,10 @@ def _checkpoint(db: Session, f: Fonte) -> CheckpointCarga:
 def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, agora: datetime | None = None) -> Execucao:
     agora = agora or datetime.now(UTC)
     if not amostra_ok(db):
-        raise CargaRecusada(SEM_AMOSTRA)
+        raise CargaRecusada(SEM_AMOSTRA, "sem_amostra")
     ok, jan = dentro_da_janela(agora)
     if not ok:
-        raise CargaRecusada(FORA_JANELA.format(janela=jan))
+        raise CargaRecusada(FORA_JANELA.format(janela=jan), "fora_janela")
     teto, lote = max(1, int(cfg.max_lotes)), int(cfg.lote)
     ex = _nova_execucao(db, TIPO_COMPLETA, usuario, "completa")
     lotes = 0

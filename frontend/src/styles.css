@@ -380,3 +380,5 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .pol-tabela th[scope="row"], .pol-matriz th[scope="row"] { text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--ink); background: transparent; }
 .tabela.pol-tabela td, .tabela.pol-matriz td { font-family: var(--font-sans); vertical-align: top; }
 .pol-matriz td { text-align: center; }
+
+.agenda-tabela .selo { white-space: normal; max-width: 100%; }
