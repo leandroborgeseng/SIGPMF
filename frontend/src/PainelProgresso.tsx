@@ -62,7 +62,7 @@ function Card({ f }: { f: FonteProgresso }) {
           <div className={p.percentual == null ? 'pp-indeterminada' : ''} style={p.percentual == null ? undefined : { width: `${p.percentual}%` }} />
         </div>
         <p className="pp-lote">{textoLote(p)}</p>
-        {p.origem_total && <p className="sutil">total {p.origem_total}: {n(p.total_origem ?? 0)} linhas</p>}
+        {p.origem_total && <p className="sutil">Total estimado: ~{n(p.total_origem ?? 0)} linhas ({p.origem_total})</p>}
         <p>Rodando há {duracao(p.decorrido_s)} · {p.calculando ? 'término previsto: calculando…'
           : p.previsao_termino_brt ? `término previsto ~${p.previsao_termino_brt} (BRT)` : 'término previsto: sem total conhecido'}</p>
         <p>Último sinal há {p.sem_sinal_min} min</p>
@@ -77,8 +77,7 @@ function Card({ f }: { f: FonteProgresso }) {
       )}
       {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}</p>}
       {f.falta && <p className="pp-motivo">Não liberada — falta: {f.falta.join(' / ')}</p>}
-      {!p && f.ultima_execucao && <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} lidas,
-        {' '}{n(f.ultima_execucao.gravadas)} gravadas</p>}
+      {!p && f.ultima_execucao && <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} linhas processadas</p>}
       {f.tabelas.length > 0 && (
         <details>
           <summary>Ver tabelas ({f.tabelas.length})</summary>

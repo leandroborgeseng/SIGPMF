@@ -163,7 +163,7 @@ def test_pp2_pp3_total_conhecido_por_contagem(limpo):
     _ex(limpo, lotes=3, lidos=3000)
     p = pg.fonte(limpo, F, AGORA)["progresso"]
     assert (p["lote"], p["lotes_total"], p["percentual"]) == (3, 10, 30)
-    assert p["origem_total"] == "contagem gravada na amostra/carga"
+    assert p["origem_total"] == "contagem da última carga"
 
 
 def test_pp2_total_desconhecido_sem_percentual(limpo):

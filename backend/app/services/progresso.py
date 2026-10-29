@@ -44,7 +44,7 @@ MOTIVOS = {
     "pausada_sistema": "Pausada pelo sistema; continua do checkpoint",
     "parcial": "Parada no teto de lotes; a próxima execução continua do checkpoint",
 }
-ORIGEM_TOTAL = {"contagem": "contagem gravada na amostra/carga", "ultima_carga": "estimado pela última carga"}
+ORIGEM_TOTAL = {"contagem": "contagem da última carga", "ultima_carga": "estimado pela última carga"}
 
 
 @dataclass(frozen=True)

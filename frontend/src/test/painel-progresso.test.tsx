@@ -40,7 +40,7 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
     const barra = within(card).getByRole('progressbar')
     expect(barra).toHaveAttribute('aria-valuenow', '33')
     expect(within(card).getByText('Lote 81 de ~240 (33%)')).toBeVisible()
-    expect(within(card).getByText(/total estimado pela última carga/)).toBeVisible()
+    expect(within(card).getByText('Total estimado: ~240.000 linhas (estimado pela última carga)')).toBeVisible()
     expect(within(card).getByText(/Rodando há 2 h 14 min · término previsto ~19:40 \(BRT\)/)).toBeVisible()
     expect(within(card).getByText('Último sinal há 1 min')).toBeVisible()
     expect(within(card).getByText('Ver tabelas (2)')).toBeVisible()
@@ -131,6 +131,8 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
     const card = await screen.findByRole('article', { name: 'Educação' })
     expect(within(card).getByText('Concluída com aviso')).toBeVisible()
     expect(within(card).getByText('Tabela vazia: PES_PessoaDocumento')).toBeVisible()
+    expect(within(card).getByText('Última execução (Carga completa): 10 linhas processadas')).toBeVisible()  // M1
+    expect(card.textContent).not.toMatch(/lidas|gravadas/)
     const selo = within(card).getByText('Concluída com aviso').closest('.selo')
     expect(selo).toHaveClass('aviso-selo')
     expect(selo).not.toHaveClass('sucesso')  // âmbar, distinto do verde de Concluída
