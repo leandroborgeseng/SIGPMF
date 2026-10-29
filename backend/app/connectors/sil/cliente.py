@@ -143,8 +143,9 @@ class ClienteSil:
         self.config, self.relogio, self.dormir = config, relogio, dormir
         self._transport = transport
         self._bases = config.bases()
-        self.ambiente: str | None = None  # "sandbox" ou "producao", escolhido na sondagem de autenticação
+        self.ambiente: str | None = None  # "sandbox" ou "producao", confirmado na autenticação
         self._http = self._cliente_http(self._bases[0][1])
+        log.info("SIL: base em uso: ambiente=%s (host só no log da execução)", config.ambiente)
         self._token: str | None = None
         self._expira_em = 0.0
         self._trava_token = threading.Lock()

@@ -178,12 +178,27 @@ def test_teto_paginas_padrao_1(monkeypatch):
     assert ConfigSei.do_ambiente().max_paginas == 1
 
 
-def test_0019_downgrade_sem_efeito():
+def test_0022_downgrade_sem_efeito():
     import importlib.util
     import pathlib
-    p = pathlib.Path(__file__).parents[1] / "alembic" / "versions" / "0019_sei.py"
-    spec = importlib.util.spec_from_file_location("m0019", p)
+    p = pathlib.Path(__file__).parents[1] / "alembic" / "versions" / "0022_sei.py"
+    spec = importlib.util.spec_from_file_location("m0022", p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert "DROP" not in p.read_text().split("def downgrade")[1]
     assert mod.downgrade() is None
+
+
+def test_bronze_sei_homologacao_marcada_sandbox(monkeypatch, db):
+    from app.bronze.ingestao import ambiente_da_origem
+    sm.env_hml(monkeypatch)
+    assert ambiente_da_origem("SEI") == "sandbox"
+    from app.bronze.ingestao import ingere
+    ex = carga._nova_execucao(db, carga.TIPO_AMOSTRA, "admin@aion.local", "homologacao")
+    ingere(db, "SEI", "zzteste_amb", "id", None, [{"id": "ZZTESTE-AMB-1"}], ex.id)
+    r = db.scalar(select(RegistroBronze).where(RegistroBronze.sistema_origem == "SEI",
+                                               RegistroBronze.tabela == "zzteste_amb"))
+    assert r is not None and r.ambiente_origem == "sandbox"
+    monkeypatch.delenv("SIGPMF_SRC_SEI_USAR_HOMOLOGACAO")
+    sm.env_oficial(monkeypatch)
+    assert ambiente_da_origem("SEI") == "producao"

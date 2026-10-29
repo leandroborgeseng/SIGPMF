@@ -336,8 +336,8 @@ def test_sei7_sem_host_fixo_no_codigo():
 
 
 # ------------------------------------------------------------------ SEI8 mock, ZZTESTE e migração aditiva
-def test_sei8_migracao_0019_so_aditiva():
-    txt = (pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0019_sei.py").read_text()
+def test_sei8_migracao_0022_so_aditiva():
+    txt = (pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0022_sei.py").read_text()
     up = txt.split("def upgrade", 1)[1].split("def downgrade", 1)[0]
     assert "ADD COLUMN" in up
     for proibido in ("DROP", "DELETE", "TRUNCATE", "ALTER COLUMN", "RENAME", "UPDATE"):

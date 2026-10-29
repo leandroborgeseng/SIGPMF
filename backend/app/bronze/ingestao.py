@@ -34,11 +34,23 @@ def _data(v: Any) -> datetime | None:
         return None
 
 
+def ambiente_da_origem(sistema: str) -> str:
+    """SIL: o ambiente da base realmente usada (SIL_USAR_SANDBOX); SEI: homologação -> 'sandbox'; demais: 'producao'."""
+    if sistema == "SEI":
+        from app.connectors.sei.config import HOMOLOGACAO, ConfigSei
+        return "sandbox" if ConfigSei.do_ambiente().ambiente == HOMOLOGACAO else "producao"
+    if sistema != "SIL":
+        return "producao"
+    from app.connectors.sil.config import ConfigSil
+    return ConfigSil.do_ambiente().ambiente or "producao"
+
+
 def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_data: str | None,
            registros: list[dict[str, Any]], execucao_id: int, lote: int = 500,
            antes_do_lote: Callable[[int], None] | None = None, rowversion: str | None = None,
            confirmar: bool = True) -> dict[str, int]:
     """Carga completa com hash por linha (S2/CM3); se a origem tiver rowversion, ela substitui o hash."""
+    amb = ambiente_da_origem(sistema)
     c = {"lidos": len(registros), "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
     for n, i in enumerate(range(0, len(registros), lote), start=1):
         if antes_do_lote:
@@ -48,13 +60,16 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_dat
             d = r.get(campo_data) if campo_data else None
             rv = r.get(rowversion) if rowversion else None
             h = hashlib.sha256(f"rowversion:{rv}".encode()).hexdigest() if rv is not None else hash_registro(r)
+            if amb != "producao":  # linha de homologação nunca colide com a mesma linha vinda da produção
+                h = hashlib.sha256(f"{amb}:{h}".encode()).hexdigest()
             linhas[(_id(chave, r), h)] = {
                 "sistema_origem": sistema, "tabela": tabela, "id_origem": _id(chave, r), "dados": r, "hash": h,
-                "execucao_id": execucao_id, "atualizado_origem_em": _data(d)}
+                "execucao_id": execucao_id, "atualizado_origem_em": _data(d),
+                "ambiente_origem": amb}
         ids = [k[0] for k in linhas]
         existentes = set(db.scalars(select(RegistroBronze.id_origem).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
-            RegistroBronze.id_origem.in_(ids))))
+            RegistroBronze.id_origem.in_(ids), RegistroBronze.ambiente_origem == amb)))  # LOW: por ambiente
         stmt = insert(RegistroBronze).values(list(linhas.values())).on_conflict_do_nothing(
             index_elements=["sistema_origem", "tabela", "id_origem", "hash"]).returning(RegistroBronze.id_origem)
         inseridos = [row[0] for row in db.execute(stmt)]

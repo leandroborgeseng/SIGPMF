@@ -159,7 +159,7 @@ def executar_enriquecimento(db: Session, usuario: str, endpoint: EndpointSil, ch
             ex.novos, ex.atualizados, ex.ignorados = b["novos"], b["atualizados"], b["ignorados"]
         ex.lidos, ex.lotes = c["lidos"], c.get("lotes", 1)
         ex.status = "falha" if c["parou"] else ("sucesso" if r["registros"] else "sem_novidades")
-        ex.mensagem = (f"endpoint={endpoint.nome} lidos={c['lidos']} localizados={c['localizados']} "
+        ex.mensagem = (f"ambiente={cfg.ambiente or '-'} host={cfg.host or '-'} endpoint={endpoint.nome} lidos={c['lidos']} localizados={c['localizados']} "
                        f"nao_localizados={c['nao_localizados']} erros={c['erros']}"
                        + (f" lotes={c['lotes']} repetidos={c['repetidos']} fim={c['fim']} "
                           f"proxima_sequencia={c['proxima_sequencia']}" if endpoint.paginado else "")

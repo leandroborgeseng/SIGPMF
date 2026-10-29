@@ -71,7 +71,7 @@ class Execucao(Base):
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # IN2 (0012): 'completa' (relê tudo) ou 'incremental' (só o alterado desde a marca d'água); nulo = completa
     modo: Mapped[str | None] = mapped_column(String(20))
-    # SEI7 (0019): ambiente de onde a execução leu ("oficial" ou "homologacao"); nulo nos conectores sem essa noção
+    # SEI7 (0022): ambiente de onde a execução leu ("oficial" ou "homologacao"); nulo nos conectores sem essa noção
     ambiente_origem: Mapped[str | None] = mapped_column(String(20))
 
     def registra_erro(self, exc: BaseException) -> None:
@@ -92,10 +92,12 @@ class Execucao(Base):
 class CheckpointCarga(Base):
     """Posição já gravada na bronze por (sistema, tabela): a carga completa retoma daqui sem duplicar."""
     __tablename__ = "checkpoints_carga"
-    __table_args__ = (UniqueConstraint("sistema", "tabela", name="uq_checkpoint_sistema_tabela"), S)
+    __table_args__ = (UniqueConstraint("sistema", "tabela", "ambiente", name="uq_checkpoint_sistema_tabela_ambiente"), S)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sistema: Mapped[str] = mapped_column(String(50))
     tabela: Mapped[str] = mapped_column(String(200))
+    # 0021: producao|sandbox. Checkpoint da homologação nunca move o da oficial (SIL); demais sistemas: producao.
+    ambiente: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
     posicao: Mapped[int] = mapped_column(Integer, default=0)  # linhas já gravadas (progresso)
     ultima_chave: Mapped[list | None] = mapped_column(JSONType)  # keyset: último valor da chave gravado
     total_origem: Mapped[int | None] = mapped_column(Integer)

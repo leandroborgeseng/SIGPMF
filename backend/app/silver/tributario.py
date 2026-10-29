@@ -25,7 +25,7 @@ SISTEMAS = ("IPTU", "DIVIDA", "FINANCEIRO", "SIL")
 def _ultimas(db: Session, sistema: str, tabela: str):
     sub = (select(func.max(RegistroBronze.id))
            .where(RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
-                  RegistroBronze.quarentena.is_(None))
+                  RegistroBronze.quarentena.is_(None), RegistroBronze.ambiente_origem == "producao")
            .group_by(RegistroBronze.id_origem))
     q = (select(RegistroBronze.id_origem, RegistroBronze.dados).where(RegistroBronze.id.in_(sub))
          .order_by(RegistroBronze.id).execution_options(yield_per=5000))

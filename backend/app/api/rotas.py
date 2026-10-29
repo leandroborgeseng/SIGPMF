@@ -304,7 +304,8 @@ def _origem_api(conector: str) -> dict:
         return {}
     from app.connectors.sil.config import ConfigSil
     return {"cliente": "ClienteSil", "allowlist": True,
-            "max_lotes_por_execucao": ConfigSil.do_ambiente().max_lotes_por_execucao}
+            "max_lotes_por_execucao": ConfigSil.do_ambiente().max_lotes_por_execucao,
+            **ConfigSil.do_ambiente().origem_publica()}
 
 
 def _exec_amostra(ex: Execucao) -> dict:
