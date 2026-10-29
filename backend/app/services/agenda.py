@@ -11,9 +11,12 @@
   Falha avisa por e-mail quando SMTP_HOST e ALERTA_PARA estão configurados (sem host, usuário, senha nem CPF).
 - AG5: só um processo agenda (advisory lock de sessão `agenda:lider`), mesmo com vários workers.
 - AG6: "Executar agora" (admin) marca `forcar`; o próximo ciclo roda o conector mesmo fora do horário e da janela.
-- IN3/IN6: a carga da agenda é INCREMENTAL (só o alterado desde a marca d'água). Com AGENDA_COMPLETA_DIAS=0 (padrão)
-  a agenda nunca faz completa: ela só roda manualmente por ADMIN (auditada). Com N > 0, completa a cada N dias e na
-  primeira vez (comportamento antigo). A educação também roda incremental na agenda. Em ambas, prata/ouro só são refeitas se a bronze mudou.
+- IN3/IN6/R3: a PRIMEIRA execução agendada de cada conector (sem `ultima_completa_em`) é sempre COMPLETA, qualquer que
+  seja AGENDA_COMPLETA_DIAS. Depois, com 0 (padrão) a agenda só faz INCREMENTAL (só o alterado desde a marca d'água;
+  outras completas só manualmente por ADMIN, auditadas); com N > 0, completa a cada N dias e incremental no resto.
+  A educação roda sempre incremental na agenda (inclusive na primeira vez). Prata/ouro só são refeitas se a bronze mudou.
+- Parcial (teto de lotes) não conta como completa: uma carga de N lotes leva ~N noites até a primeira incremental.
+  Parcial em execuções seguidas gera log WARNING `agenda_parcial_repetida` e o alerta por e-mail (se configurado).
 """
 import logging
 import re
@@ -330,6 +333,7 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
     s = get_settings()
     if len(mensagem) > MAX_MENSAGEM:
         mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
+    anterior = ag.ultimo_status
     ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
     ini, fim = janela(s.agenda_janela)
     hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
@@ -348,6 +352,12 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
     db.commit()
     audita(db, USUARIO, f"agenda_{status}", f"agendamento:{ag.conector}",
            {"execucao_id": ag.ultima_execucao_id, "tentativas": ag.tentativas, "resolvido": resolvido})
+    if status == "parcial" and anterior == "parcial":  # ressalva 3 do #52: parcial que se repete vira alerta
+        log.warning("agenda_parcial_repetida conector=%s execucao_id=%s", ag.conector, ag.ultima_execucao_id)
+        alertar(f"Carga de {_nome(ag.conector)}: parcial de novo",
+                "A carga parou de novo no teto de lotes e continua do checkpoint na próxima noite. Enquanto não terminar,"
+                " não há incremental. Se repetir muitas noites, aumente o teto de lotes ou rode manualmente.\n\n"
+                "Veja o Monitor de cargas no SIGPMF.")
     if status in ("falha", "interrompida", "demorada"):
         alertar(f"Carga de {_nome(ag.conector)}: {STATUS_TEXTO.get(status, status)}",
                 f"{mensagem}\n\nVeja o Monitor de cargas no SIGPMF.")
@@ -540,7 +550,7 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "ultimo_status_texto": STATUS_TEXTO.get(ag.ultimo_status or "", ag.ultimo_status),
             "ultima_mensagem": ag.ultima_mensagem, "ultimo_inicio_em": _utc(ag.ultimo_inicio_em),
             "ultimo_fim_em": _utc(ag.ultimo_fim_em), "tentativas": ag.tentativas,
-            "proxima_em": p, "proximo_modo": modo_da_vez(ag, agora), "ultima_completa_em": _utc(ag.ultima_completa_em),
+            "proxima_em": p, "proximo_modo": "incremental" if ag.conector == EDUCACAO else modo_da_vez(ag, agora), "ultima_completa_em": _utc(ag.ultima_completa_em),
             "horario_fora_da_janela": not na_janela(minutos(ag.horario), ini, fim),
             "ultima_execucao": _execucao(db, ag.ultima_execucao_id),
             "em_andamento": _execucao(db, atual.id) if atual else None,

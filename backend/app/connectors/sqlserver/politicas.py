@@ -30,13 +30,63 @@ BASES_DESCARTE = frozenset({
     "Traces", "TrendVP"})
 BASES_SENSIVEIS_NUNCA = frozenset({"Internet"})
 BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
-_BASES_NUNCA_NORM = frozenset(b.lower() for b in BASES_NUNCA)
 
 
-def autoriza_base(base: str) -> None:
-    """A2: recusa qualquer banco de descarte ou o Internet (comparação sem caixa e sem colchetes)."""
-    if str(base).strip().strip("[]").lower() in _BASES_NUNCA_NORM:
-        raise BaseRecusada(f"Banco {base} fora do plano (descarte/sensível).", "base_descartada")
+# R1 do QA do #49: além da lista negra, uma LISTA PERMITIDA. Só estes bancos podem ser abertos ou citados
+# (Base.schema.Tabela). Banco novo entra aqui por PR, nunca por variável de ambiente.
+BASES_PERMITIDAS = frozenset({
+    "Saude", "Cemiterio", "ISS", "IPTU", "Divida", "Financeiro", "API SIL",  # conectores SQL/REST (POLITICAS)
+    "FRA_GestaoEscolar", "FRA_CoreSSO",                                    # educação (LeitorGE)
+    "Correios"})                                                           # DNE/CEP (#47)
+_DECORACAO = "[]\"'`;"
+SUFIXO_BASE_TESTE = "_test"  # só com APP_ENV=test: bancos sintéticos dos testes (ex.: zz_sintetico_test)
+
+
+def normaliza_base(base) -> str:
+    """Forma canônica do nome do banco: NFKC (tira largura total), sem caracteres invisíveis (categoria Cf:
+    zero-width, BOM, marcas de direção), sem espaços/colchetes/aspas/; nas pontas, casefold."""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", str(base))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    anterior = None
+    while anterior != s:
+        anterior = s
+        s = s.strip().strip(_DECORACAO)
+    return s.casefold()
+
+
+_BASES_NUNCA_NORM = frozenset(normaliza_base(b) for b in BASES_NUNCA)
+_CANONICO = {normaliza_base(b): b for b in BASES_PERMITIDAS}
+_BASES_PERMITIDAS_NORM = frozenset(_CANONICO)
+
+
+def _ambiente_teste() -> bool:
+    try:
+        from app.core.config import get_settings
+        return get_settings().app_env == "test"
+    except Exception:  # noqa: BLE001 - sem configuração: nunca libera banco de teste
+        return False
+
+
+def autoriza_base(base: str) -> str:
+    """A2 + R1 (#49): recusa banco de descarte/Internet (base_descartada), nome com decoração ou caractere invisível
+    (base_nome_invalido) e qualquer banco fora de BASES_PERMITIDAS (base_fora_da_lista). A comparação é feita depois
+    do NFKC (ligadura e largura total viram a letra comum: "ﬁnanceiro" casa com Financeiro). Devolve SEMPRE o nome
+    canônico da lista: é ele que vai para a conexão/SQL, nunca o valor bruto da configuração."""
+    import unicodedata
+    norm = normaliza_base(base)
+    if norm in _BASES_NUNCA_NORM:
+        raise BaseRecusada(f"Banco {base!r} fora do plano (descarte/sensível).", "base_descartada")
+    cru = unicodedata.normalize("NFKC", str(base))
+    if cru.startswith("[") and cru.endswith("]"):
+        cru = cru[1:-1]
+    if not norm or cru.casefold() != norm:
+        raise BaseRecusada(f"Nome de banco inválido: {base!r}.", "base_nome_invalido")
+    if norm in _CANONICO:
+        return _CANONICO[norm]
+    if norm.endswith(SUFIXO_BASE_TESTE) and _ambiente_teste():
+        return cru
+    raise BaseRecusada(f"Banco {base!r} fora da lista permitida.", "base_fora_da_lista")
 
 
 # R2 do QA do #6 + ressalva 2 do Tester: nomes sensíveis reconhecidos de forma robusta, não só pelo nome exato.
