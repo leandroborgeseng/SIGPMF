@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     agenda_tentativas: int = Field(3, alias="AGENDA_TENTATIVAS", ge=1, le=10)
     agenda_reespera_min: int = Field(30, alias="AGENDA_REESPERA_MIN", ge=1, le=1440)
     agenda_espera_max_h: int = Field(20, alias="AGENDA_ESPERA_MAX_H", ge=1, le=72)
-    # IN6: a agenda faz só carga incremental. 0 (padrão) = a agenda nunca faz completa (só ADMIN, manual e auditada);
-    # N > 0 = uma completa a cada N dias (comportamento antigo, para quem quiser religar).
+    # IN6/R3: a primeira execução agendada (sem ultima_completa_em) é sempre completa. Depois: 0 (padrão) = só
+    # incremental (outras completas só por ADMIN, manual e auditada); N > 0 = completa a cada N dias.
     agenda_completa_dias: int = Field(0, alias="AGENDA_COMPLETA_DIAS", ge=0, le=90)
     # PL2: retenção diária (versões antigas da bronze e logs técnicos; a auditoria nunca é apagada)
     retencao_bronze_versoes_dias: int = Field(7, alias="RETENCAO_BRONZE_VERSOES_DIAS", ge=1, le=3650)

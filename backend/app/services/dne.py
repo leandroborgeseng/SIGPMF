@@ -93,6 +93,12 @@ def _int(v: Any) -> int | None:
         return None
 
 
+def _chave_desempate(r: dict) -> tuple[bool, int]:
+    """Ressalva do #47: Id_Logradouro nulo nunca vence (antes `or 0` o fazia virar o menor)."""
+    i = r["id_logradouro"]
+    return (i is None, i if i is not None else 0)
+
+
 def linha_ref(d: dict[str, Any]) -> dict[str, Any] | None:
     """Uma linha (logradouro + bairro + localidade) -> linha da referência. Sem CEP ou sem nome -> None (só bronze)."""
     cep = cep8(d.get("Cep"))
@@ -136,8 +142,8 @@ def importa(db: Session, registros: list[dict[str, Any]], execucao_id: int, tabe
         atual = por_cep.get(r["cep"])
         if atual is not None:
             duplicados += 1
-            if (atual["id_logradouro"] or 0) <= (r["id_logradouro"] or 0):
-                continue  # vence o menor Id_Logradouro, independente da ordem da leitura
+            if _chave_desempate(atual) <= _chave_desempate(r):
+                continue  # vence o menor Id_Logradouro, independente da ordem da leitura; nulo vai por último
         por_cep[r["cep"]] = r
     colisoes_cep = sum(1 for n in linhas_por_cep.values() if n > 1)  # CEPs distintos que aparecem em 2+ linhas
     log.info("dne_colisoes colisoes_cep=%d linhas_descartadas=%d", colisoes_cep, duplicados)
