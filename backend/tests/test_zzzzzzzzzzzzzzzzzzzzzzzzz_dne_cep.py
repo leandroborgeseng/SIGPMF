@@ -1,9 +1,8 @@
 """PR-02 DNE/CEP (E1-E4), fonte LOG_LOGRADOURO_SP + LOG_BAIRRO + LOG_LOCALIDADE.
 
-Só dados sintéticos ZZTESTE; CEPs na faixa 999xxxxx (inexistente nos Correios).
+Só dados sintéticos ZZTESTE; CEPs fixos na faixa 999xxxxx (inexistente nos Correios).
 """
 import logging
-import random
 
 import pytest
 from sqlalchemy import func, select
@@ -24,12 +23,9 @@ def ex(db):
     return e.id
 
 
-_seq = [random.randint(1, 9000)]
-
-
-def _ceps(n):
-    _seq[0] += n + 1  # a referência sobrevive entre sessões: cada teste usa CEPs/ids novos
-    return [f"999{(_seq[0] + i) % 100000:05d}" for i in range(n)]
+def _ceps(bloco: int, n: int) -> list[str]:
+    """CEPs fixos e determinísticos por teste (faixa 999BBNNN); o schema ref é recriado a cada sessão."""
+    return [f"999{bloco:02d}{i:03d}" for i in range(n)]
 
 
 def _id(cep, k=0):
@@ -63,11 +59,12 @@ def test_sql_da_origem_e_somente_select_nas_tabelas_do_dba():
 
 def test_e1_contagem_origem_igual_bronze_e_log_so_de_agregados(db, ex, caplog):
     caplog.set_level(logging.INFO, logger="app.services.dne")
-    ceps = _ceps(5)
+    ceps = _ceps(1, 5)
     linhas = [_linha(c, f"ZZTESTE Logradouro {i}", FRANCA if i < 3 else OUTRA) for i, c in enumerate(ceps)]
     linhas.append(dict(_linha(ceps[0], "ZZTESTE sem cep", k=9), Cep="1"))  # fica só na bronze
     antes = _n_bronze(db)
     r = dne.importa(db, linhas, ex)
+    assert r["colisoes_cep"] == 0
     assert (r["origem"], r["bronze_novos"], r["novos"], r["sem_cep"]) == (6, 6, 5, 1)
     assert (r["total_sp"], r["municipio_ibge"], r["total_municipio"]) == (6, FRANCA, 4)
     assert "dne_contagens total_sp=6 municipio_ibge=3516200 total_municipio=4" in caplog.text
@@ -94,7 +91,7 @@ def test_e1_tabela_fora_da_allowlist(db, ex):
 
 
 def test_e2_mapeamento_e_codigo_logradouro_nao_e_chave(db, ex):
-    a, b = _ceps(2)
+    a, b = _ceps(2, 2)
     dne.importa(db, [_linha(a, "ZZTESTE das Flores", bairro="ZZTESTE Jardim"),
                      _linha(b, "ZZTESTE dos Ipes", usa_tipo="N")], ex)
     r1 = dne.resolve_registro(db, {"CEP": f"{a[:5]}-{a[5:]}", "Logradouro": "R FLORES", "Codigo_Logradouro": 42})
@@ -120,13 +117,13 @@ def test_e3_cep_valido_fora_do_dne_mantem_origem(db):
 
 
 def test_e4_upsert_sem_duplicar_e_cep_repetido_deterministico(db, ex):
-    a, b, c = _ceps(3)
+    a, b, c = _ceps(3, 3)
     r = dne.importa(db, [_linha(a, "ZZTESTE Velha"), _linha(b, "ZZTESTE Igual")], ex)
     assert (r["novos"], r["atualizados"], r["iguais"], r["duplicados"]) == (2, 0, 0, 0)
     # c aparece 2x: vence o menor Id_Logradouro, em qualquer ordem
     r = dne.importa(db, [_linha(a, "ZZTESTE Nova"), _linha(b, "ZZTESTE Igual"),
                          _linha(c, "ZZTESTE Maior", k=5), _linha(c, "ZZTESTE Menor", k=1)], ex)
-    assert (r["novos"], r["atualizados"], r["iguais"], r["duplicados"]) == (1, 1, 1, 1)
+    assert (r["novos"], r["atualizados"], r["iguais"], r["duplicados"], r["colisoes_cep"]) == (1, 1, 1, 1, 1)
     assert _n_ref(db, [a, b, c]) == 3
     assert dne.resolve(db, a)["logradouro"] == "Rua ZZTESTE Nova"
     assert dne.resolve(db, c)["logradouro"] == "Rua ZZTESTE Menor"
@@ -147,3 +144,15 @@ def test_migracao_tem_uma_ponta_so():
 
     from tests.conftest import alembic_cfg
     assert len(ScriptDirectory.from_config(alembic_cfg()).get_heads()) == 1
+
+
+def test_r1_colisoes_cep_no_retorno_e_no_log(db, ex, caplog):
+    caplog.set_level(logging.INFO, logger="app.services.dne")
+    a, b, c = _ceps(4, 3)
+    linhas = [_linha(a, "ZZTESTE A1", k=1), _linha(a, "ZZTESTE A2", k=2), _linha(a, "ZZTESTE A3", k=3),
+              _linha(b, "ZZTESTE B1", k=1), _linha(b, "ZZTESTE B2", k=2), _linha(c, "ZZTESTE C")]
+    r = dne.importa(db, linhas, ex)
+    assert (r["colisoes_cep"], r["duplicados"], r["novos"], r["bronze_novos"]) == (2, 3, 3, 6)
+    assert "dne_colisoes colisoes_cep=2 linhas_descartadas=3" in caplog.text
+    assert a not in caplog.text and "ZZTESTE" not in caplog.text
+    assert dne.resolve(db, a)["logradouro"] == "Rua ZZTESTE A1" and dne.resolve(db, b)["logradouro"] == "Rua ZZTESTE B1"

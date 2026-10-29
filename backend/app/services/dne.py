@@ -8,7 +8,8 @@ Fonte (esquema confirmado pelo DBA): `Correios.dbo.LOG_LOGRADOURO_SP` (PK Id_Log
 - E2: o logradouro de um endereço vem do DNE pelo CEP. O `Codigo_Logradouro` da PMF nunca é usado como chave (D6).
 - E3: CEP ausente, lixo ou fora do DNE -> mantém a origem crua com o motivo `cep_nao_encontrado`, sem descartar.
 - E4: um DNE novo atualiza `ref.dne_logradouro` por upsert no CEP, sem duplicar. CEP repetido na origem: vence o
-  menor Id_Logradouro (determinístico) e o número de duplicados é devolvido.
+  menor Id_Logradouro (determinístico); `colisoes_cep` (CEPs em 2+ linhas) e `duplicados` (linhas descartadas)
+  vão no retorno e no log.
 Só SELECT na origem. Nenhum valor de entrada vai para log ou mensagem de erro.
 """
 import logging
@@ -125,17 +126,21 @@ def importa(db: Session, registros: list[dict[str, Any]], execucao_id: int, tabe
     bronze = ingere(db, SISTEMA, tabela, "Id_Logradouro", None, registros, execucao_id)
     por_cep: dict[str, dict[str, Any]] = {}
     sem_cep = duplicados = 0
+    linhas_por_cep: dict[str, int] = {}
     for d in registros:
         r = linha_ref(d)
         if r is None:
             sem_cep += 1
             continue
+        linhas_por_cep[r["cep"]] = linhas_por_cep.get(r["cep"], 0) + 1
         atual = por_cep.get(r["cep"])
         if atual is not None:
             duplicados += 1
             if (atual["id_logradouro"] or 0) <= (r["id_logradouro"] or 0):
                 continue  # vence o menor Id_Logradouro, independente da ordem da leitura
         por_cep[r["cep"]] = r
+    colisoes_cep = sum(1 for n in linhas_por_cep.values() if n > 1)  # CEPs distintos que aparecem em 2+ linhas
+    log.info("dne_colisoes colisoes_cep=%d linhas_descartadas=%d", colisoes_cep, duplicados)
     novos = atualizados = iguais = 0
     if por_cep:
         atuais = dict(db.execute(select(dne_logradouro.c.cep, dne_logradouro.c.hash)
@@ -156,7 +161,7 @@ def importa(db: Session, registros: list[dict[str, Any]], execucao_id: int, tabe
     db.commit()
     return {"origem": len(registros), "bronze_novos": bronze["novos"], "bronze_atualizados": bronze["atualizados"],
             "novos": novos, "atualizados": atualizados, "iguais": iguais, "sem_cep": sem_cep, "duplicados": duplicados,
-            **cont}
+            "colisoes_cep": colisoes_cep, **cont}
 
 
 def reconcilia(db: Session, total_origem: int, tabela: str = TABELA) -> dict[str, Any]:
