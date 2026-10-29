@@ -3,7 +3,7 @@ import { api } from './api'
 import { Esqueleto } from './componentes'
 
 /** PP1–PP11 / UXP1–UXP8: progresso por fonte, só leitura (cancelar, histórico e alertas ficam para os PRs 2 e 3). */
-export type Tabela = { tabela: string; lidas: number; gravadas: number; total_origem: number | null; estado: 'concluida' | 'lendo' | 'na_fila' }
+export type Tabela = { tabela: string; linhas_processadas: number; total_origem: number | null; estado: 'concluida' | 'lendo' | 'na_fila' }
 export type Progresso = {
   execucao_id: number; modo: string; lote: number; lotes_total: number | null; percentual: number | null
   total_origem: number | null; origem_total: string | null; linhas_processadas: number; iniciado_em: string
@@ -68,7 +68,7 @@ function Card({ f }: { f: FonteProgresso }) {
           <ul className="pp-tabelas">
             {f.tabelas.map((t) => (
               <li key={t.tabela}><span className="pp-nome">{t.tabela}</span>
-                <span>{t.lidas === 0 ? '0 linhas' : `${n(t.lidas)} lidas · ${n(t.gravadas)} gravadas`}</span>
+                <span>Linhas processadas: {t.linhas_processadas === 0 ? '0' : n(t.linhas_processadas)}</span>
                 <span>{ESTADO_TAB[t.estado]}</span></li>
             ))}
           </ul>

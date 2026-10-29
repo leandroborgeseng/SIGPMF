@@ -13,8 +13,8 @@ const prog = (o: Partial<Progresso> = {}): Progresso => ({
 const fonte = (o: Partial<FonteProgresso> = {}): FonteProgresso => ({
   id: 'educacao', nome: 'Educação', status: 'rodando', status_texto: 'Rodando', motivo_codigo: null, motivo: null, falta: null,
   aguardando_em: null, aguardando_em_brt: null, progresso: prog(), ultima_execucao: null,
-  tabelas: [{ tabela: 'ACA_Aluno', lidas: 92567, gravadas: 92567, total_origem: null, estado: 'concluida' },
-    { tabela: 'ZZTESTE_Vazia', lidas: 0, gravadas: 0, total_origem: null, estado: 'na_fila' }], ...o,
+  tabelas: [{ tabela: 'ACA_Aluno', linhas_processadas: 92567, total_origem: null, estado: 'concluida' },
+    { tabela: 'ZZTESTE_Vazia', linhas_processadas: 0, total_origem: null, estado: 'na_fila' }], ...o,
 })
 const resp = (fontes: FonteProgresso[], rodando = true): RespProgresso => ({ agora: '2026-10-29T18:14:00Z', rodando, atualizar_a_cada_s: 30, fontes })
 
@@ -44,7 +44,7 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
     expect(within(card).getByText(/Rodando há 2 h 14 min · término previsto ~19:40 \(BRT\)/)).toBeVisible()
     expect(within(card).getByText('Último sinal há 1 min')).toBeVisible()
     expect(within(card).getByText('Ver tabelas (2)')).toBeVisible()
-    expect(within(card).getByText('0 linhas')).toBeInTheDocument()
+    expect(within(card).getByText('Linhas processadas: 0')).toBeInTheDocument()
     expect(screen.getByText(/atualizado às/)).toBeVisible()
   })
 
@@ -72,15 +72,15 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
 
   it('PP7/PP10: motivo traduzido e SEI não liberada', async () => {
     mock([[200, resp([
-      fonte({ id: 'sil', nome: 'SIL', status: 'pausada', status_texto: 'Pausada', motivo_codigo: 'agenda_pausada_reset',
-        motivo: 'Agenda pausada aguardando reset', progresso: null, tabelas: [] }),
+      fonte({ id: 'sil', nome: 'SIL', status: 'pausada', status_texto: 'Pausada', motivo_codigo: 'agenda_desligada',
+        motivo: 'Agenda desligada', progresso: null, tabelas: [] }),
       fonte({ id: 'sei', nome: 'SEI', status: 'nao_liberada', status_texto: 'Não liberada', progresso: null, tabelas: [],
         falta: ['Token do SEI não configurado', 'Reclassificação incremental pendente'] }),
       fonte({ id: 'saude', nome: 'Saúde', status: 'aguardando', status_texto: 'Aguardando', aguardando_em_brt: '01:00', progresso: null, tabelas: [] }),
       fonte({ id: 'iptu', nome: 'IPTU', status: 'nunca_rodou', status_texto: 'Nunca rodou', progresso: null, tabelas: [] }),
     ], false)]])
     render(<PainelProgresso />)
-    expect(await screen.findByText('Motivo: Agenda pausada aguardando reset')).toBeVisible()
+    expect(await screen.findByText('Motivo: Agenda desligada')).toBeVisible()
     expect(screen.getByText('Não liberada — falta: Token do SEI não configurado / Reclassificação incremental pendente')).toBeVisible()
     expect(screen.getByText(/Aguardando · próxima às 01:00 \(BRT\)/)).toBeVisible()
     expect(screen.getByText('Nunca rodou')).toBeVisible()

@@ -31,7 +31,6 @@ ORDEM = {RODANDO: 0, FALHOU: 1, NAO_LIBERADA: 2, PAUSADA: 3, AGUARDANDO: 4, CANC
 
 # PP7: reason code -> texto fixo em português (nunca texto livre da execução)
 MOTIVOS = {
-    "agenda_pausada_reset": "Agenda pausada aguardando reset",
     "agenda_desligada": "Agenda desligada",
     "fora_janela": "Fora da janela noturna",
     "sei_token": "Token do SEI não configurado",
@@ -66,7 +65,7 @@ def fontes() -> list[Fonte]:
     out = [Fonte("educacao", "Educação", ("GESTAOESCOLAR",), ("GESTAOESCOLAR", "CORESSO"),
                  (cge.TIPO_AMOSTRA, cge.TIPO_COMPLETA), "educacao")]
     for cid, (sis, _b) in cc.CONECTORES.items():
-        out.append(Fonte(cid, "SIL" if cid == "sil" else ccomp.NOMES.get(cid, sis.title()), (sis,), (sis,), None, cid))
+        out.append(Fonte(cid, "SIL" if cid == "sil" else ccomp.NOMES.get(cid, sis), (sis,), (sis,), None, cid))
     out.append(Fonte("sei", "SEI", (SEI,), (SEI,), None, None))
     return out
 
@@ -109,7 +108,7 @@ def _tabelas(db: Session, f: Fonte) -> list[dict]:
         c = cps.get((s, t))
         pos = int(c.posicao or 0) if c else 0
         estado = "concluida" if c and c.concluida else ("lendo" if c and pos > 0 else "na_fila")
-        out.append({"tabela": t, "lidas": pos, "gravadas": pos, "total_origem": c.total_origem if c else None,
+        out.append({"tabela": t, "linhas_processadas": pos, "total_origem": c.total_origem if c else None,
                     "estado": estado})
     return out
 
@@ -136,7 +135,7 @@ def _lote_tamanho(f: Fonte) -> int:
 def progresso(db: Session, f: Fonte, ex: Execucao, tabelas: list[dict], agora: datetime) -> dict:
     """PP2/PP3/PP5/PP6 para uma execução em andamento."""
     tam = _lote_tamanho(f)
-    processadas = sum(t["lidas"] for t in tabelas) if any(t["lidas"] for t in tabelas) else int(ex.lidos or 0)
+    processadas = sum(t["linhas_processadas"] for t in tabelas) if any(t["linhas_processadas"] for t in tabelas) else int(ex.lidos or 0)
     lote = max(int(ex.lotes or 0), math.ceil(processadas / tam)) if f.id != "educacao" else math.ceil(processadas / tam)
     total, origem = _total(db, f, tabelas, ex)
     lotes_total = max(lote, math.ceil(total / tam)) if total else None
@@ -207,7 +206,7 @@ def fonte(db: Session, f: Fonte, agora: datetime) -> dict:
         status, motivo = PAUSADA, _motivo_fim(ult)
     elif ag is not None and not ag.ativo:
         status = PAUSADA
-        motivo = "agenda_pausada_reset" if f.id == "sil" else "agenda_desligada"
+        motivo = "agenda_desligada"
     elif ag is not None and ag.ativo and get_settings().agenda_habilitada:
         from app.services import agenda as agm
         ini, fim = agm.janela(get_settings().agenda_janela)
