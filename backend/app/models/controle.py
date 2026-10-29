@@ -80,6 +80,11 @@ class Execucao(Base):
         self.erro_classe, self.erro_numero, self.erro_tabela = c["classe"], c["numero"], c["tabela"]
         self.erro_objeto, self.erro_local = c["objeto"], c["local"]
 
+    def alerta_publico(self) -> dict | None:
+        """Aviso sem falha (ex.: `tabela_vazia`), com código fixo e só nomes de tabela."""
+        from app.services.tabelas_vazias import alerta
+        return alerta(self)
+
     def erro_publico(self) -> dict | None:
         if self.status != "falha" or not self.erro_classe:
             return None

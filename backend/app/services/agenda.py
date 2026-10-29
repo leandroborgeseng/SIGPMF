@@ -285,11 +285,19 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
     db.commit()
     if ex.status == "sucesso":
         ag.ultima_completa_em = agora
+        _alerta_tabela_vazia(ag, ex)
         return _encerra(db, ag, "sucesso", ex.mensagem or "Carga de educação concluída.", agora, resolvido=True)
     if ex.status == "parcial":
         return _encerra(db, ag, "parcial", ex.mensagem or "Carga de educação parcial.", agora, resolvido=True)
     return _encerra(db, ag, "falha", ex.mensagem or f"Carga de educação terminou como {ex.status}.", agora,
                     resolvido=False)
+
+
+def _alerta_tabela_vazia(ag: Agendamento, ex: Execucao) -> None:
+    """Sucesso com tabela vazia: o aviso fica na execução (API `alerta`) e sai por e-mail se houver SMTP."""
+    a = ex.alerta_publico()
+    if a:
+        alertar(f"Carga de {_nome(ag.conector)}: tabela(s) com 0 linhas", f"{a['texto']}\n\nVeja o Monitor de cargas no SIGPMF.")
 
 
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
@@ -381,6 +389,7 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
         return _encerra(db, ag, "demorada", f"A carga de {nome} passou de {s.agenda_espera_max_h} h e segue em "
                                             "andamento; a agenda não inicia outra até ela terminar.", agora, resolvido=True)
     if ex.status == "sucesso":
+        _alerta_tabela_vazia(ag, ex)
         ag.assinatura_origem = assin
         if modo == "completa":
             ag.ultima_completa_em = agora
@@ -476,7 +485,7 @@ def _execucao(db: Session, ex_id: int | None) -> dict | None:
         return None
     return {"id": ex.id, "status": ex.status, "etapa": ex.etapa, "modo": ex.modo or "completa", "iniciado_em": _utc(ex.iniciado_em),
             "finalizado_em": _utc(ex.finalizado_em), "lidos": ex.lidos, "gravados": (ex.novos or 0) + (ex.atualizados or 0),
-            "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa}
+            "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa, "alerta": ex.alerta_publico()}
 
 
 def estado(db: Session, agora: datetime | None = None) -> dict:

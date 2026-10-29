@@ -22,11 +22,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
-from app.connectors.gestaoescolar.consultas import FONTES, ConfigGE, Fonte
+from app.connectors.gestaoescolar.consultas import FONTES, MSG_SEM_TIPO_DOCUMENTO, ConfigGE, Fonte, TiposDocumentoAusentes
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.models.controle import CheckpointCarga, Execucao, Log
-from app.services import agenda
+from app.services import agenda, tabelas_vazias
 from app.services import trava as tv
 from app.services.diagnostico import linha_json
 from app.silver import educacao
@@ -169,6 +169,10 @@ def amostra(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None) -> E
             linhas = leitor.ler(f, None, min(int(cfg.amostra), 50))
             _soma(ex, _ingere(db, f, linhas, ex))
         ex.status, ex.mensagem = "sucesso", f"Amostra: {ex.lidos} linhas lidas em {len(FONTES)} tabelas."
+    except TiposDocumentoAusentes as exc:  # motivo fixo, sem o texto da exceção
+        db.rollback()
+        ex = db.get(Execucao, ex.id)
+        ex.status, ex.mensagem, ex.erro_classe = "falha", f"Amostra falhou: {MSG_SEM_TIPO_DOCUMENTO}", exc.codigo
     except Exception as exc:  # noqa: BLE001 - só a classe do erro (sem host/usuário)
         db.rollback()
         ex = db.get(Execucao, ex.id)
@@ -302,6 +306,7 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
         db.commit()
     eid, lotes, cancelada = ex.id, 0, False
     status, mensagem, pendentes = "falha", None, None
+    erro: dict = {}
     try:
         for f in FONTES:
             if cancelada:
@@ -321,6 +326,9 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
                 ex.lotes = lotes
                 ex.atualizado_em = datetime.now(UTC)  # batida por lote (órfã = sem batida há N min)
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"{f.sistema}.{f.nome}: lote {lotes} com {len(linhas)} linhas"))
+                if ck.concluida and not (ck.posicao or 0):
+                    db.add(Log(execucao_id=ex.id, nivel="WARNING",
+                               mensagem=f"[{tabelas_vazias.CODIGO}] {f.sistema}.{f.nome}: fonte concluída com 0 linhas lidas."))
                 db.commit()  # lote + checkpoint + batida na mesma transação
                 cancelada = _cancelamento_pedido(eid)  # para no fim deste lote
                 if not cancelada and lotes < teto and not (ck.concluida and f is FONTES[-1]):
@@ -330,6 +338,11 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
             status = "cancelada"
             mensagem = f"Cancelada no fim do lote {lotes}; o já gravado fica e o checkpoint continua dali."
         elif all(c.concluida for c in cks):
+            ex = db.get(Execucao, eid)
+            aviso = tabelas_vazias.registra(db, ex, SISTEMA, [c.tabela for c in cks if not (c.posicao or 0)])
+            if aviso:
+                erro = {"erro_classe": ex.erro_classe, "erro_tabela": ex.erro_tabela}
+            db.commit()
             with _BatidaEmFundo(eid, BATIDA_PROCESSA_S):
                 r = educacao.processa(db, agora)
             for c in cks:  # ciclo completo: a próxima carga recomeça do início (pega alterações por hash)
@@ -338,19 +351,57 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
             mensagem = (f"Ciclo completo: {r['alunos']} alunos ({r['vinculados']} vinculados, {r['revisao']} em revisão, "
                         f"{r['quarentena']} em quarentena, {r['excluidos']} excluídos, {r['inativos']} inativos), {r['matriculas']} matrículas.")
             pendentes = r["revisao"] + r["quarentena"]
+            mensagem = corta(mensagem + aviso, 1000)
         else:
             status = "parcial"
             mensagem = f"Parada no teto de {teto} lote(s); a próxima execução continua do checkpoint."
+    except TiposDocumentoAusentes as exc:  # motivo fixo (código + texto), nunca str(exc)
+        db.rollback()
+        status, mensagem = "falha", f"Carga falhou: {MSG_SEM_TIPO_DOCUMENTO} Checkpoint mantido no último lote gravado."
+        erro = {"erro_classe": exc.codigo, "erro_tabela": "SYS_TipoDocumentacao"}
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         status, mensagem = "falha", f"Carga falhou ({type(exc).__name__}); checkpoint mantido no último lote gravado."
+        erro = {"erro_classe": None, "erro_tabela": None}
     # Finaliza só se ainda está em_andamento (não sobrescreve interrompida/falha marcada por outro caminho).
     vals = {"status": status, "mensagem": mensagem, "lotes": lotes, "finalizado_em": datetime.now(UTC),
             "atualizado_em": datetime.now(UTC)}
     if pendentes is not None:
         vals["pendentes"] = pendentes
+    vals.update(erro)
     db.execute(update(Execucao).where(Execucao.id == eid, Execucao.status == "em_andamento").values(**vals))
     db.commit()
     ex = db.get(Execucao, eid)
     db.refresh(ex)
     return ex
+
+
+def prepara_releitura(db: Session, fonte: str, usuario: str | None) -> dict:
+    """Prepara a releitura de UMA fonte da educação, sem carga completa das outras (auditado).
+
+    Só mexe em controle.checkpoints_carga: a fonte pedida volta ao início (posição 0, sem chave, não concluída) e as
+    outras ficam concluídas com a posição = linhas que já têm na bronze. A próxima carga completa da educação lê só
+    essa fonte e, ao fechar o ciclo, reconstrói a prata a partir da bronze inteira. Nada é apagado da bronze."""
+    from sqlalchemy import func
+
+    from app.connectors.gestaoescolar.consultas import POR_NOME
+    from app.core.audit import audita
+    from app.models.camadas import RegistroBronze
+    if fonte not in POR_NOME:
+        raise CargaRecusada(f"Fonte desconhecida no conector de educação: {fonte}.", "fonte_desconhecida")
+    if completa_em_andamento(db):
+        raise CargaRecusada(EM_ANDAMENTO, "em_andamento")
+    antes = {}
+    for f in FONTES:
+        ck = _checkpoint(db, f)
+        antes[f.nome] = {"posicao": ck.posicao, "concluida": ck.concluida}
+        if f.nome == fonte:
+            ck.posicao, ck.ultima_chave, ck.concluida = 0, None, False
+        else:
+            ck.concluida = True
+            ck.posicao = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
+                RegistroBronze.sistema_origem == f.sistema, RegistroBronze.tabela == f.nome)) or 0)
+        ck.atualizado_em = datetime.now(UTC)
+    db.commit()
+    audita(db, usuario, "educacao_releitura_fonte", f"fonte:{fonte}", {"fonte": fonte, "checkpoints_antes": antes})
+    return {"fonte": fonte, "outras_concluidas": len(FONTES) - 1}

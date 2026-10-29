@@ -40,6 +40,7 @@ from app.ingestion.mapeamentos import MAPEAMENTOS
 from app.models.camadas import CorrelacaoPendente, RegistroBronze, Vinculo
 from app.models.controle import CheckpointCarga, Execucao, Log
 from app.services import carga_conector as cc
+from app.services import tabelas_vazias
 from app.services.diagnostico import linha_json
 from app.silver import processamento
 
@@ -545,9 +546,20 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 if s.carga_pausa_ms:
                     time.sleep(s.carga_pausa_ms / 1000)
         _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos})
+        # Tabela que fechou a carga completa com 0 linhas: WARN + código `tabela_vazia` (status continua sucesso)
+        avisa_tabelas_vazias(db, ex, sistema, cps)
+        db.commit()
     finally:
         conn.close()
     _camadas(db, ex, conector, sistema)
+
+
+def avisa_tabelas_vazias(db: Session, ex: Execucao, sistema: str, cps: dict) -> list[str]:
+    """Fim da leitura da carga COMPLETA (todas as fontes deste motor): tabela concluída com 0 linhas -> WARN e código
+    `tabela_vazia` na execução. O status final continua `sucesso`. Devolve as tabelas vazias."""
+    vazias = [t for t, c in cps.items() if c.concluida and not (c.posicao or 0)]
+    tabelas_vazias.registra(db, ex, sistema, vazias, nivel="WARN")
+    return sorted(vazias)
 
 
 def _inicio_etapa(db: Session, ex: Execucao, etapa: str, total: int | None) -> float:
@@ -617,9 +629,12 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
                    f"{t} origem={r['origem']} bronze={r['bronze']} quarentena={r['quarentena']}" for t, r in rec.items())))
     quar = sum(r["quarentena"] for r in rec.values())
     res_rec = ("ok com pendências" if quar else "ok") if ok else "divergente"
+    aviso = tabelas_vazias.alerta(ex)
     _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: {lido} {resumo} "
                                  f"reconciliacao={res_rec}"
-                                 + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else ""))
+                                 + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else "")
+                                 + (f". {aviso['texto']}" if aviso else ""),
+              {"alerta": aviso["codigo"], "tabelas_vazias": aviso["tabelas"]} if aviso else None)
 
 
 def _valores_chave(r, ord_: tuple[str, ...], cols: tuple[str, ...]) -> tuple:
@@ -722,7 +737,7 @@ def situacao(db: Session, conector: str) -> dict:
             # CC12 (Designer): "X de N tabelas já lidas" no card da carga pausada
             "tabelas_lidas": sum(1 for c in cps if c.concluida), "tabelas_total": len(cc.tabelas_do_conector(sistema)), "tabela_atual": ex.tabela_atual,
             "pausa_motivo": ex.pausa_motivo, "cancelamento_pedido": bool(ex.cancelar), "mensagem": ex.mensagem,
-            "erro": ex.erro_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
+            "erro": ex.erro_publico(), "alerta": ex.alerta_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
             "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
             "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
