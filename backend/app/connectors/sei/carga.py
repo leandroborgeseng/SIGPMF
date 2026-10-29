@@ -197,7 +197,7 @@ def _do_processo(d: dict, tabela: str, idp: str, prot: str | None) -> bool:
 def marca_nao_publico(db: Session, ex: Execucao, usuario: str, idp: str, prot: str | None, nivel: str,
                       ambiente: str) -> int:
     """Grava/atualiza o marcador mínimo (só id, protocolo em dígitos e nível) e, se o processo estava na bronze como
-    público, reclassifica: processo, documentos e andamentos vão para quarentena QUAR_RECLASS (sem DELETE), com
+    público, reclassifica: processo, documentos e andamentos vão para quarentena QUAR_RECLASS (sem apagar), com
     auditoria só de contagens. Devolve 1 se houve reclassificação, 0 caso contrário."""
     m = db.scalar(select(SeiProcessoNaoPublico).where(SeiProcessoNaoPublico.id_processo == idp,
                                                       SeiProcessoNaoPublico.ambiente_origem == ambiente))

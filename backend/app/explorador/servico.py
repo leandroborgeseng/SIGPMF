@@ -16,7 +16,7 @@ from app.models.controle import Execucao
 _NOME_OK = re.compile(r"^[A-Za-z0-9_.\- ]{1,200}$")
 _COL_OK = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 ETAPAS = {"leitura": 1, "prata": 2, "ouro": 3}  # controle.execucoes.etapa (CC7)
-QUAR_OCULTA = "sei_reclassificado_restrito"  # = app.connectors.sei.carga.QUAR_RECLASS
+QUAR_OCULTA = "sei_reclassificado_restrito"  # mesmo valor de QUAR_RECLASS do SEI (sem importar o conector)
 STATUS_OK = ("sucesso", "sem_novidades", "concluida", "ok")
 
 
