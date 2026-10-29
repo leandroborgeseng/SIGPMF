@@ -104,7 +104,9 @@ def processa(db: Session, agora: datetime | None = None) -> dict[str, int]:
     for _i, d in _ultimas(db, PESSOAS, "PES_PessoaDocumento"):
         if _int(d.get("psd_situacao")) == SITUACAO_EXCLUIDA:
             continue
-        cl, num, pid = _int(d.get("tdo_classificacao")), _digitos(d.get("psd_numero")), _pid(d.get("pes_id"))
+        # classe derivada do catálogo na leitura (plano A/B, consultas.classe_do_tipo); bronze antiga: tdo_classificacao
+        cl = _int(d.get("tdo_classe")) if d.get("tdo_classe") is not None else _int(d.get("tdo_classificacao"))
+        num, pid = _digitos(d.get("psd_numero")), _pid(d.get("pes_id"))
         if cl == CLASS_CPF and num:
             docs.setdefault(pid, {})["cpf"] = num
         elif cl in CLASS_NIS and num and len(num) == 11:

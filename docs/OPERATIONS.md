@@ -177,3 +177,38 @@ de chave e o psql para sem mudar nada).
 **Limpeza do backup:** o script nunca apaga o schema de backup. Remover só manualmente, **com OK explícito do
 Leandro e no mínimo 7 dias depois do reset**: conferir a primeira carga nova, registrar na auditoria e então
 `DROP SCHEMA backup_sil_20261029 CASCADE;`.
+
+## Educação: documentos (PES_PessoaDocumento) e releitura de uma fonte só
+
+**Tipos de documento.** A carga lê primeiro o catálogo `FRA_CoreSSO.dbo.SYS_TipoDocumentacao`, que tem 7 linhas e
+nenhum dado pessoal. Um tipo é aceito quando `tdo_classificacao` está em (1, 3, 4), que são CPF, PIS e NIS, ou quando a
+sigla é `CPF`, `NIS`, `PIS` ou `PIS/PASEP`. A sigla é comparada sem diferenciar maiúsculas e sem os espaços das pontas. Qualquer
+outra classificação é ignorada: na origem, os 7 tipos estão com 99. CNS (saúde, fora da v1), CIN, CNPJ, RG e sigla vazia ficam de fora.
+Os `tdo_id` aceitos entram como **parâmetros** em `d.tdo_id IN (...)`, e cada linha recebe a classe derivada em
+`tdo_classe`. Se o catálogo não tiver nenhum tipo aceito, a carga (e a amostra) termina em `falha` com o código
+`sem_tipo_documento` e uma mensagem fixa, sem o texto da exceção. CPF e NIS/PIS vão para a prata da educação.
+
+**Tabela vazia (todas as fontes).** Quando uma tabela termina a carga **completa** com 0 linhas lidas, a execução
+continua `sucesso` (a agenda, a assinatura e a `ultima_completa_em` não mudam), mas:
+- grava um log `WARN`/`WARNING` com `[tabela_vazia]` e o nome da tabela;
+- recebe o código `tabela_vazia` (`erro_classe`) e as tabelas (`erro_tabela`);
+- leva o aviso "Atenção: N tabela(s) terminaram a carga completa com 0 linhas lidas (...)" na mensagem;
+- mostra o campo `alerta` na API do card (`GET /api/conectores/{c}/completa`), na última execução e na agenda;
+- dispara e-mail pela agenda quando `SMTP_HOST` e `ALERTA_PARA` estão configurados.
+
+Vale para Saúde, Cemitério, IPTU, Dívida, Financeiro, SIL e educação. Na carga incremental, 0 linhas é normal e não
+gera aviso.
+
+**Reler só PES_PessoaDocumento, sem carga completa.** Esse procedimento não apaga nada da bronze.
+1. Confira que não há carga completa da educação em andamento. Se houver, o script recusa com saída 2.
+2. Dentro do container do backend:
+   `python -m scripts.releitura_fonte_educacao --fonte PES_PessoaDocumento --usuario "Nome do operador"`
+   O script só altera `controle.checkpoints_carga`:
+   - a fonte volta ao início (posição 0, não concluída);
+   - as outras 12 ficam concluídas, com a posição igual às linhas que já estão na bronze;
+   - o pedido é auditado (`educacao_releitura_fonte`).
+3. Rode a carga completa da educação pela tela, pela agenda ou pelo "Executar agora". A janela noturna continua
+   valendo. Ela lê **só** PES_PessoaDocumento e, ao fechar o ciclo, reconstrói a prata da educação a partir da bronze
+   inteira, sem reler as outras 12 tabelas.
+4. Confira no card que a execução ficou `sucesso`, sem o alerta `tabela_vazia`, e com as linhas lidas da tabela.
+O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
