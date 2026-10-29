@@ -202,3 +202,36 @@ def test_bronze_sei_homologacao_marcada_sandbox(monkeypatch, db):
     monkeypatch.delenv("SIGPMF_SRC_SEI_USAR_HOMOLOGACAO")
     sm.env_oficial(monkeypatch)
     assert ambiente_da_origem("SEI") == "producao"
+
+
+# ------------------------------------------------------------------ produção por env (sem chamada real)
+def test_token_path_configuravel_e_obrigatorio(monkeypatch):
+    sm.env_oficial(monkeypatch)
+    monkeypatch.setenv("SIGPMF_SRC_SEI_IDP_TOKEN_PATH", "/auth/realms/zz/protocol/openid-connect/token")
+    cfg = ConfigSei.do_ambiente()
+    assert cfg.habilitado
+    assert cfg.idp_token_url == "https://idp.zzteste.invalid/auth/realms/zz/protocol/openid-connect/token"
+    monkeypatch.delenv("SIGPMF_SRC_SEI_IDP_TOKEN_PATH")
+    cfg = ConfigSei.do_ambiente()
+    assert not cfg.habilitado and "SIGPMF_SRC_SEI_IDP_TOKEN_PATH" in cfg.pendencias()
+
+
+@pytest.mark.parametrize("p", ["https://evil.invalid/token", "//evil.invalid/token", "/a/../token", "/a?x=1"])
+def test_token_path_nao_muda_host(monkeypatch, p):
+    sm.env_oficial(monkeypatch)
+    monkeypatch.setenv("SIGPMF_SRC_SEI_IDP_TOKEN_PATH", p)
+    assert not ConfigSei.do_ambiente().habilitado
+
+
+def test_env_example_producao_sem_segredos():
+    import pathlib
+    raiz = pathlib.Path(__file__).parents[2]
+    env = dict(linha.split("=", 1) for linha in (raiz / ".env.example").read_text().splitlines()
+               if linha.startswith("SIGPMF_SRC_SEI_"))
+    assert env["SIGPMF_SRC_SEI_BASE_PROCESSOS"] == "https://sei-processos.api.rota.sp.gov.br"
+    assert env["SIGPMF_SRC_SEI_IDP_URL"] == "https://rhsso.idp.sp.gov.br"
+    assert env["SIGPMF_SRC_SEI_ID_UNIDADE"] == "110001339" and env["SIGPMF_SRC_SEI_REGIONAL"] == "franca"
+    assert env["SIGPMF_SRC_SEI_IDP_CLIENT_SECRET"] == "" and env["SIGPMF_SRC_SEI_IDENTIFICACAO_SERVICO"] == ""
+    assert env["SIGPMF_SRC_SEI_IDP_TOKEN_PATH"] == "" and env["SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO"] == "1"
+    comp = (raiz / "docker-compose.yml").read_text()
+    assert "SIGPMF_SRC_SEI_IDP_CLIENT_SECRET: ${SIGPMF_SRC_SEI_IDP_CLIENT_SECRET:-}" in comp

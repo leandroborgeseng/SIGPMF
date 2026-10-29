@@ -167,7 +167,7 @@ class ClienteSei:
         self.chamadas["token"] += 1
         form = {"grant_type": "client_credentials", "client_id": self.config.client_id,
                 "client_secret": self.config.client_secret}
-        r = self._envia("POST", self.config.idp_url, "token", data=form)
+        r = self._envia("POST", self.config.idp_token_url, "token", data=form)
         if r.status_code in (400, 401, 403):
             raise FalhaCredencial(f"IdP SP recusou a credencial do SEI ({self.ambiente})")
         if r.status_code != 200:

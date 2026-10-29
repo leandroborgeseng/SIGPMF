@@ -8,17 +8,17 @@ from app.identity.cpf import digitos_verificadores
 PROC = "https://sei-processos.zzteste.invalid"
 DOCS = "https://sei-documentos.zzteste.invalid"
 PARAM = "https://sei-parametros.zzteste.invalid"
-IDP = "https://idp.zzteste.invalid/token"
+IDP = "https://idp.zzteste.invalid"
 HML = {"PROCESSOS": "https://sei-processos.api-hml.zzteste.invalid",
        "DOCUMENTOS": "https://sei-documentos.api-hml.zzteste.invalid",
-       "PARAMETROS": "https://sei-parametros.api-hml.zzteste.invalid", "IDP": "https://idp-hml.zzteste.invalid/token"}
+       "PARAMETROS": "https://sei-parametros.api-hml.zzteste.invalid", "IDP": "https://idp-hml.zzteste.invalid"}
 SEGREDO = "ZZTESTE-segredo-nao-logar"
 SERVICO = "ZZTESTE-identificacao-servico"
 CPF_OK = "123456789" + digitos_verificadores("123456789")
 
 
 def env_oficial(monkeypatch, **extra):
-    for k, v in {"BASE_PROCESSOS": PROC, "BASE_DOCUMENTOS": DOCS, "BASE_PARAMETROS": PARAM, "IDP_URL": IDP,
+    for k, v in {"BASE_PROCESSOS": PROC, "BASE_DOCUMENTOS": DOCS, "BASE_PARAMETROS": PARAM, "IDP_URL": IDP, "IDP_TOKEN_PATH": "/token",
                  "IDP_CLIENT_ID": "zzteste-client", "IDP_CLIENT_SECRET": SEGREDO, "SIGLA_SISTEMA": "ZZTESTE",
                  "IDENTIFICACAO_SERVICO": SERVICO, "ID_UNIDADE": "110000001", "REGIONAL": "ZZ", **extra}.items():
         if v is None:
@@ -32,6 +32,7 @@ def env_hml(monkeypatch):
     for k, v in HML.items():
         nome = "IDP_URL" if k == "IDP" else f"BASE_{k}"
         monkeypatch.setenv(f"SIGPMF_SRC_SEI_HML_{nome}", v)
+    monkeypatch.setenv("SIGPMF_SRC_SEI_HML_IDP_TOKEN_PATH", "/token")
     monkeypatch.setenv("SIGPMF_SRC_SEI_USAR_HOMOLOGACAO", "true")
 
 

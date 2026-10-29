@@ -299,6 +299,7 @@ def test_sei7_homologacao_so_com_flag_e_sem_fallback(monkeypatch):
         monkeypatch.setenv(f"SIGPMF_SRC_SEI_HML_{'IDP_URL' if k == 'IDP' else 'BASE_' + k}", v)
     c = ConfigSei.do_ambiente()
     assert c.ambiente == "oficial" and not c.habilitado
+    monkeypatch.setenv("SIGPMF_SRC_SEI_HML_IDP_TOKEN_PATH", "/token")
     monkeypatch.setenv("SIGPMF_SRC_SEI_USAR_HOMOLOGACAO", "true")
     c = ConfigSei.do_ambiente()
     assert c.ambiente == "homologacao" and c.habilitado and c.bases["processos"] == sm.HML["PROCESSOS"]
