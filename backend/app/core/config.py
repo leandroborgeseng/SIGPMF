@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     releitura_fonte: str = Field("", alias="SIGPMF_RELEITURA_FONTE")
     # Espera máxima (s) pelo /health da própria app antes de começar; passou disso = recusa `sem_saude`.
     releitura_saude_max_s: int = Field(600, alias="SIGPMF_RELEITURA_SAUDE_MAX_S", ge=1, le=3600)
+    releitura_saude_porta: int = Field(8000, alias="SIGPMF_RELEITURA_SAUDE_PORTA", ge=1, le=65535)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
