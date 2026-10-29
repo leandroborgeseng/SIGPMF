@@ -58,6 +58,26 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - Homologação: `AGENDA_HABILITADA=true` e `AGENDA_JANELA=00:00-24:00`. Produção: `AGENDA_JANELA=00:00-06:00`.
 - Só um processo agenda (trava `agenda:lider`); com mais de um worker, os outros ficam de reserva.
 
+## Contagens automáticas (PR-07, J1–J4)
+- Agenda: item `contagens`, **05:45** no fuso da agenda (`AGENDA_FUSO`, padrão America/Sao_Paulo), depois das cargas
+  da noite e dentro da `AGENDA_JANELA` de produção (`00:00-06:00`). Nasce **desligado** (migração 0034), como os
+  demais; ligar pela tela da agenda (admin, auditado). Também roda por `POST /api/contagens/executar` (admin).
+- Login: só `SQLSERVER_CONTAGENS_USER` / `SQLSERVER_CONTAGENS_PASSWORD` (permissão mínima, só SELECT). Sem eles a
+  execução fica `recusada` (`login_contagens_ausente`); nunca usa o `SQLSERVER_USER`. Login com escrita/DDL/admin é
+  recusado por banco (`login_nao_minimo`).
+- Grava só agregados (`controle.contagem_resultado`, com hash do SQL). Falhas com código fixo (`base_inacessivel`,
+  `consulta_falhou`, `sql_recusado`, `resultado_nao_agregado`); um banco com falha não para os outros.
+- Consultas com nome de tabela a confirmar (Q1, Q5, Q6, Q8, Q11) ficam desligadas até o DBA confirmar:
+  `CONTAGENS_ATIVAS=Q1,Q11,...` liga só as listadas. Q2–Q4 foram removidas (leem o Geral, catalogado "não ler").
+- J4: CPFs repetidos só com `CONTAGENS_CPF_REPETIDO_LIMIAR` (padrão 50) ou mais ocorrências, no máximo
+  `CONTAGENS_CPF_REPETIDO_TOP` (padrão 100) por tabela. Leitura só `admin_lgpd`
+  (`GET /api/contagens/{id}/cpfs-repetidos`), auditada.
+
+## Variáveis numéricas no Coolify (nota do Tester, #45)
+- **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o
+  padrão: a validação falha e o backend **não sobe** (ex.: `SIGPMF_RELEITURA_SAUDE_PORTA` vazia impediu a subida).
+  Dê um valor ou não crie a variável.
+
 ## Carga incremental e camadas (IN1–IN4)
 - **Incremental**: por tabela, lê só as linhas com `campo incremental >= marca d'água` (maior data já gravada na bronze
   − `CARGA_INCREMENTAL_MARGEM_H`). Tabela sem campo incremental na política, ou sem histórico, é lida por inteiro.

@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
     sqlserver_password: str | None = Field(None, alias="SQLSERVER_PASSWORD")
     sqlserver_timeout: int = Field(5, alias="SQLSERVER_TIMEOUT")  # login (conexão)
+    # PR-07 (J1): login de permissão mínima (só SELECT) exclusivo do job de contagens; nunca cai no login geral.
+    sqlserver_contagens_user: str | None = Field(None, alias="SQLSERVER_CONTAGENS_USER")
+    sqlserver_contagens_password: str | None = Field(None, alias="SQLSERVER_CONTAGENS_PASSWORD")
+    # J4: só CPFs com pelo menos este número de repetições entram na lista (configurável; aprovado: 50)
+    # J4a: piso 50 travado no código (job.limiar_efetivo): valor menor registra erro e usa 50
+    contagens_cpf_repetido_limiar: int = Field(50, alias="CONTAGENS_CPF_REPETIDO_LIMIAR", le=1000000)
+    contagens_cpf_repetido_top: int = Field(100, alias="CONTAGENS_CPF_REPETIDO_TOP", ge=1, le=1000)
     # Tempo máximo de cada consulta. Contagem/MAX de tabelas grandes (ex.: Consultas da Saúde) passa de 5 s.
     sqlserver_consulta_timeout: int = Field(120, alias="SQLSERVER_CONSULTA_TIMEOUT")
     amostra_limite: int = Field(1000, alias="AMOSTRA_LIMITE", ge=1, le=10000)
