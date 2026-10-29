@@ -234,9 +234,14 @@ def alertar(assunto: str, corpo: str) -> bool:
 EDUCACAO = "educacao"
 NOME_EDUCACAO = "Educação (GestaoEscolar + CoreSSO)"
 EDUCACAO_SISTEMAS = ("GESTAOESCOLAR",)
+# PR-07: job de contagens (J1–J4) na agenda, 05:45 (depois das cargas da noite); nasce desligado (0034)
+CONTAGENS = "contagens"
+NOME_CONTAGENS = "Contagens automáticas (só agregados)"
 
 
 def _nome(conector: str) -> str:
+    if conector == CONTAGENS:
+        return NOME_CONTAGENS
     return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
 
 
@@ -299,6 +304,22 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
         return _encerra(db, ag, "parcial", ex.mensagem or "Carga de educação parcial.", agora, resolvido=True)
     return _encerra(db, ag, "falha", ex.mensagem or f"Carga de educação terminou como {ex.status}.", agora,
                     resolvido=False)
+
+
+def _executar_contagens(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """Roda o job J1–J4 (só leitura, só agregados). Falha vira mensagem fixa, nunca str(exc)."""
+    from app.contagens import job
+    try:
+        ex = job.executar(db, USUARIO)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Contagens não concluídas ({type(exc).__name__}).", agora, resolvido=False)
+    if ex.status == "concluida":
+        return _encerra(db, ag, "sucesso", f"Contagens concluídas (execução {ex.id}).", agora, resolvido=True)
+    if ex.status == "parcial":
+        return _encerra(db, ag, "parcial", f"Contagens parciais (execução {ex.id}): veja os códigos de falha.", agora,
+                        resolvido=True)
+    return _encerra(db, ag, "bloqueada", f"Contagens recusadas: {ex.codigo or ex.status}.", agora, resolvido=True)
 
 
 def _alerta_tabela_vazia(ag: Agendamento, ex: Execucao) -> None:
@@ -366,6 +387,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
     db.commit()
     if conector == EDUCACAO:
         return _executar_educacao(db, ag, agora, leitor=leitor)
+    if conector == CONTAGENS:
+        return _executar_contagens(db, ag, agora)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -430,7 +453,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector != EDUCACAO) or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS)) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
