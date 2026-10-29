@@ -451,7 +451,7 @@ def zz(client):
     cid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "zzteste-1"))
     ids = []
     for i in range(3):
-        d = {"NU_INSCR": CPF, "Ident": CNPJ, "Contato": EMAIL, "Cartao": CNS, "Situacao": "ATIVO", "Cod_Interno": 700 + i}
+        d = {"NU_INSCR": CPF, "Ident": CNPJ, "Contato": EMAIL, "Cartao": CNS, "Situacao": "ATIVO", "Cod_Interno": f"ZZCODINT-{i}"}  # needle única: número curto colidia com id/timestamp
         ids.append(db.execute(text("INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id) "
                                    "VALUES (:s, 'Cadastro', :io, CAST(:d AS jsonb), :h, :e) RETURNING id"),
                               {"s": ZZ, "io": f"Z{i}", "d": _j.dumps(d), "h": f"zz{i}", "e": eid}).scalar())
@@ -465,7 +465,7 @@ def zz(client):
 
 
 ZB = {"conector": ZZ, "camada": "bronze", "tabela": "Cadastro"}
-ZPII = (CPF, CNPJ, EMAIL, CNS, "fulano.sintetico", "700", "701")
+ZPII = (CPF, CNPJ, EMAIL, CNS, "fulano.sintetico", "ZZCODINT")  # "700" colidia com microssegundos de extraido_em (.167001)
 
 
 def _zsem(txt):

@@ -93,7 +93,7 @@ def test_qa_amostra_hml_libera_incremental_oficial(monkeypatch, db):
 def test_qa_andamento_de_processo_sigiloso_gravado(monkeypatch, db):
     a = pj.projeta_andamento({"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026",
                               "descricao": "ZZTESTE livre", "usuarios": {"nome": "ZZ"}}, "oficial",
-                             pj.Publicos(ids=frozenset(), protocolos=frozenset()))
+                             pj.Publicos(por_id={}, por_protocolo={}))
     print("QA_ANDAMENTO_SIGILOSO", a)
     assert a is None  # esperado: não gravar andamento de processo sigiloso
 
@@ -153,12 +153,12 @@ def test_b2_m3_sigilo_vem_do_processo_e_nao_do_andamento(nv):
     a = {"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026"}
     if nv is not None:
         a["nivelAcesso"] = nv
-    vazio = pj.Publicos(ids=frozenset(), protocolos=frozenset())
+    vazio = pj.Publicos(por_id={}, por_protocolo={})
     assert pj.projeta_andamento(a, "oficial", vazio) is None
-    pub = pj.Publicos(ids=frozenset({"9"}), protocolos=frozenset())
+    pub = pj.Publicos(por_id={"9": "112026"}, por_protocolo={"112026": "9"})  # B5: id E protocolo do mesmo público
     assert pj.projeta_andamento(a, "oficial", pub)["id_andamento"] == "A1"
-    pub_prot = pj.Publicos(ids=frozenset(), protocolos=frozenset({"1.1/2026"}))
-    assert pj.projeta_andamento(a, "oficial", pub_prot)["id_andamento"] == "A1"
+    so_id = pj.Publicos(por_id={"9": "999"}, por_protocolo={"999": "9"})
+    assert pj.projeta_andamento(a, "oficial", so_id) is None
 
 
 def test_m1_amostra_oficial_libera_incremental(monkeypatch, db):
@@ -281,16 +281,26 @@ def test_m3_payload_real_sem_nivel_grava_andamentos_de_processo_publico(monkeypa
     assert _ck(db).ultima_chave == ["2026-10-29"]
 
 
-@pytest.mark.parametrize("proc", [2, 77])  # 2 = restrito na amostra; 77 = desconhecido na bronze
-def test_m3_processo_restrito_ou_desconhecido_descarta_e_nao_avanca(monkeypatch, db, proc):
-    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else proc)
+def test_m3_m4_processo_restrito_conhecido_descarta_e_avanca(monkeypatch, db):
+    """M4: andamento de restrito conhecido (marcador da amostra) é descartado só com contagem e não segura o dia."""
+    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else 2)
     ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
-    assert ex.status == "parcial" and "andamentos_nao_gravados_sigilo=3" in ex.mensagem
-    assert "checkpoint_avancou=False" in ex.mensagem and "andamentos_descartados" in ex.mensagem
-    assert _ck(db) is None
+    assert ex.status == "sucesso" and "andamentos_restrito_conhecido=3" in ex.mensagem
+    assert "checkpoint_avancou=True" in ex.mensagem and _ck(db).ultima_chave == ["2026-10-29"]
     logs = [lg.mensagem for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id, Log.nivel == "WARNING"))]
-    assert logs and "andamentos_descartados=3" in logs[0]
-    assert all(f"{proc:06d}" not in m and "ZZTESTE" not in m for m in logs)  # só contagem, sem identificação
+    assert logs and "restrito_conhecido=3" in logs[0]
+    assert all("000002" not in m and "ZZTESTE" not in m for m in logs)  # só contagem, sem identificação
     prots = {r.dados.get("protocolo") for r in db.scalars(select(RegistroBronze).where(
         RegistroBronze.sistema_origem == "SEI", RegistroBronze.tabela == "andamentos"))}
-    assert f"99990.{proc:06d}/2026-01" not in prots
+    assert "99990.000002/2026-01" not in prots
+
+
+def test_m3_m4_processo_desconhecido_segura_checkpoint(monkeypatch, db):
+    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else 77,
+                   inexistentes={77})
+    ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
+    assert ex.status == "parcial" and "andamentos_pai_desconhecido=3" in ex.mensagem
+    assert "checkpoint_avancou=False" in ex.mensagem and _ck(db) is None
+    prots = {r.dados.get("protocolo") for r in db.scalars(select(RegistroBronze).where(
+        RegistroBronze.sistema_origem == "SEI", RegistroBronze.tabela == "andamentos"))}
+    assert "99990.000077/2026-01" not in prots

@@ -16,6 +16,7 @@ from app.models.controle import Execucao
 _NOME_OK = re.compile(r"^[A-Za-z0-9_.\- ]{1,200}$")
 _COL_OK = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 ETAPAS = {"leitura": 1, "prata": 2, "ouro": 3}  # controle.execucoes.etapa (CC7)
+QUAR_OCULTA = "sei_reclassificado_restrito"  # mesmo valor de QUAR_RECLASS do SEI (sem importar o conector)
 STATUS_OK = ("sucesso", "sem_novidades", "concluida", "ok")
 
 
@@ -245,6 +246,8 @@ def amostra(db: Session, c: str, camada: str, tabela: str, pagina: int, filtros:
         chaves = chaves_bronze(db, c, tabela)
         quar = tem_coluna(db, "bronze", "registros", "quarentena")
         conds, params = ["sistema_origem=:s", "tabela=:t"], _bronze_base(c, tabela)
+        if quar:  # SEI: processo reclassificado para não público some do explorador (nada é apagado)
+            conds.append(f"quarentena IS DISTINCT FROM '{QUAR_OCULTA}'")
         for i, (k, v) in enumerate(filtros.items()):
             if k == "id_origem":
                 conds.append(f"id_origem = :v{i}")
@@ -343,7 +346,8 @@ def pendencias(db: Session, c: str, pagina: int, filtros: dict[str, Any]) -> dic
     quar = tem_coluna(db, "bronze", "registros", "quarentena")
     if quar:
         for r in db.execute(text("SELECT tabela, id_origem, quarentena, extraido_em FROM bronze.registros "
-                                 "WHERE sistema_origem=:s AND quarentena IS NOT NULL ORDER BY id"), {"s": c}):
+                                 "WHERE sistema_origem=:s AND quarentena IS NOT NULL AND quarentena <> :oc ORDER BY id"),
+                            {"s": c, "oc": QUAR_OCULTA}):
             itens.append({"motivo_codigo": f"quarentena:{r[2]}", "tabela": r[0], "chave": r[1],
                           "data_carga": _json(r[3]), "status": "em quarentena"})
     fm = _filtro_valor(filtros.get("motivo")) if filtros and filtros.get("motivo") else None
@@ -367,8 +371,9 @@ def valor_original(db: Session, c: str, camada: str, tabela: str, linha_id: Any,
             lid = int(linha_id)
         except (TypeError, ValueError):
             _422("Linha inválida")
-        v = db.scalar(text("SELECT dados::jsonb->:k FROM bronze.registros WHERE id=:i AND sistema_origem=:s AND tabela=:t"),
-                      {"k": coluna, "i": lid, "s": c, "t": tabela})
+        v = db.scalar(text("SELECT dados::jsonb->:k FROM bronze.registros WHERE id=:i AND sistema_origem=:s AND tabela=:t "
+                           "AND quarentena IS DISTINCT FROM :oc"),
+                      {"k": coluna, "i": lid, "s": c, "t": tabela, "oc": QUAR_OCULTA})
         return v
     s = spec(camada, c, tabela)
     if coluna not in s.colunas:

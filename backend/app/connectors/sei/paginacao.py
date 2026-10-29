@@ -29,8 +29,9 @@ def lista(j: Any, chave: str) -> list[dict]:
 
 
 def paginar(cliente: ClienteSei, rota: str, chave_lista: str, id_item: Callable[[dict], Any], limit: int,
-            max_paginas: int, params: dict | None = None, protocolo: str | None = None) -> dict:
-    start, paginas, itens, vistos = 0, 0, [], set()
+            max_paginas: int, params: dict | None = None, protocolo: str | None = None, start: int = 0) -> dict:
+    """start > 0 retoma uma janela já parcialmente lida (M4: teto de 1 página não relê a mesma página)."""
+    paginas, itens, vistos = 0, [], set()
     anterior: tuple | None = None
     fim, alerta = None, None
     while paginas < max_paginas:
