@@ -713,3 +713,100 @@ def test_rota_completa_concorrente_409(monkeypatch, janela_env, limpo, client, t
     finally:
         rodando.status = "falha"
         limpo.commit()
+
+
+# ---------------------------------------------------------------- cancelar e execução órfã
+class _LeitorCancela(LeitorMock):
+    """Pede o cancelamento (outra sessão, como a rota faria) durante a leitura do 2º lote."""
+
+    def __init__(self, dados):
+        super().__init__(dados)
+        self.leituras = 0
+
+    def ler(self, f, ultima, limite):
+        self.leituras += 1
+        if self.leituras == 2:
+            from app.core.db import SessionLocal
+            from app.services import carga_gestaoescolar as cge
+            with SessionLocal() as outra:
+                cge.solicita_cancelamento(outra)
+        return super().ler(f, ultima, limite)
+
+
+def test_cancelar_para_no_fim_do_lote_e_libera_nova_carga(janela_env, limpo):
+    from app.models.controle import CheckpointCarga, Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = _LeitorCancela(origem())
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    ex = cge.completa(limpo, lei, cfg(lote=1, max_lotes=50), agora=DIA)
+    assert ex.status == "cancelada" and ex.lotes == 2 and lei.leituras == 2  # termina o lote em curso e para
+    assert ex.atualizado_em is not None  # batida por lote
+    ck = limpo.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "GESTAOESCOLAR",
+                                                    CheckpointCarga.tabela == "ACA_Aluno"))
+    assert ck.posicao == 2  # o já gravado fica
+    assert not cge.completa_em_andamento(limpo)
+    nova = cge.completa(limpo, LeitorMock(origem()), cfg(lote=1, max_lotes=1), agora=DIA)
+    assert nova.status == "parcial" and limpo.get(Execucao, nova.id).cancelar is False
+
+
+def _rodando(db, minutos_sem_batida):
+    from datetime import timedelta
+
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    ex = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento",
+                  atualizado_em=datetime.now(UTC) - timedelta(minutes=minutos_sem_batida))
+    db.add(ex)
+    db.commit()
+    return ex
+
+
+def test_rota_cancelar_admin_409_e_auditoria(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "false")
+    for perfil in ("operador", "leitura", "admin_lgpd"):
+        assert client.post("/api/educacao/conector/cancelar", headers=tokens[perfil]).status_code == 403
+    r = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+    assert r.status_code == 409 and "Nenhuma" in r.json()["detail"]
+    assert _ultima_auditoria(limpo, "gestaoescolar_cancelar_negado") is not None
+    ex = _rodando(limpo, 0)
+    try:
+        r = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+        assert r.status_code == 200 and r.json()["execucao_id"] == ex.id
+        limpo.refresh(ex)
+        assert ex.cancelar is True
+        assert _ultima_auditoria(limpo, "gestaoescolar_cancelar").alvo == f"execucao:{ex.id}"
+    finally:
+        ex.status = "falha"
+        limpo.commit()
+
+
+def test_rota_marcar_falha_orfa(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "false")
+    monkeypatch.setenv("SIGPMF_EDUCACAO_ORFA_MIN", "30")
+    janela_env("false")
+    recente = _rodando(limpo, 5)
+    url = f"/api/educacao/conector/execucoes/{recente.id}/marcar-falha"
+    assert client.post(url, headers=tokens["operador"]).status_code == 403
+    r = client.post(url, headers=tokens["admin"])
+    assert r.status_code == 409 and "30 min" in r.json()["detail"]
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha_negado").detalhe["motivo"] == "batida_recente"
+    recente.status = "falha"
+    limpo.commit()
+    velha = _rodando(limpo, 45)
+    # ainda em andamento: nova carga recusada
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    assert client.post("/api/educacao/conector/completa", headers=tokens["admin"]).status_code == 409
+    r = client.post(f"/api/educacao/conector/execucoes/{velha.id}/marcar-falha", headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["status"] == "falha"
+    limpo.refresh(velha)
+    assert velha.status == "falha" and velha.finalizado_em is not None
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha").alvo == f"execucao:{velha.id}"
+    # de novo: já não está em andamento -> 409 auditado
+    r = client.post(f"/api/educacao/conector/execucoes/{velha.id}/marcar-falha", headers=tokens["admin"])
+    assert r.status_code == 409
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha_negado").detalhe["motivo"] == "nao_em_andamento"
+    # trava de concorrência liberada
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert client.post("/api/educacao/conector/execucoes/999999/marcar-falha", headers=tokens["admin"]).status_code == 404

@@ -12,9 +12,9 @@
 - Nada é apagado: a bronze é append-only (versões por hash) e a prata é upsert.
 - Mensagens e logs só com contagens e nomes de tabela; nunca credencial, nome, CPF ou id de pessoa.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.bronze.ingestao import ingere
@@ -30,6 +30,8 @@ TIPO_COMPLETA = "carga_gestaoescolar"
 SISTEMA = "GESTAOESCOLAR"
 SEM_AMOSTRA = "Rode a amostra do conector de educação com sucesso antes da carga completa."
 EM_ANDAMENTO = "Já existe uma carga completa do conector de educação em andamento."
+NADA_EM_ANDAMENTO = "Nenhuma carga completa do conector de educação em andamento."
+BATIDA_RECENTE = "A execução teve atividade nos últimos {min} min; aguarde ou cancele."
 FORA_JANELA = "Carga completa do conector de educação só roda na janela noturna ({janela})."
 
 
@@ -93,6 +95,30 @@ def completa_em_andamento(db: Session) -> bool:
                      .limit(1)) is not None
 
 
+def solicita_cancelamento(db: Session) -> Execucao:
+    """Marca o pedido (coluna `cancelar`, 0008); a carga para no fim do lote atual. Nada é apagado."""
+    ex = db.scalar(select(Execucao).where(Execucao.tipo == TIPO_COMPLETA, Execucao.status == "em_andamento")
+                   .order_by(Execucao.id.desc()).limit(1))
+    if ex is None:
+        raise CargaRecusada(NADA_EM_ANDAMENTO)
+    ex.cancelar = True
+    db.commit()
+    return ex
+
+
+def marca_falha_orfa(db: Session, eid: int, agora: datetime | None = None) -> bool:
+    """UPDATE atômico: só vira `falha` se ainda está em_andamento e sem batida (atualizado_em) há mais de N min."""
+    agora = agora or datetime.now(UTC)
+    limite = agora - timedelta(minutes=int(get_settings().ge_orfa_min))
+    r = db.execute(update(Execucao).where(
+        Execucao.id == eid, Execucao.tipo == TIPO_COMPLETA, Execucao.status == "em_andamento",
+        (Execucao.atualizado_em.is_(None)) | (Execucao.atualizado_em < limite),
+    ).values(status="falha", finalizado_em=agora,
+             mensagem=f"Marcada como falha pelo ADMIN: sem atividade há mais de {get_settings().ge_orfa_min} min."))
+    db.commit()
+    return r.rowcount == 1
+
+
 def amostra(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None) -> Execucao:
     ex = _nova_execucao(db, TIPO_AMOSTRA, usuario, "amostra")
     try:
@@ -132,11 +158,13 @@ def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, ago
                    mensagem=("Janela noturna ignorada: SIGPMF_EDUCACAO_JANELA_NOTURNA=false"
                              f" (fora da janela: {'sim' if not dentro_da_janela(agora)[0] else 'não'}).")))
         db.commit()
-    lotes = 0
+    lotes, cancelada = 0, False
     try:
         for f in FONTES:
+            if cancelada:
+                break
             ck = _checkpoint(db, f)
-            while not ck.concluida and lotes < teto:
+            while not ck.concluida and lotes < teto and not cancelada:
                 ultima = tuple(ck.ultima_chave) if ck.ultima_chave else None
                 linhas = leitor.ler(f, ultima, lote)
                 if linhas:
@@ -148,9 +176,15 @@ def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, ago
                 ex.tabela_atual = f.nome
                 lotes += 1
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"{f.sistema}.{f.nome}: lote {lotes} com {len(linhas)} linhas"))
+                ex.atualizado_em = datetime.now(UTC)  # batida por lote (órfã = sem batida há N min)
                 db.commit()  # lote + checkpoint na mesma transação
+                db.refresh(ex)
+                cancelada = bool(ex.cancelar)  # pedido de cancelamento: para no fim deste lote
         cks = [_checkpoint(db, f) for f in FONTES]
-        if all(c.concluida for c in cks):
+        if cancelada:
+            ex.status = "cancelada"
+            ex.mensagem = f"Cancelada pelo ADMIN no fim do lote {lotes}; o já gravado fica e o checkpoint continua dali."
+        elif all(c.concluida for c in cks):
             r = educacao.processa(db, agora)
             for c in cks:  # ciclo completo: a próxima carga recomeça do início (pega alterações por hash)
                 c.concluida, c.ultima_chave, c.posicao = False, None, 0
