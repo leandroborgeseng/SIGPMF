@@ -159,6 +159,7 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Adicionar secretaria' }))
     const opcoes = within(screen.getByLabelText('Secretaria')).getAllByRole('option').map((o) => o.textContent)
     expect(opcoes).not.toContain('Todas as secretarias')
+    expect(screen.getByLabelText('Secretaria')).toHaveClass('campo-select')  // B5
     await userEvent.selectOptions(screen.getByLabelText('Secretaria'), 'EDUCACAO')
     await userEvent.click(screen.getByRole('button', { name: 'Salvar' }))
     expect(await screen.findByText('O acesso a todas as secretarias só pode ser concedido pelo responsável LGPD.')).toBeVisible()
@@ -204,5 +205,13 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     expect(det.querySelector('time')).toHaveTextContent(/ BRT$/)
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations).toEqual([])
+  })
+})
+
+describe('B4 (#54)', () => {
+  it('index.html declara lang="pt-BR" no <html>', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    expect(readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')).toMatch(/<html lang="pt-BR">/)
   })
 })

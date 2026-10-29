@@ -225,7 +225,7 @@ function FormAdicionar({ usuarioId, opcoes, fechar, ok }: { usuarioId: number; o
     <form className="as-form" onSubmit={salvar} aria-labelledby="t-add">
       <h3 id="t-add">Adicionar secretaria</h3>
       <label htmlFor="as-sec">Secretaria</label>
-      <select id="as-sec" value={sec} onChange={(e) => setSec(e.target.value)}>
+      <select id="as-sec" className="campo-select" value={sec} onChange={(e) => setSec(e.target.value)}>
         <option value="">Escolha a secretaria</option>
         {opcoes.map((o) => <option key={o.codigo} value={o.codigo}>{o.nome}</option>)}
       </select>
