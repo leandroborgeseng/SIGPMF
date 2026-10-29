@@ -112,6 +112,8 @@ class CheckpointCarga(Base):
     concluida: Mapped[bool] = mapped_column(Boolean, default=False)
     execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # IN1 (0027): maior data de alteração já lida da tabela (sem fuso, como a origem). Não é zerada no fim do ciclo.
+    marca_dagua: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
 
 
 class Log(Base):

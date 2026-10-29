@@ -108,7 +108,11 @@ class SqlServerConnector:
 
     def _conectar(self):
         import pymssql  # import tardio: o driver só é necessário com origem real
+
+        from app.connectors.sqlserver.politicas import autoriza_base
         c = self.config
+        if c.database:
+            autoriza_base(c.database)  # PR-04 A2: nunca abre conexão em banco de descarte nem no Internet
         # Coolify entrega variáveis como texto: porta e timeout sempre int
         return pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
                                database=c.database, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),

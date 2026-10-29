@@ -267,3 +267,80 @@ def test_falha_no_meio_nao_marca_concluida(base):
     r2, _, _ = boot(d)  # mesmo SHA: tenta de novo porque não concluiu
     assert r2["resultado"] == "concluida"
 
+
+
+def test_r2_marcador_conferido_de_novo_depois_da_trava(base, monkeypatch):
+    """R2: outra instância no mesmo SHA conclui entre a 1ª conferência e a trava -> esta não relê."""
+    db, d = base
+    real = cge._trava
+    eng = create_engine(TEST_URL)
+
+    def trava_depois_da_outra_instancia(sess):
+        with eng.begin() as c:  # a "outra instância" termina e marca concluida (fonte + SHA) antes de soltarmos a trava
+            c.execute(text("UPDATE controle.acoes_unicas SET status='concluida' WHERE acao=:a AND fonte=:f AND token=:t"),
+                      {"a": rd.ACAO, "f": FONTE, "t": SHA1})
+        return real(sess)
+
+    monkeypatch.setattr(cge, "_trava", trava_depois_da_outra_instancia)
+    n = n_exec(db, cge.TIPO_COMPLETA)
+    antes = contagens(db)
+    try:
+        r, lm, fab = boot(d)
+    finally:
+        eng.dispose()
+    assert r["resultado"] == "ja_executada" and r["codigo"] == "ja_executada"
+    assert lm.sqls == [] and fab.aberturas == 0  # nada lido
+    assert n_exec(db, cge.TIPO_COMPLETA) == n and contagens(db) == antes
+    db.expire_all()
+    assert db.scalar(select(AcaoUnica.status).where(AcaoUnica.fonte == FONTE, AcaoUnica.token == SHA1)) == "concluida"
+    e2 = create_engine(TEST_URL)  # a trava foi solta
+    with e2.connect() as c:
+        assert c.execute(text("select pg_try_advisory_lock(:k)"), {"k": tv.chave_lock(cge.SISTEMA)}).scalar()
+        c.execute(text("select pg_advisory_unlock(:k)"), {"k": tv.chave_lock(cge.SISTEMA)})
+    e2.dispose()
+
+
+class _Resp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.mark.parametrize("porta,esperada", [(None, 8000), ("8123", 8123)])
+def test_r3_porta_do_health_por_variavel(monkeypatch, porta, esperada):
+    """R3: a porta do /health vem de SIGPMF_RELEITURA_SAUDE_PORTA (padrão 8000)."""
+    if porta is None:
+        monkeypatch.delenv("SIGPMF_RELEITURA_SAUDE_PORTA", raising=False)
+    else:
+        monkeypatch.setenv("SIGPMF_RELEITURA_SAUDE_PORTA", porta)
+    get_settings.cache_clear()
+    urls = []
+
+    def falso(url, timeout=None):
+        urls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(rd.urllib.request, "urlopen", falso)
+    try:
+        assert rd.url_saude() == f"http://127.0.0.1:{esperada}/health"
+        assert rd.aguarda_saude(max_s=5, passo=0) is True
+        assert urls == [f"http://127.0.0.1:{esperada}/health"]
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+def test_r3_porta_invalida_e_recusada(monkeypatch):
+    from pydantic import ValidationError
+    monkeypatch.setenv("SIGPMF_RELEITURA_SAUDE_PORTA", "70000")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValidationError):
+            get_settings()
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()

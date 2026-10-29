@@ -10,7 +10,33 @@ from datetime import date, timedelta
 
 
 class TabelaRecusada(ValueError):
+    """Recusa da política. `codigo` é fixo (vai para API/auditoria); a mensagem fica só no log interno."""
+
+    def __init__(self, mensagem: str, codigo: str = "tabela_recusada"):
+        super().__init__(mensagem)
+        self.codigo = codigo
+
+
+class BaseRecusada(TabelaRecusada):
     pass
+
+
+# PR-04 A2: os 20 bancos de descarte (plano-aproveitamento, "Vazio/descartar") e o Internet (holerites, sensível)
+# nunca entram em política nem em leitura, mesmo que alguém cadastre uma política apontando para eles.
+BASES_DESCARTE = frozenset({
+    "API_Usuario", "AtendSaude", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL", "DWConfiguration",
+    "DWDiagnostics", "DWQueue", "EFWeb", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "IPTU_Isencao",
+    "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014", "Novo_Cemiterio", "Senhas", "Telefonia",
+    "Traces", "TrendVP"})
+BASES_SENSIVEIS_NUNCA = frozenset({"Internet"})
+BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
+_BASES_NUNCA_NORM = frozenset(b.lower() for b in BASES_NUNCA)
+
+
+def autoriza_base(base: str) -> None:
+    """A2: recusa qualquer banco de descarte ou o Internet (comparação sem caixa e sem colchetes)."""
+    if str(base).strip().strip("[]").lower() in _BASES_NUNCA_NORM:
+        raise BaseRecusada(f"Banco {base} fora do plano (descarte/sensível).", "base_descartada")
 
 
 # R2 do QA do #6 + ressalva 2 do Tester: nomes sensíveis reconhecidos de forma robusta, não só pelo nome exato.
@@ -63,6 +89,9 @@ class Politica:
     # tabela -> (coluna, função que devolve o mínimo inteiro). Ex.: Financeiro_Exercicio só dos exercícios recentes.
     filtros: dict[str, tuple[str, Callable[[], int]]] = field(default_factory=dict)
 
+    def __post_init__(self):
+        autoriza_base(self.base)  # A2: nenhuma política pode apontar para banco de descarte/Internet
+
     def filtro_fixo(self, tabela: str) -> str:
         """Condição SQL do recorte fixo (só inteiro, nunca texto vindo de fora) ou "" sem recorte."""
         nome = tabela.split(".")[-1]
@@ -85,27 +114,32 @@ class Politica:
         return cols
 
     def autoriza(self, tabela: str) -> None:
-        nome = tabela.split(".")[-1]
-        for p in self.recusar:
+        partes = [p.strip("[]") for p in str(tabela).split(".")]
+        if len(partes) >= 3:  # Base.schema.Tabela: o banco também passa pela A2
+            autoriza_base(partes[-3])
+        nome = partes[-1]
+        for p in (*self.recusar, *_RECUSA_COMUM):  # PR-04: o padrão comum vale para TODA política
             if re.search(p, nome, re.IGNORECASE):
-                raise TabelaRecusada(f"Tabela {nome} recusada pela política de {self.sistema}.")
+                raise TabelaRecusada(f"Tabela {nome} recusada pela política de {self.sistema}.", "tabela_padrao_recusado")
         if nome not in self.colunas and nome not in self.apoio:
-            raise TabelaRecusada(f"Tabela {nome} fora da lista permitida de {self.sistema}.")
+            raise TabelaRecusada(f"Tabela {nome} fora da lista permitida de {self.sistema}.", "tabela_fora_da_lista")
 
     def colunas_select(self, tabela: str) -> tuple[str, ...]:
         self.autoriza(tabela)
         nome = tabela.split(".")[-1]
         cols = self.colunas.get(nome, ())
         if not cols:  # tabelas de apoio ainda sem lista de colunas: recusa explícita (ressalva do QA do #4)
-            raise TabelaRecusada(f"Tabela {nome} de {self.sistema} sem colunas definidas na política.")
+            raise TabelaRecusada(f"Tabela {nome} de {self.sistema} sem colunas definidas na política.", "tabela_sem_colunas")
         ruins = {c for c in cols if coluna_proibida(c, self.proibidas)}
         if ruins:
-            raise TabelaRecusada(f"Colunas proibidas na política: {sorted(ruins)}")
+            raise TabelaRecusada(f"Colunas proibidas na política: {sorted(ruins)}", "coluna_proibida")
         return cols
 
 
 _RECUSA_COMUM = (r"UsuariosWeb$", r"^2APAGAR", r"APAGAR", r"bak", r"back_?up", r"^Copia", r"Antes", r"temp",
-                 r"teste", r"_\d{6,}", r"\d{6,}[A-Za-z]*$", r"^EXCLUIDOS_", r"Duplicados", r"ffff")
+                 r"teste", r"_\d{6,}", r"\d{6,}[A-Za-z]*$", r"^EXCLUIDOS_", r"Duplicados", r"ffff",
+                 # PR-04 (plano §10 R2): backups/cópias/descartes nomeados dentro dos próprios bancos
+                 r"bkp", r"^AAA_NAO_UTILIZADO", r"Apagar_", r"_Anteriores$", r"Copia_", r"_Copia")
 
 SAUDE = Politica(
     sistema="SAUDE", base="Saude",
@@ -249,6 +283,28 @@ SIL = Politica(
 
 POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
                                   "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
+
+
+def classifica_listagem(pol: Politica, nomes) -> tuple[list[str], list[tuple[str, str]]]:
+    """A1: o que o conector lista na origem é separado em (permitidas, [(recusada, codigo)]). Quem chama audita as recusas."""
+    ok, recusadas = [], []
+    for n in nomes:
+        try:
+            pol.autoriza(n)
+            ok.append(n)
+        except TabelaRecusada as exc:
+            recusadas.append((n, exc.codigo))
+    return ok, recusadas
+
+
+def audita_recusas(db, usuario: str | None, sistema: str, recusadas, commit: bool = True) -> int:
+    """Uma linha de auditoria `tabela_recusada` por tabela recusada (só nome e código fixo, nenhum dado de linha)."""
+    from app.core.audit import audita
+    for nome, codigo in recusadas:
+        audita(db, usuario, "tabela_recusada", f"{sistema}.{nome}", {"codigo": codigo}, commit=False)
+    if commit:
+        db.commit()
+    return len(recusadas)
 
 
 def politica(sistema: str) -> Politica | None:

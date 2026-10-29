@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     revelar_cpf_segundos: int = Field(60, alias="REVELAR_CPF_SEGUNDOS", ge=5)
     docs_habilitado: bool = Field(False, alias="DOCS_HABILITADO")
     cpf_reveal_perfis: str = Field("admin_lgpd", alias="CPF_REVEAL_PERFIS")
+    # N3a: números de preenchimento de CPF (vírgula). Dígitos todos iguais já são regra própria.
+    cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
@@ -75,6 +77,7 @@ class Settings(BaseSettings):
     releitura_fonte: str = Field("", alias="SIGPMF_RELEITURA_FONTE")
     # Espera máxima (s) pelo /health da própria app antes de começar; passou disso = recusa `sem_saude`.
     releitura_saude_max_s: int = Field(600, alias="SIGPMF_RELEITURA_SAUDE_MAX_S", ge=1, le=3600)
+    releitura_saude_porta: int = Field(8000, alias="SIGPMF_RELEITURA_SAUDE_PORTA", ge=1, le=65535)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
@@ -93,8 +96,9 @@ class Settings(BaseSettings):
     agenda_tentativas: int = Field(3, alias="AGENDA_TENTATIVAS", ge=1, le=10)
     agenda_reespera_min: int = Field(30, alias="AGENDA_REESPERA_MIN", ge=1, le=1440)
     agenda_espera_max_h: int = Field(20, alias="AGENDA_ESPERA_MAX_H", ge=1, le=72)
-    # IN3: a agenda faz carga incremental e, a cada N dias, uma completa (pega exclusões na origem).
-    agenda_completa_dias: int = Field(7, alias="AGENDA_COMPLETA_DIAS", ge=1, le=90)
+    # IN6: a agenda faz só carga incremental. 0 (padrão) = a agenda nunca faz completa (só ADMIN, manual e auditada);
+    # N > 0 = uma completa a cada N dias (comportamento antigo, para quem quiser religar).
+    agenda_completa_dias: int = Field(0, alias="AGENDA_COMPLETA_DIAS", ge=0, le=90)
     # PL2: retenção diária (versões antigas da bronze e logs técnicos; a auditoria nunca é apagada)
     retencao_bronze_versoes_dias: int = Field(7, alias="RETENCAO_BRONZE_VERSOES_DIAS", ge=1, le=3650)
     retencao_logs_dias: int = Field(90, alias="RETENCAO_LOGS_DIAS", ge=7, le=3650)

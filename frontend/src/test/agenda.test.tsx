@@ -52,6 +52,13 @@ describe('agenda das cargas (AG1–AG6)', () => {
     expect(screen.queryByLabelText(/Horário da carga/)).toBeNull()
   })
 
+  it('IN6: com completa_a_cada_dias 0 diz que a completa é só manual', async () => {
+    mock(() => [200, resp({ completa_a_cada_dias: 0 })])
+    render(<AgendaCargas ehAdmin={false} />)
+    expect(await screen.findByText(/carga completa só manual, por administrador/)).toBeVisible()
+    expect(screen.queryByText(/carga completa a cada/)).toBeNull()
+  })
+
   it('admin liga/desliga e altera o horário (PUT) e executa agora (POST)', async () => {
     const f = mock((u, init) => {
       if (init?.method === 'PUT') return [200, resp({ itens: [item({ ativo: false }), resp().itens[1]] })]

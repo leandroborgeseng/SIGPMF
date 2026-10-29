@@ -78,6 +78,8 @@ class Fonte:
     campo_data: str | None = None
     tabelas_lidas: tuple[str, ...] = field(default=())
     tipos_documento: bool = False   # filtra d.tdo_id pelos tipos aceitos do catálogo (parâmetros), ver mapa_tipos
+    # IN10a: outras datas de alteração que também trazem a linha na incremental (ex.: END_Endereco da junção).
+    datas_extra: tuple[str, ...] = ()
 
     def todas_tabelas(self) -> tuple[str, ...]:
         return (self.tabela, *(j[1] for j in self.juncoes), *self.tabelas_lidas)
@@ -137,7 +139,8 @@ FONTES: tuple[Fonte, ...] = (
              "pse_dataAlteracao") + (("en.end_cep", "end_cep"), ("en.end_logradouro", "end_logradouro"),
                                      ("en.end_bairro", "end_bairro")), ("pes_id", "pse_id"),
           juncoes=(("pessoas", "END_Endereco", "en", "en.[end_id] = pe.[end_id]"),),
-          filtro="pe.[pse_enderecoPrincipal] = 1", escopo_pessoa="pe.pes_id", campo_data="pse_dataAlteracao"),
+          filtro="pe.[pse_enderecoPrincipal] = 1", escopo_pessoa="pe.pes_id", campo_data="pse_dataAlteracao",
+          datas_extra=("en.end_dataAlteracao",)),
 )
 POR_NOME = {f.nome: f for f in FONTES}
 
@@ -296,6 +299,20 @@ class ConsultasGE:
                 f" OR EXISTS (SELECT 1 FROM {aluno} AS [xm] WITH (NOLOCK) JOIN {pes} AS [xp] WITH (NOLOCK)"
                 f" ON [xp].[pes_id] = [xm].[pes_id] WHERE [xp].[pes_idFiliacaoMae] = {c}))")
 
+    def escopo_recente(self, coluna_pes: str) -> str:
+        """Incremental: pessoa que ENTROU no escopo (aluno/responsável alterado desde a marca) é lida mesmo sem mudar
+        a própria data. Devolve a condição (3 parâmetros `desde`, preenchidos por quem chama)."""
+        c = _col(coluna_pes)
+        aluno, resp, pes = (self._tab("escolar", "ACA_Aluno"), self._tab("escolar", "ACA_AlunoResponsavel"),
+                            self._tab("pessoas", "PES_Pessoa"))
+        return (f"EXISTS (SELECT 1 FROM {aluno} AS [ya] WITH (NOLOCK) WHERE [ya].[pes_id] = {c}"
+                f" AND [ya].[alu_dataAlteracao] >= %s)"
+                f" OR EXISTS (SELECT 1 FROM {resp} AS [yr] WITH (NOLOCK) WHERE [yr].[pes_id] = {c}"
+                f" AND [yr].[alr_dataAlteracao] >= %s)"
+                f" OR EXISTS (SELECT 1 FROM {aluno} AS [ym] WITH (NOLOCK) JOIN {pes} AS [yp] WITH (NOLOCK)"
+                f" ON [yp].[pes_id] = [ym].[pes_id] WHERE [yp].[pes_idFiliacaoMae] = {c}"
+                f" AND [ym].[alu_dataAlteracao] >= %s)")
+
     def tipos_documento(self) -> str:
         """Catálogo de tipos de documento (7 linhas na origem; sem dado pessoal)."""
         t = self._tab("pessoas", "SYS_TipoDocumentacao")
@@ -304,7 +321,9 @@ class ConsultasGE:
             f" FROM {t} AS [td] WITH (NOLOCK)")
 
     def pagina(self, fonte: Fonte | str, limite: int, ultima: tuple | None = None,
-               tdo_ids: tuple | None = None) -> tuple[str, tuple]:
+               tdo_ids: tuple | None = None, desde=None) -> tuple[str, tuple]:
+        """`desde` (datetime, só na incremental): `campo_data >= desde` OR datas_extra >= desde OR pessoa que entrou no
+        escopo desde então. Sempre parâmetro, nunca concatenado. Fonte sem campo_data ignora `desde` (lida inteira)."""
         f = POR_NOME[fonte] if isinstance(fonte, str) else fonte
         if f.nome not in POR_NOME or POR_NOME[f.nome] != f:
             raise TabelaRecusada(f"Fonte {f.nome} fora da lista do conector de educação.")
@@ -328,6 +347,14 @@ class ConsultasGE:
                 raise TiposDocumentoAusentes()
             conds.append(f"{_ident(f.alias)}.[tdo_id] IN ({', '.join(['%s'] * len(tdo_ids))})")
             params += tuple(tdo_ids)
+        if desde is not None and f.campo_data:
+            alt = [f"{_col(expr[f.campo_data])} >= %s", *(f"{_col(d)} >= %s" for d in f.datas_extra)]
+            n = len(alt)
+            if f.escopo_pessoa:
+                alt.append(self.escopo_recente(f.escopo_pessoa))
+                n += 3
+            conds.append("(" + " OR ".join(alt) + ")")
+            params += (desde,) * n
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY " + ", ".join(_col(e) for e in chave_expr)
@@ -357,13 +384,13 @@ class LeitorGE:
             self._conn.close()
         return False
 
-    def ler(self, fonte: Fonte, ultima: tuple | None, limite: int) -> list[dict[str, Any]]:
+    def ler(self, fonte: Fonte, ultima: tuple | None, limite: int, desde=None) -> list[dict[str, Any]]:
         from app.core.sql_guard import executa_somente_leitura
         if not fonte.tipos_documento:
-            sql, params = self.consultas.pagina(fonte, limite, ultima)
+            sql, params = self.consultas.pagina(fonte, limite, ultima, desde=desde)
             return executa_somente_leitura(self._conn, sql, params or None, limite=limite)
         if self._tipos is None:
             self._tipos = mapa_tipos(executa_somente_leitura(self._conn, self.consultas.tipos_documento(), limite=1000))
         ids, mapa = self._tipos
-        sql, params = self.consultas.pagina(fonte, limite, ultima, tdo_ids=ids)
+        sql, params = self.consultas.pagina(fonte, limite, ultima, tdo_ids=ids, desde=desde)
         return anota_classe(executa_somente_leitura(self._conn, sql, params or None, limite=limite), mapa)

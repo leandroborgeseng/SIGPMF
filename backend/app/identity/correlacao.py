@@ -22,7 +22,13 @@ class Parametros:
 
 
 def cidadao_id_por_cpf(cpf: str) -> str:
-    return str(uuid.uuid5(NAMESPACE, f"cpf:{cpf}"))
+    """uuid5 só de CPF com 11 dígitos e DV válido (PR-01). O resto é recusado sem expor o valor."""
+    from app.identity import cpf as cpfmod
+
+    d = cpfmod.normaliza(cpf)
+    if d is None or len(d) != 11 or not cpfmod.valido(d):
+        raise ValueError(cpfmod.MOTIVO_CPF_INVALIDO)
+    return str(uuid.uuid5(NAMESPACE, f"cpf:{d}"))
 
 
 def cidadao_id_por_origem(sistema: str, tabela: str, id_origem: str) -> str:
