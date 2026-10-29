@@ -8,7 +8,12 @@
   atingido o teto, a execução termina como `parcial` e a próxima continua do checkpoint, sem lacuna nem duplicata.
 - Hash por linha e por tabela (bronze.ingere): documento, certidão e endereço têm hash próprio, porque mudar um
   documento não muda `pes_dataAlteracao`.
-- Ciclo completo (todas as fontes concluídas): reconstrói a prata da educação e zera os checkpoints.
+- Ciclo completo (todas as fontes concluídas): reconstrói a prata da educação e volta o keyset ao início, mas a
+  marca d'água (`checkpoints_carga.marca_dagua`, IN1) NÃO é zerada.
+- Incremental (IN2/IN6/IN9, padrão da agenda): cada fonte com `campo_data` lê só `campo_data >= marca - margem`
+  (CARGA_INCREMENTAL_MARGEM_H, 24 h), mais as `datas_extra` (END_Endereco) e as pessoas que entraram no escopo.
+  Sem marca, usa a maior data já gravada na bronze; fonte sem campo_data (8 linhas) é relida inteira. Sem linha
+  nova ou alterada, a prata não é refeita ("Concluída · nenhuma linha nova"). A completa fica só manual (ADMIN).
 - Nada é apagado: a bronze é append-only (versões por hash) e a prata é upsert.
 - Mensagens e logs só com contagens e nomes de tabela; nunca credencial, nome, CPF ou id de pessoa.
 """
@@ -276,7 +281,36 @@ def _solta(conn) -> None:
         conn.close()
 
 
-def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, agora: datetime | None = None) -> Execucao:
+def _maior_bronze(db: Session, f: Fonte):
+    """Maior data de alteração já gravada na bronze da fonte (sem fuso, como a origem), ou None."""
+    from sqlalchemy import func
+
+    from app.models.camadas import RegistroBronze
+    maior = db.scalar(select(func.max(RegistroBronze.atualizado_origem_em)).where(
+        RegistroBronze.sistema_origem == f.sistema, RegistroBronze.tabela == f.nome))
+    return None if maior is None else maior.replace(tzinfo=None)
+
+
+def _desde(db: Session, f: Fonte, ck: CheckpointCarga):
+    """IN2: início da janela incremental da fonte = marca d'água - margem. Sem marca, inicializa pela bronze (fica fixa
+    até o fim do ciclo, para o keyset não pular linha entre execuções parciais). None = lê a fonte inteira."""
+    if not f.campo_data:
+        return None
+    if ck.marca_dagua is None:
+        if ck.ultima_chave:  # leitura inteira já começada (sem marca): continua inteira até o fim do ciclo
+            return None
+        ck.marca_dagua = _maior_bronze(db, f)
+        if ck.marca_dagua is None:
+            return None
+    return ck.marca_dagua - timedelta(hours=get_settings().carga_incremental_margem_h)
+
+
+def _ler(leitor, f: Fonte, ultima, lote: int, desde):
+    return leitor.ler(f, ultima, lote) if desde is None else leitor.ler(f, ultima, lote, desde=desde)
+
+
+def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, agora: datetime | None = None,
+             modo: str = "completa") -> Execucao:
     agora = agora or datetime.now(UTC)
     if not amostra_ok(db):
         raise CargaRecusada(SEM_AMOSTRA, "sem_amostra")
@@ -287,15 +321,23 @@ def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, ago
             _solta(trava)
         raise CargaRecusada(EM_ANDAMENTO, "em_andamento")
     try:
-        return _completa(db, leitor, cfg, usuario, agora, janela_ignorada)
+        return _completa(db, leitor, cfg, usuario, agora, janela_ignorada, modo)
     finally:
         _solta(trava)
 
 
-def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, janela_ignorada: bool) -> Execucao:
+def incremental(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None,
+                agora: datetime | None = None) -> Execucao:
+    """IN2/IN6: mesma trava, teto de lotes, pausa e cancelamento da completa; só lê o alterado desde a marca."""
+    return completa(db, leitor, cfg, usuario, agora, modo="incremental")
+
+
+def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, janela_ignorada: bool,
+              modo: str = "completa") -> Execucao:
     teto, lote, pausa = max(1, int(cfg.max_lotes)), int(cfg.lote), pausa_lote_ms()
+    inc = modo == "incremental"
     try:
-        ex = _nova_execucao(db, TIPO_COMPLETA, usuario, "completa")
+        ex = _nova_execucao(db, TIPO_COMPLETA, usuario, modo)
     except IntegrityError:  # índice único parcial (0025): outra completa entrou primeiro
         db.rollback()
         raise CargaRecusada(EM_ANDAMENTO, "em_andamento") from None
@@ -307,16 +349,24 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
     eid, lotes, cancelada = ex.id, 0, False
     status, mensagem, pendentes = "falha", None, None
     erro: dict = {}
+    por_fonte: dict[str, dict] = {}
     try:
+        # ciclo já começado por uma execução anterior (parcial): a bronze pode ter mudado lá, então a prata é refeita
+        ciclo_anterior = any(c.concluida or c.ultima_chave for c in (_checkpoint(db, f) for f in FONTES))
         for f in FONTES:
             if cancelada:
                 break
             ck = _checkpoint(db, f)
+            desde = _desde(db, f, ck) if inc else None
             while not ck.concluida and lotes < teto and not cancelada:
                 ultima = tuple(ck.ultima_chave) if ck.ultima_chave else None
-                linhas = leitor.ler(f, ultima, lote)
+                linhas = _ler(leitor, f, ultima, lote, desde)
                 if linhas:
-                    _soma(ex, _ingere(db, f, linhas, ex))
+                    c = _ingere(db, f, linhas, ex)
+                    _soma(ex, c)
+                    pf = por_fonte.setdefault(f.nome, {"lidos": 0, "novos": 0, "atualizados": 0, "desde": desde})
+                    for k in ("lidos", "novos", "atualizados"):
+                        pf[k] += c.get(k, 0)
                     ck.ultima_chave = _chave(f, linha_json(linhas[-1]))
                     ck.posicao = (ck.posicao or 0) + len(linhas)
                 ck.concluida = len(linhas) < lote
@@ -326,7 +376,13 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
                 ex.lotes = lotes
                 ex.atualizado_em = datetime.now(UTC)  # batida por lote (órfã = sem batida há N min)
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"{f.sistema}.{f.nome}: lote {lotes} com {len(linhas)} linhas"))
-                if ck.concluida and not (ck.posicao or 0):
+                if ck.concluida and inc:  # IN8: "incremental desde <marca>" e linhas novas/alteradas por tabela
+                    pf = por_fonte.get(f.nome, {"lidos": 0, "novos": 0, "atualizados": 0})
+                    ini = f"desde {desde:%d/%m/%Y %H:%M}" if desde is not None else "leitura inteira (sem marca d'água)"
+                    db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
+                        f"{f.sistema}.{f.nome}: incremental {ini}; {pf['lidos']} lidas, {pf['novos']} novas, "
+                        f"{pf['atualizados']} alteradas.")))
+                if ck.concluida and not inc and not (ck.posicao or 0):
                     db.add(Log(execucao_id=ex.id, nivel="WARNING",
                                mensagem=f"[{tabelas_vazias.CODIGO}] {f.sistema}.{f.nome}: fonte concluída com 0 linhas lidas."))
                 db.commit()  # lote + checkpoint + batida na mesma transação
@@ -337,18 +393,24 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
         if cancelada:
             status = "cancelada"
             mensagem = f"Cancelada no fim do lote {lotes}; o já gravado fica e o checkpoint continua dali."
+        elif inc and all(c.concluida for c in cks) and not ciclo_anterior and not (
+                (db.get(Execucao, eid).novos or 0) + (db.get(Execucao, eid).atualizados or 0)):
+            _fecha_ciclo(db, cks)
+            status, r = "sucesso", None
+            mensagem = "Concluída · nenhuma linha nova (incremental; prata e ouro não foram refeitos)."
         elif all(c.concluida for c in cks):
             ex = db.get(Execucao, eid)
-            aviso = tabelas_vazias.registra(db, ex, SISTEMA, [c.tabela for c in cks if not (c.posicao or 0)])
+            aviso = ""
+            if not inc:  # incremental com 0 linhas numa fonte é o normal (nada mudou), não tabela vazia
+                aviso = tabelas_vazias.registra(db, ex, SISTEMA, [c.tabela for c in cks if not (c.posicao or 0)])
             if aviso:
                 erro = {"erro_classe": ex.erro_classe, "erro_tabela": ex.erro_tabela}
             db.commit()
             with _BatidaEmFundo(eid, BATIDA_PROCESSA_S):
                 r = educacao.processa(db, agora)
-            for c in cks:  # ciclo completo: a próxima carga recomeça do início (pega alterações por hash)
-                c.concluida, c.ultima_chave, c.posicao = False, None, 0
+            _fecha_ciclo(db, cks)
             status = "sucesso"
-            mensagem = (f"Ciclo completo: {r['alunos']} alunos ({r['vinculados']} vinculados, {r['revisao']} em revisão, "
+            mensagem = ("Incremental: " if inc else "") + (f"Ciclo completo: {r['alunos']} alunos ({r['vinculados']} vinculados, {r['revisao']} em revisão, "
                         f"{r['quarentena']} em quarentena, {r['excluidos']} excluídos, {r['inativos']} inativos), {r['matriculas']} matrículas.")
             pendentes = r["revisao"] + r["quarentena"]
             mensagem = corta(mensagem + aviso, 1000)
@@ -374,6 +436,18 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
     ex = db.get(Execucao, eid)
     db.refresh(ex)
     return ex
+
+
+def _fecha_ciclo(db: Session, cks: list[CheckpointCarga]) -> None:
+    """Fim do ciclo: o keyset volta ao início, mas a marca d'água (IN1) avança para a maior data gravada na bronze."""
+    por_nome = {f.nome: f for f in FONTES}
+    for c in cks:
+        f = por_nome.get(c.tabela)
+        if f is not None and f.campo_data:
+            maior = _maior_bronze(db, f)
+            if maior is not None and (c.marca_dagua is None or maior > c.marca_dagua):
+                c.marca_dagua = maior
+        c.concluida, c.ultima_chave, c.posicao = False, None, 0
 
 
 def prepara_releitura(db: Session, fonte: str, usuario: str | None) -> dict:

@@ -25,7 +25,7 @@
 | AGENDA_INTERVALO_S | de quanto em quanto tempo a agenda confere se há carga a iniciar (padrão 60 s) |
 | AGENDA_PULAR_SEM_MUDANCA | `true` (padrão): antes de ler, compara `COUNT(*)` e `MAX(campo incremental)` de cada tabela com a última carga bem-sucedida; igual = "Sem mudança na origem", nada é lido nem reconstruído |
 | AGENDA_TENTATIVAS / AGENDA_REESPERA_MIN | falha tenta de novo depois de `REESPERA_MIN` (30) até `TENTATIVAS` (3) vezes no dia |
-| AGENDA_COMPLETA_DIAS | a agenda faz carga **incremental** (só o alterado) e uma **completa** a cada N dias e na primeira vez (padrão 7); a completa pega registros excluídos na origem |
+| AGENDA_COMPLETA_DIAS | padrão **0**: a agenda faz **só incremental** (inclusive a educação) e nunca uma completa; a completa só roda manualmente por ADMIN (auditada). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
 | CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |
@@ -57,7 +57,19 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - **Incremental**: por tabela, lê só as linhas com `campo incremental >= marca d'água` (maior data já gravada na bronze
   − `CARGA_INCREMENTAL_MARGEM_H`). Tabela sem campo incremental na política, ou sem histórico, é lida por inteiro.
   Não verifica de novo a unicidade da chave nem atualiza checkpoints (isso é da completa). Exclusões na origem só
-  aparecem na completa (a cada `AGENDA_COMPLETA_DIAS`).
+  aparecem numa completa manual (ADMIN) enquanto a conferência leve por PK/hash (IN5/IN7) não entra.
+- **Saúde**: `Unidades`, `Aux_Vacina` e `Aux_Especialidades` não têm coluna de data e são relidas inteiras em toda
+  incremental (dimensões pequenas; hash evita gravar o que não mudou).
+- **SIL**: a API não tem data; toda execução lê tudo e a bronze só grava a linha cujo hash mudou (exceção ao IN2).
+- **Educação** (`POST /api/educacao/conector/incremental`, e é o que a agenda roda): cada fonte com `*_dataAlteracao`
+  lê só `>= marca d'água − CARGA_INCREMENTAL_MARGEM_H`; a marca fica em `controle.checkpoints_carga.marca_dagua`
+  (0027) e **não é zerada** no fim do ciclo (só o keyset volta ao início). Sem marca, parte da maior data já gravada
+  na bronze. `PES_PessoaEndereco` também entra quando `END_Endereco.end_dataAlteracao` mudou; pessoas do CoreSSO
+  entram também quando o aluno/responsável ligado a elas mudou (entrada no escopo). `ACA_TipoResponsavelAluno`
+  (8 linhas, sem data lida) é relida inteira. Sem linha nova ou alterada: "Concluída · nenhuma linha nova" e a
+  prata/ouro não são refeitas. O log de cada fonte traz "incremental desde <data>; N lidas, X novas, Y alteradas".
+  A completa (`/completa`) segue só manual, por ADMIN. Na agenda a educação roda **sempre incremental**, mesmo com
+  `AGENDA_COMPLETA_DIAS` > 0 (essa variável não vale para a educação).
 - **Prata e ouro só quando algo mudou**: antes de reconstruir, compara a assinatura das entradas (bronze: total, maior
   id e quarentena; confirmações de óbito; parâmetros da correlação; hash do código das regras) com a da última
   reconstrução bem-sucedida (`controle.camadas_estado`). Igual = reconstrução pulada ("Nada mudou nas entradas da prata
