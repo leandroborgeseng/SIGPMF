@@ -972,3 +972,96 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
     except LookupError:
         _404()
     return ag.estado(db)
+
+
+# ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
+PERFIL_REVELA_EDUCACAO = "admin_lgpd"
+
+
+def _menor(nasc, hoje=None) -> bool:
+    from datetime import date as _date
+    if nasc is None:
+        return True  # sem nascimento: trata como menor (mais restritivo)
+    h = hoje or _date.today()
+    return (h.year - nasc.year - ((h.month, h.day) < (nasc.month, nasc.day))) < 18
+
+
+def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
+    """GE4: aluno menor sai com nome, CPF, endereço e responsáveis mascarados, salvo `revela` (admin_lgpd + motivo).
+    GE9: só a matrícula com situação 1 aparece como atual; as demais (inclusive situação 3) ficam no histórico."""
+    from app.identity.nome import mascara_nome, mascara_texto
+    from app.models.camadas import EscolaAluno, EscolaMatricula, EscolaResponsavel
+    out = []
+    for a in db.scalars(select(EscolaAluno).where(EscolaAluno.cidadao_id == cid, EscolaAluno.status_vinculo == "vinculado")
+                        .order_by(EscolaAluno.alu_id)):
+        claro = revela or not _menor(a.data_nascimento)
+        mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == a.alu_id)
+                               .order_by(EscolaMatricula.mtu_id.desc())))
+        resps = list(db.scalars(select(EscolaResponsavel).where(EscolaResponsavel.alu_id == a.alu_id,
+                                                                EscolaResponsavel.excluido.is_(False))
+                                .order_by(EscolaResponsavel.alr_id)))
+        m = lambda x: {"escola": x.escola, "escola_inep": x.escola_inep, "turma": x.turma, "situacao": x.situacao,  # noqa: E731
+                       "excluida": x.excluida, "data_alteracao": x.data_alteracao}
+        out.append({
+            "menor": _menor(a.data_nascimento), "mascarado": not claro,
+            "nome": a.nome if claro else mascara_nome(a.nome),
+            "cpf": (a.cpf if revela else mascara(a.cpf)),
+            "data_nascimento": a.data_nascimento if claro else None,
+            "endereco": {"logradouro": mascara_texto(a.logradouro, claro), "numero": mascara_texto(a.numero, claro),
+                         "bairro": mascara_texto(a.bairro, claro), "cep": mascara_texto(a.cep, claro)},
+            "responsaveis": [{"tipo": r.tipo, "nome": r.nome if claro else mascara_nome(r.nome),
+                              "cpf": r.cpf if revela else mascara(r.cpf), "principal": r.principal} for r in resps],
+            "excluido": a.excluido,
+            "matricula_atual": next((m(x) for x in mats if x.atual), None),
+            "historico": [m(x) for x in mats],
+        })
+    return out
+
+
+@api.get("/gold/cidadaos/{cid}/educacao")
+def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    alunos = _educacao(db, cid, revela=False)
+    audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
+    return {"cidadao_id": cid, "alunos": alunos}
+
+
+@api.post("/gold/cidadaos/{cid}/educacao/revelar")
+def educacao_revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: Usuario = Depends(usuario_atual),
+                     db: Session = Depends(get_db)):
+    """GE4: só admin_lgpd revela dados de aluno menor, com motivo no corpo (nunca na URL) e auditoria."""
+    if u.perfil != PERFIL_REVELA_EDUCACAO:
+        audita(db, u.email, "revelar_educacao_negado", f"cidadao:{cid}", {"perfil": u.perfil}, _ip(req))
+        raise HTTPException(403, "Só o perfil admin_lgpd revela dados de aluno")
+    motivo = (dados.motivo or "").strip() if dados else ""
+    if len(motivo) < get_settings().revelar_motivo_min:
+        raise HTTPException(400, "Informe o motivo para revelar os dados do aluno.")
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    alunos = _educacao(db, cid, revela=True)
+    audita(db, u.email, "revelar_educacao", f"cidadao:{cid}", {"motivo": motivo[:300], "alunos": len(alunos)}, _ip(req))
+    return {"cidadao_id": cid, "alunos": alunos, "remascarar_em_segundos": get_settings().revelar_cpf_segundos}
+
+
+@api.post("/educacao/conector/{modo}", dependencies=[Depends(ADMIN)])
+def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """GE3/GE11: amostra (até 50 linhas por tabela) ou carga completa (janela noturna, teto de lotes, checkpoint)."""
+    from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
+    from app.services import carga_gestaoescolar as cge
+    if modo not in ("amostra", "completa"):
+        _404()
+    cfg = ConfigGE.do_ambiente(get_settings())
+    try:
+        cfg.valida()
+        if modo == "completa":
+            if not cge.amostra_ok(db):
+                raise cge.CargaRecusada(cge.SEM_AMOSTRA)
+            ok, jan = cge.dentro_da_janela(datetime.now(UTC))
+            if not ok:
+                raise cge.CargaRecusada(cge.FORA_JANELA.format(janela=jan))
+    except (PermissionError, cge.CargaRecusada) as exc:
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    with LeitorGE(cfg) as leitor:
+        ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
+    audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos}, _ip(req))
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}

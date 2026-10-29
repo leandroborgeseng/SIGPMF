@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -361,3 +362,68 @@ class Indicador(Base):
     dim: Mapped[str] = mapped_column(String(200), default="")
     valor: Mapped[float] = mapped_column(Float)
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------- Educação (FRA_GestaoEscolar + FRA_CoreSSO, GE6–GE11): prata própria, sem DELETE -----------------
+# Reconstruída por upsert a partir da bronze (app.silver.educacao). Situação 3 = exclusão lógica (`excluido`), nunca
+# apagada; todas as situações ficam no histórico e a ficha mostra como atual só a matrícula com situação 1.
+class EscolaAluno(Base):
+    __tablename__ = "escola_alunos"
+    __table_args__ = (Index("ix_silver_escola_aluno_cidadao", "cidadao_id"), SV)
+    alu_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    pes_id: Mapped[str | None] = mapped_column(String(36))
+    situacao: Mapped[int | None] = mapped_column(Integer)
+    excluido: Mapped[bool] = mapped_column(Boolean, default=False)
+    nome: Mapped[str | None] = mapped_column(String(300))
+    nome_social: Mapped[str | None] = mapped_column(String(300))
+    data_nascimento: Mapped[date | None] = mapped_column(Date)
+    nome_mae: Mapped[str | None] = mapped_column(String(300))
+    cpf: Mapped[str | None] = mapped_column(String(11))
+    nis: Mapped[str | None] = mapped_column(String(11))
+    certidao: Mapped[str | None] = mapped_column(String(40))
+    cep: Mapped[str | None] = mapped_column(String(10))
+    logradouro: Mapped[str | None] = mapped_column(String(300))
+    numero: Mapped[str | None] = mapped_column(String(30))
+    complemento: Mapped[str | None] = mapped_column(String(200))
+    bairro: Mapped[str | None] = mapped_column(String(200))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    confianca: Mapped[float | None] = mapped_column(Float)
+    status_vinculo: Mapped[str] = mapped_column(String(20))  # vinculado | revisao | quarentena | inativo
+    motivo: Mapped[str | None] = mapped_column(String(60))
+    atributos: Mapped[list | None] = mapped_column(JSONType)
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EscolaMatricula(Base):
+    __tablename__ = "escola_matriculas"
+    __table_args__ = (UniqueConstraint("alu_id", "mtu_id"), Index("ix_silver_escola_matricula_aluno", "alu_id"), SV)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    alu_id: Mapped[int] = mapped_column(BigInteger)
+    mtu_id: Mapped[int] = mapped_column(Integer)
+    alc_id: Mapped[int | None] = mapped_column(Integer)
+    matricula: Mapped[str | None] = mapped_column(String(50))
+    tur_id: Mapped[int | None] = mapped_column(BigInteger)
+    turma: Mapped[str | None] = mapped_column(String(60))
+    esc_id: Mapped[int | None] = mapped_column(Integer)
+    escola: Mapped[str | None] = mapped_column(String(300))
+    escola_inep: Mapped[str | None] = mapped_column(String(20))
+    situacao: Mapped[int | None] = mapped_column(Integer)
+    atual: Mapped[bool] = mapped_column(Boolean, default=False)
+    excluida: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_alteracao: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+
+
+class EscolaResponsavel(Base):
+    __tablename__ = "escola_responsaveis"
+    __table_args__ = (UniqueConstraint("alu_id", "alr_id"), Index("ix_silver_escola_resp_aluno", "alu_id"), SV)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    alu_id: Mapped[int] = mapped_column(BigInteger)
+    alr_id: Mapped[int] = mapped_column(Integer)
+    tra_id: Mapped[int | None] = mapped_column(Integer)
+    tipo: Mapped[str | None] = mapped_column(String(100))
+    pes_id: Mapped[str | None] = mapped_column(String(36))
+    nome: Mapped[str | None] = mapped_column(String(300))
+    cpf: Mapped[str | None] = mapped_column(String(11))
+    principal: Mapped[bool | None] = mapped_column(Boolean)
+    situacao: Mapped[int | None] = mapped_column(Integer)
+    excluido: Mapped[bool] = mapped_column(Boolean, default=False)
