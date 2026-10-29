@@ -2,7 +2,8 @@
 
 - Amostra: TOP (SIGPMF_GESTAOESCOLAR_AMOSTRA, máx. 50) de cada fonte; grava na bronze. Sem amostra concluída com
   sucesso, a carga completa é recusada.
-- Completa: só dentro da janela noturna (AGENDA_JANELA, fuso AGENDA_FUSO). Keyset pela PK de cada fonte com
+- Completa: só dentro da janela noturna (AGENDA_JANELA, fuso AGENDA_FUSO), salvo SIGPMF_EDUCACAO_JANELA_NOTURNA=false
+  (padrão true); com a trava desligada, a execução registra no log que a janela foi ignorada. Keyset pela PK de cada fonte com
   checkpoint (controle.checkpoints_carga) e teto de lotes por execução (SIGPMF_GESTAOESCOLAR_MAX_LOTES, padrão 1):
   atingido o teto, a execução termina como `parcial` e a próxima continua do checkpoint, sem lacuna nem duplicata.
 - Hash por linha e por tabela (bronze.ingere): documento, certidão e endereço têm hash próprio, porque mudar um
@@ -28,6 +29,7 @@ TIPO_AMOSTRA = "amostra_gestaoescolar"
 TIPO_COMPLETA = "carga_gestaoescolar"
 SISTEMA = "GESTAOESCOLAR"
 SEM_AMOSTRA = "Rode a amostra do conector de educação com sucesso antes da carga completa."
+EM_ANDAMENTO = "Já existe uma carga completa do conector de educação em andamento."
 FORA_JANELA = "Carga completa do conector de educação só roda na janela noturna ({janela})."
 
 
@@ -70,6 +72,27 @@ def dentro_da_janela(agora: datetime) -> tuple[bool, str]:
     return agenda.na_janela(local.hour * 60 + local.minute, ini, fim), s.agenda_janela
 
 
+def janela_exigida() -> bool:
+    """SIGPMF_EDUCACAO_JANELA_NOTURNA (padrão true). Só afeta a carga completa da educação; o SEI não usa isto."""
+    valor = get_settings().ge_janela_noturna
+    return not (isinstance(valor, str) and valor.strip().lower() == "false")
+
+
+def checa_janela(agora: datetime) -> bool:
+    """Recusa fora da janela quando a trava está ligada. Devolve True se a checagem foi ignorada (trava desligada)."""
+    if not janela_exigida():
+        return True
+    ok, jan = dentro_da_janela(agora)
+    if not ok:
+        raise CargaRecusada(FORA_JANELA.format(janela=jan))
+    return False
+
+
+def completa_em_andamento(db: Session) -> bool:
+    return db.scalar(select(Execucao.id).where(Execucao.tipo == TIPO_COMPLETA, Execucao.status == "em_andamento")
+                     .limit(1)) is not None
+
+
 def amostra(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None) -> Execucao:
     ex = _nova_execucao(db, TIPO_AMOSTRA, usuario, "amostra")
     try:
@@ -99,11 +122,16 @@ def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, ago
     agora = agora or datetime.now(UTC)
     if not amostra_ok(db):
         raise CargaRecusada(SEM_AMOSTRA)
-    ok, jan = dentro_da_janela(agora)
-    if not ok:
-        raise CargaRecusada(FORA_JANELA.format(janela=jan))
+    if completa_em_andamento(db):
+        raise CargaRecusada(EM_ANDAMENTO)
+    janela_ignorada = checa_janela(agora)
     teto, lote = max(1, int(cfg.max_lotes)), int(cfg.lote)
     ex = _nova_execucao(db, TIPO_COMPLETA, usuario, "completa")
+    if janela_ignorada:
+        db.add(Log(execucao_id=ex.id, nivel="WARNING",
+                   mensagem=("Janela noturna ignorada: SIGPMF_EDUCACAO_JANELA_NOTURNA=false"
+                             f" (fora da janela: {'sim' if not dentro_da_janela(agora)[0] else 'não'}).")))
+        db.commit()
     lotes = 0
     try:
         for f in FONTES:

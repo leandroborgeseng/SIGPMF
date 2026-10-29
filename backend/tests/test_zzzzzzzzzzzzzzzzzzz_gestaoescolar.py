@@ -521,3 +521,195 @@ def test_amostra_pode_rodar_de_dia(limpo):
     assert all(s.startswith("SELECT TOP (50) ") and "WITH (NOLOCK)" in s for s in lei.sqls)
     with pytest.raises(cge.CargaRecusada, match="janela"):
         cge.completa(limpo, lei, cfg(), agora=DIA)
+
+
+# ---------------------------------------------------------------- SIGPMF_EDUCACAO_JANELA_NOTURNA
+@pytest.fixture
+def janela_env(monkeypatch):
+    """Liga/desliga a trava pela env (None = env ausente) e limpa o cache de settings antes e depois."""
+    from app.core.config import get_settings
+
+    def _set(valor):
+        if valor is None:
+            monkeypatch.delenv("SIGPMF_EDUCACAO_JANELA_NOTURNA", raising=False)
+        else:
+            monkeypatch.setenv("SIGPMF_EDUCACAO_JANELA_NOTURNA", valor)
+        get_settings.cache_clear()
+    yield _set
+    get_settings.cache_clear()
+
+
+def test_janela_env_ausente_e_ligada_por_padrao(janela_env, limpo):
+    from app.core.config import get_settings
+    from app.services import carga_gestaoescolar as cge
+    janela_env(None)
+    assert get_settings().ge_janela_noturna is None and cge.janela_exigida() is True
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    with pytest.raises(cge.CargaRecusada) as e:
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+    assert str(e.value) == cge.FORA_JANELA.format(janela=get_settings().agenda_janela)
+
+
+@pytest.mark.parametrize("valor,exigida", [("false", False), ("FALSE", False), (" False ", False), ("true", True),
+                                           ("", True), ("0", True), ("no", True), ("off", True), ("falso", True),
+                                           ("xyz", True)])
+def test_janela_so_false_explicito_desliga(janela_env, valor, exigida):
+    from app.services import carga_gestaoescolar as cge
+    janela_env(valor)
+    assert cge.janela_exigida() is exigida
+
+
+def test_janela_env_invalida_recusa_fora_da_janela(janela_env, limpo):
+    from app.services import carga_gestaoescolar as cge
+    janela_env("desligado")
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    with pytest.raises(cge.CargaRecusada, match="janela"):
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+
+
+def test_completa_concorrente_recusada(janela_env, limpo):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    rodando = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento")
+    limpo.add(rodando)
+    limpo.commit()
+    try:
+        with pytest.raises(cge.CargaRecusada, match="em andamento"):
+            cge.completa(limpo, lei, cfg(), agora=DIA)
+    finally:
+        rodando.status = "falha"
+        limpo.commit()
+
+
+def test_carga_so_le_fontes_do_catalogo(janela_env, limpo):
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    lei.sqls.clear()
+    cge.completa(limpo, lei, cfg(lote=1000, max_lotes=50), agora=DIA)
+    permitidas = ({f.tabela for f in cq.FONTES} | {j[1] for f in cq.FONTES for j in f.juncoes}
+                  | {"ACA_Aluno", "ACA_AlunoResponsavel", "PES_Pessoa"})  # escopo da escola
+    for sql in lei.sqls:
+        tabs = set(re.findall(r"\]\.\[dbo\]\.\[([A-Za-z0-9_]+)\]", sql))
+        assert tabs and tabs <= permitidas, tabs
+    assert len(lei.sqls) >= len(cq.FONTES)
+
+
+def test_janela_env_ligada_fora_da_janela_recusa_igual_a_hoje(janela_env, limpo):
+    from app.core.config import get_settings
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("true")
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    antes = limpo.scalar(select(func.count()).select_from(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA))
+    with pytest.raises(cge.CargaRecusada) as e:
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+    assert str(e.value) == cge.FORA_JANELA.format(janela=get_settings().agenda_janela)
+    depois = limpo.scalar(select(func.count()).select_from(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA))
+    assert antes == depois  # nada iniciado
+
+
+def test_janela_env_desligada_fora_da_janela_inicia_e_registra_no_log(janela_env, limpo):
+    from app.models.controle import Log
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    ex = cge.completa(limpo, lei, cfg(lote=2, max_lotes=1), agora=DIA)
+    assert ex.status == "parcial" and ex.lotes == 1  # lote e teto inalterados
+    msgs = list(limpo.scalars(select(Log.mensagem).where(Log.execucao_id == ex.id)))
+    assert any("Janela noturna ignorada" in m for m in msgs)
+    # trava ligada: nenhuma linha de "janela ignorada" no log
+    janela_env("true")
+    ex2 = cge.completa(limpo, lei, cfg(lote=2, max_lotes=1), agora=NOITE)
+    assert not [m for m in limpo.scalars(select(Log.mensagem).where(Log.execucao_id == ex2.id)) if "ignorada" in m]
+
+
+def test_janela_env_desligada_ainda_exige_amostra(janela_env, limpo):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    limpo.add(Execucao(tipo=cge.TIPO_AMOSTRA, sistema="GESTAOESCOLAR", status="falha"))
+    limpo.commit()
+    with pytest.raises(cge.CargaRecusada, match="amostra"):
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+
+
+class _LeitorRota(LeitorMock):
+    def __init__(self, _cfg):
+        super().__init__(origem())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _rota_prep(monkeypatch, janela_env, valor):
+    from app.services import carga_gestaoescolar as cge
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_HOST", "zz-host-teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_USER", "zz_leitor_teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_PASSWORD", "zz-senha-teste")
+    monkeypatch.setattr(cq, "LeitorGE", _LeitorRota)  # nunca abre conexão real
+    monkeypatch.setattr(cge, "dentro_da_janela", lambda agora: (False, "00:00-06:00"))  # sempre "fora da janela"
+    janela_env(valor)
+
+
+def _ultima_auditoria(db, acao):
+    from app.models.controle import Auditoria
+    db.expire_all()
+    return db.scalar(select(Auditoria).where(Auditoria.acao == acao).order_by(Auditoria.id.desc()).limit(1))
+
+
+def test_rota_env_ligada_fora_da_janela_409_e_auditada(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "true")
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and "janela noturna" in r.json()["detail"]
+    a = _ultima_auditoria(limpo, "gestaoescolar_negado")
+    assert a and "janela" in a.detalhe["motivo"]
+
+
+def test_rota_env_desligada_fora_da_janela_inicia_admin_amostra_e_auditoria(monkeypatch, janela_env, limpo, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    # ADMIN continua obrigatório
+    for perfil in ("operador", "leitura"):
+        assert client.post("/api/educacao/conector/completa", headers=tokens[perfil]).status_code == 403
+    # amostra continua obrigatória (e a recusa é auditada)
+    limpo.add(Execucao(tipo=cge.TIPO_AMOSTRA, sistema="GESTAOESCOLAR", status="falha"))
+    limpo.commit()
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and "amostra" in r.json()["detail"]
+    assert "amostra" in _ultima_auditoria(limpo, "gestaoescolar_negado").detalhe["motivo"]
+    # com amostra ok, fora da janela, a carga começa e a auditoria registra que a janela foi ignorada
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] in ("parcial", "sucesso") and r.json()["lotes"] >= 1
+    a = _ultima_auditoria(limpo, "gestaoescolar_completa")
+    assert a.alvo == f"execucao:{r.json()['execucao_id']}" and a.detalhe["janela_ignorada"] is True
+    assert a.detalhe["fora_da_janela"] is True
+
+
+def test_rota_completa_concorrente_409(monkeypatch, janela_env, limpo, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    rodando = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento")
+    limpo.add(rodando)
+    limpo.commit()
+    try:
+        r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+        assert r.status_code == 409 and "em andamento" in r.json()["detail"]
+        assert "em andamento" in _ultima_auditoria(limpo, "gestaoescolar_negado").detalhe["motivo"]
+    finally:
+        rodando.status = "falha"
+        limpo.commit()

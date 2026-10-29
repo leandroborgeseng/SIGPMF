@@ -1066,18 +1066,23 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     if modo not in ("amostra", "completa"):
         _404()
     cfg = ConfigGE.do_ambiente(get_settings())
+    janela_ignorada = fora_da_janela = False
     try:
         cfg.valida()
         if modo == "completa":
             if not cge.amostra_ok(db):
                 raise cge.CargaRecusada(cge.SEM_AMOSTRA)
-            ok, jan = cge.dentro_da_janela(datetime.now(UTC))
-            if not ok:
-                raise cge.CargaRecusada(cge.FORA_JANELA.format(janela=jan))
+            if cge.completa_em_andamento(db):
+                raise cge.CargaRecusada(cge.EM_ANDAMENTO)
+            janela_ignorada = cge.checa_janela(datetime.now(UTC))
+            fora_da_janela = not cge.dentro_da_janela(datetime.now(UTC))[0]
     except (PermissionError, cge.CargaRecusada) as exc:
         audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
         raise HTTPException(409, str(exc)) from None
     with LeitorGE(cfg) as leitor:
         ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
-    audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos}, _ip(req))
+    detalhe = {"status": ex.status, "lidos": ex.lidos}
+    if modo == "completa":
+        detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela
+    audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", detalhe, _ip(req))
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}
