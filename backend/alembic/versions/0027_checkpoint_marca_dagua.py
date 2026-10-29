@@ -3,13 +3,13 @@
 Aditiva: só cria a coluna `marca_dagua` (timestamp sem fuso, como a origem grava `*_dataAlteracao`), nula.
 Nenhuma linha é alterada; sem marca, a incremental usa a maior data já gravada na bronze. Downgrade remove a coluna.
 
-Revision ID: 0026
-Revises: 0025 (0025_educacao_trava_completa)
+Revision ID: 0027
+Revises: 0026 (0026_acoes_unicas)
 """
 from alembic import op
 
-revision = '0026'
-down_revision = '0025'
+revision = '0027'
+down_revision = '0026'
 branch_labels = None
 depends_on = None
 
