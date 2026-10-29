@@ -3,16 +3,16 @@
 Aditiva: só ADD COLUMN com default (as linhas atuais de `silver.vinculos` continuam as mesmas, sem UPDATE em massa
 explícito nem DELETE) e CREATE TABLE. Idempotente (reaplicável a partir de um stamp anterior).
 
-down_revision = '0027' (ponta da main em 4ce8262): o #48 entra antes do #47, com uma ponta só.
+down_revision = '0029' (ponta da main em b30c760, depois do #47), com uma ponta só.
 
 Revision ID: 0030
-Revises: 0027
+Revises: 0029
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = '0030'
-down_revision = '0027'
+down_revision = '0029'
 branch_labels = None
 depends_on = None
 
