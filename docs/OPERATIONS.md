@@ -96,3 +96,69 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   `RETENCAO_BRONZE_VERSOES_DIAS`, padrão 7) e logs técnicos com mais de `RETENCAO_LOGS_DIAS` (90). Nunca apaga a versão
   atual de um registro, linha citada pela prata, quarentena nem a auditoria. Cada execução fica em `controle.execucoes`
   (tipo `retencao`).
+
+## Reset da SIL (recomeçar do zero) — `backend/scripts/reset_sil.py`
+
+Pedido do Leandro em 29/10/2026. Só o DevOps roda, e só depois do OK do Leandro no privado. O script **não chama a
+API SIL** e não toca em Saúde, educação, SEI nem nas outras fontes. A `controle.auditoria` nunca é apagada: o reset
+grava nela uma linha `acao='reset_sil'` (operador, modo, contagens por tabela antes/depois e o schema de backup).
+
+**Escopo (exatamente estas tabelas e filtros):**
+
+| Tabela | Linhas | Ação |
+|---|---|---|
+| `bronze.registros` | `upper(sistema_origem)='SIL'` (inclui quarentena e as linhas `sandbox`) | apaga |
+| `silver.empresas_sil` | todas (prata exclusiva da SIL) | apaga |
+| `silver.vinculos`, `silver.correlacoes_pendentes`, `silver.inconsistencias` | `upper(sistema)='SIL'` (a SIL é "fato"; esperado 0) | apaga |
+| `gold.cidadao_dados` | `upper(sistema)='SIL'` de cidadãos que não são "só SIL" | apaga |
+| `controle.logs` | das execuções da SIL | apaga |
+| `controle.checkpoints_carga` | `lower(sistema)='sil'`, produção e o antigo `sandbox` | apaga (a próxima carga recria com `posicao=0`, ou seja, `Sequencia=1`) |
+| `controle.camadas_estado` | as que apontam para uma execução da SIL | atualiza `execucao_id=NULL` |
+| `controle.agendamentos` | `conector='sil'` | volta ao estado inicial, **`ativo=false`** (horário mantido) |
+| `controle.execucoes` | `lower(sistema)='sil'` | apaga |
+| `gold.cidadao_dados` + `gold.cidadao_sistemas` | **só com `--remover-ouro-so-sil`**: cidadão cuja única fonte é a SIL (`sistemas=["SIL"]` e nenhum dado do ouro de outra fonte) | apaga |
+
+Fica de fora: API SIL, outras fontes, `controle.auditoria`, `silver.cidadaos`. O resto do ouro é recalculado pela
+próxima reconstrução da prata/ouro.
+
+**Proteções:** uma transação só; recusa (saída 2) se a agenda da SIL estiver `ativo=true`, se houver execução SIL
+`em_andamento`, se faltar `--usuario` ou se o schema de backup já existir com tabelas. Confere que nada da SIL sobrou
+e que as contagens das outras fontes (e da auditoria) não mudaram; qualquer divergência dá ROLLBACK (saída 3). A
+saída mostra só contagens.
+
+**Backup (dentro da mesma transação, antes de apagar):** as linhas que vão sair/mudar são copiadas para o schema
+`backup_sil_20261029` (`--schema-backup` troca o nome), uma tabela por alvo (`bronze__registros`,
+`controle__execucoes`, ...). Cada cópia tem de bater com a contagem da origem, senão ROLLBACK. O schema fica com
+`REVOKE ALL` de `PUBLIC` e de todos os outros papéis; só o dono (o `POSTGRES_USER`, único papel que o app usa) lê.
+A simulação desfaz também o schema de backup. Opcionalmente, antes de tudo, um dump extra fora do banco:
+
+```bash
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc -t bronze.registros -t silver.empresas_sil \
+  -t silver.vinculos -t silver.correlacoes_pendentes -t silver.inconsistencias -t gold.cidadao_dados \
+  -t gold.cidadao_sistemas -t controle.logs -t controle.checkpoints_carga -t controle.camadas_estado \
+  -t controle.agendamentos -t controle.execucoes "$POSTGRES_DB"' > backups/pre-reset-sil-$(date +%F).dump
+```
+
+**Rodar:**
+
+```bash
+docker compose exec backend python -m scripts.reset_sil --usuario "Nome do operador"              # simulação (ROLLBACK)
+docker compose exec backend python -m scripts.reset_sil --usuario "Nome do operador" --confirmar  # aplica
+# com a decisão do Leandro de tirar do ouro quem só existe pela SIL: acrescente --remover-ouro-so-sil
+```
+
+**Rollback** (devolve as linhas e o checkpoint/agenda anteriores; usa a mesma flag do reset):
+
+```bash
+docker compose exec backend python -m scripts.reset_sil --imprimir-rollback [--remover-ouro-so-sil] > rollback-sil.sql
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v operador="Nome"' < rollback-sil.sql
+```
+
+O SQL é `INSERT INTO <tabela> SELECT * FROM backup_sil_20261029.<cópia>` (execuções primeiro, por causa das FKs),
+depois `UPDATE` da agenda e da `camadas_estado` com os valores do backup, e uma linha `reset_sil_rollback` na
+auditoria, tudo com `ON_ERROR_STOP` numa transação. Só faz sentido antes de uma nova carga da SIL (senão há conflito
+de chave e o psql para sem mudar nada).
+
+**Limpeza do backup:** o script nunca apaga o schema de backup. Remover só manualmente, **com OK explícito do
+Leandro e no mínimo 7 dias depois do reset**: conferir a primeira carga nova, registrar na auditoria e então
+`DROP SCHEMA backup_sil_20261029 CASCADE;`.
