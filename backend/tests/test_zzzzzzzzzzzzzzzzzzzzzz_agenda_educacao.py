@@ -176,3 +176,90 @@ def test_ciclo_forcado_fora_da_janela_nao_carrega(db, monkeypatch):
     assert db.scalar(select(Execucao.id).order_by(Execucao.id.desc()).limit(1)) == antes  # nenhuma carga
     _limpa(db)
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------- QA #37 R1: mensagem sem segredo e com teto
+SEGREDOS = ("ZZTESTE_USR", "ZZTESTE_SEGREDO")
+
+
+def _forca_educacao(db, monkeypatch):
+    monkeypatch.setenv("AGENDA_JANELA", "00:00-24:00")
+    get_settings.cache_clear()
+    _limpa(db)
+    _exec(db, cge.TIPO_AMOSTRA, "sucesso", lidos=5)
+    db.execute(update(Agendamento).where(Agendamento.conector != "educacao").values(ativo=False, forcar=False))
+    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=True, forcar=True,
+                                                                                      ultima_mensagem=None))
+    db.commit()
+
+
+def _sem_segredo(texto):
+    for s in SEGREDOS:
+        assert s not in (texto or "")
+
+
+def test_agenda_permissionerror_nao_vaza_usuario_nem_senha(client, tokens, db, monkeypatch):
+    _forca_educacao(db, monkeypatch)
+
+    def explode(*a, **k):
+        raise PermissionError("Login failed for user ZZTESTE_USR password=ZZTESTE_SEGREDO")
+    monkeypatch.setattr(cge, "completa", explode)
+    feitos = ag.ciclo(db, agora=datetime.now(UTC), leitores={"educacao": object()})
+    assert ("educacao", "bloqueada") in feitos
+    db.expire_all()
+    msg = db.scalar(select(Agendamento.ultima_mensagem).where(Agendamento.conector == "educacao"))
+    assert msg.startswith(cge.SEM_CREDENCIAL)
+    _sem_segredo(msg)
+    _sem_segredo(client.get("/api/agenda", headers=tokens["admin"]).text)
+    _limpa(db)
+    get_settings.cache_clear()
+
+
+def test_agenda_erro_generico_so_nome_da_classe(db, monkeypatch):
+    _forca_educacao(db, monkeypatch)
+
+    def explode(*a, **k):
+        raise RuntimeError("Login failed for user ZZTESTE_USR password=ZZTESTE_SEGREDO")
+    monkeypatch.setattr(cge, "completa", explode)
+    ag.ciclo(db, agora=datetime.now(UTC), leitores={"educacao": object()})
+    db.expire_all()
+    msg = db.scalar(select(Agendamento.ultima_mensagem).where(Agendamento.conector == "educacao"))
+    assert "RuntimeError" in msg
+    _sem_segredo(msg)
+    _limpa(db)
+    get_settings.cache_clear()
+
+
+def test_agenda_mensagem_cortada_em_300(db, monkeypatch):
+    _forca_educacao(db, monkeypatch)
+    longa = _exec(db, cge.TIPO_COMPLETA, "falha")
+    longa.mensagem = "ZZTESTE " + "x" * 2000
+    db.commit()
+    monkeypatch.setattr(cge, "completa", lambda *a, **k: longa)
+    ag.ciclo(db, agora=datetime.now(UTC), leitores={"educacao": object()})
+    db.expire_all()
+    msg = db.scalar(select(Agendamento.ultima_mensagem).where(Agendamento.conector == "educacao"))
+    assert len(msg) <= ag.MAX_MENSAGEM and msg.endswith("…")
+    _limpa(db)
+    get_settings.cache_clear()
+
+
+def test_mensagem_segura_teto_e_textos_fixos():
+    assert len(cge.corta("a" * 1000)) == cge.MAX_MENSAGEM
+    assert cge.mensagem_segura(PermissionError("user ZZTESTE_USR password=ZZTESTE_SEGREDO")) == cge.SEM_CREDENCIAL
+    assert cge.mensagem_segura(cge.CargaRecusada("ZZTESTE_SEGREDO", "sem_amostra")) == cge.SEM_AMOSTRA
+    assert "ZZTESTE_SEGREDO" not in cge.mensagem_segura(cge.CargaRecusada("ZZTESTE_SEGREDO"))
+
+
+def test_rota_manual_permissionerror_nao_vaza(client, tokens, db, monkeypatch):
+    from app.connectors.gestaoescolar import consultas
+
+    def explode(self):
+        raise PermissionError("Login failed for user ZZTESTE_USR password=ZZTESTE_SEGREDO")
+    monkeypatch.setattr(consultas.ConfigGE, "valida", explode)
+    r = client.post("/api/educacao/conector/amostra", headers=tokens["admin"])
+    assert r.status_code == 409 and r.json()["detail"] == cge.SEM_CREDENCIAL
+    _sem_segredo(r.text)
+    aud = db.scalar(select(Auditoria).where(Auditoria.acao == "gestaoescolar_negado").order_by(Auditoria.id.desc()))
+    assert aud.detalhe == {"motivo": cge.SEM_CREDENCIAL}
+    _sem_segredo(repr(aud.detalhe))

@@ -197,7 +197,7 @@ export function LinhaEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
       ? (i.motivo_executar_agora_codigo === 'fora_janela' ? foraDaJanela(d.janela) : (i.motivo_executar_agora ?? 'Indisponível agora.'))
       : null
   const proxima = i.ativo && d.habilitada && (i.forcar || i.proxima_em)
-    ? `Próxima execução: ${i.forcar ? 'em até 1 minuto' : curta(i.proxima_em as string)}` : 'Sem agendamento'
+    ? (i.forcar ? 'Em até 1 minuto' : curta(i.proxima_em as string)) : 'Sem agendamento'
   return (
     <tr>
       <th scope="row" data-rotulo="Conector">

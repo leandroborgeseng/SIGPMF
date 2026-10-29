@@ -49,7 +49,8 @@ describe('educação nas fontes prioritárias', () => {
   it('ligada: próxima execução, liga/desliga por teclado e executa agora (POST)', async () => {
     const f = mock((_u, i) => [i?.method === 'POST' ? 202 : 200, resp({ ativo: true, proxima_em: '2026-10-29T07:00:00Z' })])
     render(<AgendaCargas ehAdmin />)
-    expect(await screen.findByText(/Próxima execução: 29\/10 04:00/)).toBeVisible()
+    expect(await screen.findByText('29/10 04:00')).toBeVisible()
+    expect(screen.queryByText(/Próxima execução/)).toBeNull()
     expect(screen.getByRole('switch')).toBeChecked()
     expect(screen.queryByText('Agenda desligada')).toBeNull()
     const sw = screen.getByRole('switch')

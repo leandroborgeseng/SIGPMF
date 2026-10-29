@@ -1079,13 +1079,14 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
         cfg.valida()
         if modo == "completa":
             if not cge.amostra_ok(db):
-                raise cge.CargaRecusada(cge.SEM_AMOSTRA)
+                raise cge.CargaRecusada(cge.SEM_AMOSTRA, "sem_amostra")
             ok, jan = cge.dentro_da_janela(datetime.now(UTC))
             if not ok:
-                raise cge.CargaRecusada(cge.FORA_JANELA.format(janela=jan))
+                raise cge.CargaRecusada(cge.FORA_JANELA.format(janela=jan), "fora_janela")
     except (PermissionError, cge.CargaRecusada) as exc:
-        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
-        raise HTTPException(409, str(exc)) from None
+        motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
     with LeitorGE(cfg) as leitor:
         ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
     audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos}, _ip(req))

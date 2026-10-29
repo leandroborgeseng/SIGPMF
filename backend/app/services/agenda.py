@@ -49,6 +49,9 @@ STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem"
                 "cancelada": "Cancelada", "interrompida": "Interrompida", "demorada": "Ainda em andamento"}
 
 
+MAX_MENSAGEM = 300  # ultima_mensagem na tela (QA #37 R1)
+
+
 class AgendaInvalida(ValueError):
     """Valor recusado (mensagem segura para a tela)."""
 
@@ -273,11 +276,10 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
         else:
             ex = cge.completa(db, leitor, cfg, USUARIO, agora=agora)
     except (PermissionError, cge.CargaRecusada) as exc:
-        return _encerra(db, ag, "bloqueada", str(exc), agora, resolvido=False)
+        return _encerra(db, ag, "bloqueada", cge.mensagem_segura(exc), agora, resolvido=False)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
-        return _encerra(db, ag, "falha", f"Não foi possível iniciar a carga de educação ({type(exc).__name__}).",
-                        agora, resolvido=False)
+        return _encerra(db, ag, "falha", cge.mensagem_segura(exc), agora, resolvido=False)
     ag.ultima_execucao_id = ex.id
     db.commit()
     if ex.status == "sucesso":
@@ -291,6 +293,8 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
 
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
     s = get_settings()
+    if len(mensagem) > MAX_MENSAGEM:
+        mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
     ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
     ini, fim = janela(s.agenda_janela)
     hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
@@ -301,6 +305,8 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
         if ag.tentativas >= s.agenda_tentativas:
             ag.ultima_data, ag.tentativas, ag.proxima_tentativa_em = hoje, 0, None
             mensagem = f"{mensagem} Tentativas esgotadas: fica para o próximo dia."
+            if len(mensagem) > MAX_MENSAGEM:
+                mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
             ag.ultima_mensagem = mensagem
         else:
             ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
