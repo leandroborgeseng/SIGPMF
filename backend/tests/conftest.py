@@ -31,7 +31,7 @@ def alembic_cfg() -> Config:
 def zera_banco() -> None:
     eng = create_engine(TEST_URL)
     with eng.begin() as c:
-        for s in ("bronze", "silver", "gold", "controle"):
+        for s in ("bronze", "silver", "gold", "controle", "ref"):
             c.execute(text(f"DROP SCHEMA IF EXISTS {s} CASCADE"))
     eng.dispose()
 

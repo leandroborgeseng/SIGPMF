@@ -26,7 +26,7 @@
 | AGENDA_INTERVALO_S | de quanto em quanto tempo a agenda confere se há carga a iniciar (padrão 60 s) |
 | AGENDA_PULAR_SEM_MUDANCA | `true` (padrão): antes de ler, compara `COUNT(*)` e `MAX(campo incremental)` de cada tabela com a última carga bem-sucedida; igual = "Sem mudança na origem", nada é lido nem reconstruído |
 | AGENDA_TENTATIVAS / AGENDA_REESPERA_MIN | falha tenta de novo depois de `REESPERA_MIN` (30) até `TENTATIVAS` (3) vezes no dia |
-| AGENDA_COMPLETA_DIAS | padrão **0**: a agenda faz **só incremental** (inclusive a educação) e nunca uma completa; a completa só roda manualmente por ADMIN (auditada). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
+| AGENDA_COMPLETA_DIAS | padrão **0**: a **primeira** execução agendada de cada conector (sem `ultima_completa_em`) é **completa**; depois a agenda faz **só incremental** e nunca outra completa (outras completas só manualmente por ADMIN, auditadas). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
 | CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |

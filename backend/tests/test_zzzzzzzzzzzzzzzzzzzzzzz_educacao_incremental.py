@@ -88,7 +88,7 @@ def _cks(db):
 
 # ---------------------------------------------------------------- IN6: AGENDA_COMPLETA_DIAS
 
-def test_in6_completa_dias_padrao_0_nunca_agenda_completa(monkeypatch):
+def test_in6_completa_dias_padrao_0_so_a_primeira_e_completa(monkeypatch):
     from app.core.config import Settings, get_settings
     from app.models.controle import Agendamento
     from app.services import agenda as ag
@@ -98,7 +98,7 @@ def test_in6_completa_dias_padrao_0_nunca_agenda_completa(monkeypatch):
         assert get_settings().agenda_completa_dias == 0
         a = Agendamento(conector="saude", horario="01:00", ativo=True, ultima_completa_em=None)
         agora = datetime(2026, 10, 29, 4, tzinfo=UTC)
-        assert ag.modo_da_vez(a, agora) == "incremental"           # nem na primeira vez
+        assert ag.modo_da_vez(a, agora) == "completa"             # R3: a primeira vez é completa mesmo com 0
         a.ultima_completa_em = agora - timedelta(days=400)
         assert ag.modo_da_vez(a, agora) == "incremental"
         monkeypatch.setenv("AGENDA_COMPLETA_DIAS", "0")             # 0 explícito sobe

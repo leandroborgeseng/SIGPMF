@@ -124,13 +124,14 @@ def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
 
 
 def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
-    """IN6: AGENDA_COMPLETA_DIAS=0 (padrão) -> sempre incremental (sem marca d'água a tabela é lida inteira, só na
-    primeira vez). N > 0 -> completa na primeira vez e a cada N dias; incremental no resto."""
-    dias = get_settings().agenda_completa_dias
-    if dias <= 0:
-        return "incremental"
+    """IN6/R3: a primeira execução (sem `ultima_completa_em`) é sempre completa, mesmo com AGENDA_COMPLETA_DIAS=0.
+    Depois: 0 (padrão) -> sempre incremental; N > 0 -> completa a cada N dias, incremental no resto.
+    A educação (gestaoescolar) não passa por aqui: continua sempre incremental."""
     ultima = _utc(ag.ultima_completa_em)
-    if ultima is None or agora - ultima >= timedelta(days=dias):
+    if ultima is None:
+        return "completa"
+    dias = get_settings().agenda_completa_dias
+    if dias > 0 and agora - ultima >= timedelta(days=dias):
         return "completa"
     return "incremental"
 
