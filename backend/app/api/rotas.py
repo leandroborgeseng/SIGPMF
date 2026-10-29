@@ -24,6 +24,7 @@ from app.core.audit import audita
 from app.core.config import VERSION, get_settings
 from app.core.db import get_db
 from app.core.security import ADMIN, CARGA, confere_senha, cria_token, hash_senha, usuario_atual
+from app.explorador.servico import QUAR_OCULTA
 from app.gold import visao
 from app.gold.visao import CAMPOS_DATA
 from app.identity.cpf import mascara, normaliza
@@ -90,7 +91,9 @@ def dashboard(db: Session = Depends(get_db)):
     ult = db.scalar(select(Execucao).order_by(Execucao.id.desc()).limit(1))
     return {
         "sistemas": n(Sistema), "tabelas": n(TabelaCatalogo),
-        "bronze": {"registros": n(RegistroBronze)},
+        # #35: linha SEI reclassificada para restrito não aparece nem na contagem (mesmo filtro dos indicadores)
+        "bronze": {"registros": db.scalar(select(func.count()).select_from(RegistroBronze)
+                                          .where(RegistroBronze.quarentena.is_distinct_from(QUAR_OCULTA))) or 0},
         "silver": {"cidadaos": n(Cidadao), "vinculos": n(Vinculo), "pendentes": n(CorrelacaoPendente),
                    "inconsistencias": n(Inconsistencia)},
         "gold": {"cidadaos": n(CidadaoSistemas), "dados": n(DadoGold)},
