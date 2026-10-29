@@ -92,7 +92,8 @@ def rodar(ex_id: int, usuario: str, nome_endpoint: str, trava, cliente=None) -> 
         ex.etapa = "concluida" if ex.status in STATUS_SUCESSO else "falha"
         db.commit()
         audita(db, usuario, "amostra_sil_executada", f"execucao:{ex_id}",
-               {"status": ex.status, "lidos": ex.lidos, "novos": ex.novos, "lotes": ex.lotes})
+               {"status": ex.status, "lidos": ex.lidos, "novos": ex.novos, "lotes": ex.lotes,
+                **ConfigSil.do_ambiente().origem_publica()})
     except Exception as exc:  # noqa: BLE001 - rede de segurança
         db.rollback()
         ex = db.get(Execucao, ex_id)

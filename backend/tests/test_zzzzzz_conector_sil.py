@@ -11,6 +11,7 @@ import pytest
 from app.connectors.sil import carga, prata
 from app.connectors.sil.cliente import (
     ClienteSil,
+    ErroSil,
     FalhaCredencial,
     FalhaSil,
     OperacaoProibida,
@@ -192,14 +193,15 @@ def test_credencial_recusada_na_autenticacao(cliente):
         c.get("/franca/imoveis", {"InscrFisico": "ZZT1"})
 
 
-# ---------- TL 28/10: sandbox primeiro; produção só em erro de rede ----------
+# ---------- TL 29/10: oficial por padrão; sandbox só com usar_sandbox; nunca fallback ----------
 def test_sondagem_sandbox_aceita_nao_toca_producao(mock):
     estado_prod, url_prod = mock
     est_sb = EstadoMock()
     sb = servidor(est_sb)
     try:
         rel = Relogio()
-        c = ClienteSil(cfg(url_prod, base_url_sandbox=f"http://127.0.0.1:{sb.server_address[1]}"), relogio=rel,
+        c = ClienteSil(cfg(url_prod, base_url_sandbox=f"http://127.0.0.1:{sb.server_address[1]}", usar_sandbox=True),
+                       relogio=rel,
                        dormir=rel.dormir)
         c.get("/franca/imoveis", {"InscrFisico": "ZZT1"})
         assert c.ambiente == "sandbox" and estado_prod.req == [] and est_sb.conta("GET", "/franca/imoveis") == 1
@@ -208,7 +210,7 @@ def test_sondagem_sandbox_aceita_nao_toca_producao(mock):
         sb.shutdown()
 
 
-def test_sandbox_fora_do_ar_cai_para_producao(mock):
+def test_sandbox_configurado_sem_flag_usa_so_a_oficial(mock):
     estado, url = mock
     rel = Relogio()
     c = ClienteSil(cfg(url, base_url_sandbox="http://127.0.0.1:9", tentativas=0), relogio=rel, dormir=rel.dormir)
@@ -492,7 +494,7 @@ def _sondagem_mock(valor):
         return httpx.Response(200, json={"data": {}})
     rel = Relogio()
     c = ClienteSil(ConfigSil(base_url="https://prod.zzteste.invalid/v1", client_id="zz-id", client_secret="zz-secret",
-                             scope="zz", base_url_sandbox="https://sandbox.zzteste.invalid/v1"),
+                             scope="zz", base_url_sandbox="https://sandbox.zzteste.invalid/v1", usar_sandbox=True),
                    transport=httpx.MockTransport(h), relogio=rel, dormir=rel.dormir)
     return c, rel, vistos
 
@@ -556,7 +558,7 @@ def _sondagem_rede(sandbox):
     rel = Relogio()
     c = ClienteSil(ConfigSil(base_url="https://prod.zzteste.invalid/v1", client_id="zz-id",
                              client_secret=SEGREDO_SINTETICO, scope="zz",
-                             base_url_sandbox="https://sandbox.zzteste.invalid/v1", tentativas=0),
+                             base_url_sandbox="https://sandbox.zzteste.invalid/v1", tentativas=0, usar_sandbox=True),
                    transport=httpx.MockTransport(h), relogio=rel, dormir=rel.dormir)
     return c, vistos
 
@@ -578,13 +580,14 @@ def test_sandbox_500_nao_tenta_producao():
 
 @pytest.mark.parametrize("erro", [httpx.ReadTimeout("zz https://sandbox.zzteste.invalid/v1?x=1"),
                                   httpx.ConnectError("zz https://sandbox.zzteste.invalid/v1")])
-def test_sandbox_rede_cai_para_producao_com_warning_limpo(erro, caplog):
+def test_sandbox_rede_nao_cai_para_producao_com_warning_limpo(erro, caplog):
     c, vistos = _sondagem_rede(erro)
     with caplog.at_level(logging.DEBUG, logger="sigpmf.conector.sil"):
-        assert c.sondar() == "producao"
-    assert vistos == ["sandbox.zzteste.invalid", "prod.zzteste.invalid"]
-    avisos = [r for r in caplog.records if r.levelno == logging.WARNING and "tentando o próximo" in r.getMessage()]
-    assert len(avisos) == 1 and "sandbox" in avisos[0].getMessage()
+        with pytest.raises(ErroSil):
+            c.sondar()
+    assert vistos == ["sandbox.zzteste.invalid"]                    # TL 29/10: nunca fallback automático
+    avisos = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(avisos) == 1 and "sandbox" in avisos[0].getMessage() and "tentando" not in avisos[0].getMessage()
     tudo = " ".join(r.getMessage() for r in caplog.records)
     for proibido in ("zzteste.invalid", "http", SEGREDO_SINTETICO, "zz-id", "ZZTOKEN"):
         assert proibido not in tudo

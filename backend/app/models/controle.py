@@ -90,10 +90,12 @@ class Execucao(Base):
 class CheckpointCarga(Base):
     """Posição já gravada na bronze por (sistema, tabela): a carga completa retoma daqui sem duplicar."""
     __tablename__ = "checkpoints_carga"
-    __table_args__ = (UniqueConstraint("sistema", "tabela", name="uq_checkpoint_sistema_tabela"), S)
+    __table_args__ = (UniqueConstraint("sistema", "tabela", "ambiente", name="uq_checkpoint_sistema_tabela_ambiente"), S)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sistema: Mapped[str] = mapped_column(String(50))
     tabela: Mapped[str] = mapped_column(String(200))
+    # 0021: producao|sandbox. Checkpoint da homologação nunca move o da oficial (SIL); demais sistemas: producao.
+    ambiente: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
     posicao: Mapped[int] = mapped_column(Integer, default=0)  # linhas já gravadas (progresso)
     ultima_chave: Mapped[list | None] = mapped_column(JSONType)  # keyset: último valor da chave gravado
     total_origem: Mapped[int | None] = mapped_column(Integer)
