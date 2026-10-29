@@ -154,6 +154,8 @@ def test_sha_fallbacks_e_invalido(monkeypatch):
     for v in rd.VARS_SHA:
         monkeypatch.delenv(v, raising=False)
     assert rd.sha_deploy() is None
+    monkeypatch.setenv("SOURCE_COMMIT", "")  # vazio = ausente
+    assert rd.sha_deploy() is None
     monkeypatch.setenv("SIGPMF_BUILD_SHA", "ABCDEF1")
     assert rd.sha_deploy() == "abcdef1"
     monkeypatch.setenv("GIT_SHA", SHA2)

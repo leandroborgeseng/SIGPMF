@@ -41,6 +41,8 @@ services:
       SIGPMF_SRC_SEI_USAR_HOMOLOGACAO: ${SIGPMF_SRC_SEI_USAR_HOMOLOGACAO:-}
       SIGPMF_SRC_SEI_CARGA_LIBERADA: ${SIGPMF_SRC_SEI_CARGA_LIBERADA:-}
       SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO: ${SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO:-}
+      # SHA do deploy (o Coolify só repassa se declarado): marcador de uso único da releitura no boot. Vazio = sem SHA.
+      SOURCE_COMMIT: ${SOURCE_COMMIT:-}
     volumes:
       # Volume vazio, só leitura, no mesmo disco dos volumes do Docker (onde fica o pgdata): o backend mede o
       # espaço com shutil.disk_usage sem enxergar nenhum arquivo do banco.

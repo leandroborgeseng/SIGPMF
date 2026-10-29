@@ -219,7 +219,7 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
    amostra da educação com `sucesso`.
 2. Defina `SIGPMF_RELEITURA_FONTE=PES_PessoaDocumento` (ou outra fonte do catálogo da educação) e faça o deploy no
    SHA aprovado. **Marcador = fonte + SHA do deploy.** O SHA vem de `SOURCE_COMMIT` (o Coolify injeta; o
-   `docker-compose.yml` já repassa), com fallback para `GIT_SHA` e depois `SIGPMF_BUILD_SHA` (só hex de 7 a 40
+   `docker-compose.yml` declara no serviço backend; vazio = ausente), com fallback para `GIT_SHA` e depois `SIGPMF_BUILD_SHA` (só hex de 7 a 40
    caracteres). Sem SHA válido, recusa com `sem_sha_deploy` (não lê nada) em vez de arriscar repetir.
 3. O boot não espera: a app sobe e o `/health` responde normalmente. Uma thread em segundo plano espera o `/health`
    da própria app dar 200 (até `SIGPMF_RELEITURA_SAUDE_MAX_S`, padrão 600 s; senão recusa `sem_saude`) e então:
