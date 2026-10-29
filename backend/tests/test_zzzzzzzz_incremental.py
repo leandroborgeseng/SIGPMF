@@ -162,9 +162,9 @@ def test_in3_modo_da_vez(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_in6_agenda_padrao_primeira_vez_ja_e_incremental(db, origem, monkeypatch):  # noqa: F811
-    """AGENDA_COMPLETA_DIAS=0 (padrão): nem a primeira execução agendada é completa. Sem marca d'água, as tabelas são
-    lidas inteiras uma vez."""
+def test_r3_agenda_padrao_0_primeira_completa_depois_incremental(db, origem, monkeypatch):  # noqa: F811
+    """R3: com AGENDA_COMPLETA_DIAS=0 (padrão) a primeira execução agendada (ultima_completa_em nulo) é completa;
+    a seguinte é incremental e nunca volta a ser completa."""
     from app.core.config import get_settings
     monkeypatch.delenv("AGENDA_COMPLETA_DIAS", raising=False)
     get_settings.cache_clear()
@@ -177,8 +177,9 @@ def test_in6_agenda_padrao_primeira_vez_ja_e_incremental(db, origem, monkeypatch
     s = db.scalar(select(Agendamento).where(Agendamento.conector == "saude"))
     db.refresh(s)
     ex1 = db.get(Execucao, s.ultima_execucao_id)
-    assert ex1.modo == "incremental" and s.ultima_completa_em is None, s.ultima_mensagem
+    assert ex1.modo == "completa" and s.ultima_completa_em is not None, s.ultima_mensagem
     assert (ex1.lidos or 0) > 0
+    assert ag.modo_da_vez(s, _local(2026, 11, 28, 5, 0)) == "incremental"
     _zera_agenda(db, ativo=False)
     get_settings.cache_clear()
 
