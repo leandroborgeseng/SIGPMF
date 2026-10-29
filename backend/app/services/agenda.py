@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from email.message import EmailMessage
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.connectors.sqlserver.politicas import politica
@@ -435,8 +435,15 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "alerta_email": bool(s.smtp_host and s.alerta_para), "agora": agora, "itens": itens, "historico": historico}
 
 
-def _agendamento(db: Session, conector: str) -> Agendamento:
-    ag = db.scalar(select(Agendamento).where(Agendamento.conector == conector))
+class AgendaDesligada(Exception):
+    """#33 B2: "Executar agora" num agendamento desligado (inclusive desligado em paralelo)."""
+
+
+def _agendamento(db: Session, conector: str, travar: bool = False) -> Agendamento:
+    q = select(Agendamento).where(Agendamento.conector == conector)
+    if travar:  # #33 B2: trava a linha; um forcar() concorrente espera e reavalia "WHERE ativo"
+        q = q.with_for_update()
+    ag = db.scalar(q)
     if ag is None:
         raise LookupError(conector)
     return ag
@@ -444,7 +451,7 @@ def _agendamento(db: Session, conector: str) -> Agendamento:
 
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
               ordem: int | None = None) -> Agendamento:
-    ag = _agendamento(db, conector)
+    ag = _agendamento(db, conector, travar=True)
     antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}
     if horario is not None:
         if not HORARIO.match(horario):
@@ -472,9 +479,16 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
 
 
 def forcar(db: Session, conector: str, usuario: str) -> Agendamento:
-    ag = _agendamento(db, conector)
-    ag.forcar, ag.tentativas, ag.proxima_tentativa_em = True, 0, None
-    ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
+    """#33 B2: forcar=true numa única UPDATE ... WHERE ativo (atômica). Se outro pedido desligou antes, nenhuma
+    linha muda e sobe AgendaDesligada (409); se desligar vier depois, ele trava a linha e cancela o forcar."""
+    _agendamento(db, conector)  # 404 se não existe
+    feito = db.execute(update(Agendamento).where(Agendamento.conector == conector, Agendamento.ativo.is_(True))
+                       .values(forcar=True, tentativas=0, proxima_tentativa_em=None, atualizado_por=usuario,
+                               atualizado_em=datetime.now(UTC)).returning(Agendamento.id)).first()
     db.commit()
+    if feito is None:
+        raise AgendaDesligada(conector)
+    ag = _agendamento(db, conector)
+    db.refresh(ag)
     audita(db, usuario, "agenda_executar_agora", f"agendamento:{conector}")
     return ag

@@ -281,16 +281,26 @@ def test_m3_payload_real_sem_nivel_grava_andamentos_de_processo_publico(monkeypa
     assert _ck(db).ultima_chave == ["2026-10-29"]
 
 
-@pytest.mark.parametrize("proc", [2, 77])  # 2 = restrito na amostra; 77 = desconhecido na bronze
-def test_m3_processo_restrito_ou_desconhecido_descarta_e_nao_avanca(monkeypatch, db, proc):
-    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else proc)
+def test_m3_m4_processo_restrito_conhecido_descarta_e_avanca(monkeypatch, db):
+    """M4: andamento de restrito conhecido (marcador da amostra) é descartado só com contagem e não segura o dia."""
+    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else 2)
     ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
-    assert ex.status == "parcial" and "andamentos_nao_gravados_sigilo=3" in ex.mensagem
-    assert "checkpoint_avancou=False" in ex.mensagem and "andamentos_descartados" in ex.mensagem
-    assert _ck(db) is None
+    assert ex.status == "sucesso" and "andamentos_restrito_conhecido=3" in ex.mensagem
+    assert "checkpoint_avancou=True" in ex.mensagem and _ck(db).ultima_chave == ["2026-10-29"]
     logs = [lg.mensagem for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id, Log.nivel == "WARNING"))]
-    assert logs and "andamentos_descartados=3" in logs[0]
-    assert all(f"{proc:06d}" not in m and "ZZTESTE" not in m for m in logs)  # só contagem, sem identificação
+    assert logs and "restrito_conhecido=3" in logs[0]
+    assert all("000002" not in m and "ZZTESTE" not in m for m in logs)  # só contagem, sem identificação
     prots = {r.dados.get("protocolo") for r in db.scalars(select(RegistroBronze).where(
         RegistroBronze.sistema_origem == "SEI", RegistroBronze.tabela == "andamentos"))}
-    assert f"99990.{proc:06d}/2026-01" not in prots
+    assert "99990.000002/2026-01" not in prots
+
+
+def test_m3_m4_processo_desconhecido_segura_checkpoint(monkeypatch, db):
+    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else 77,
+                   inexistentes={77})
+    ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
+    assert ex.status == "parcial" and "andamentos_pai_desconhecido=3" in ex.mensagem
+    assert "checkpoint_avancou=False" in ex.mensagem and _ck(db) is None
+    prots = {r.dados.get("protocolo") for r in db.scalars(select(RegistroBronze).where(
+        RegistroBronze.sistema_origem == "SEI", RegistroBronze.tabela == "andamentos"))}
+    assert "99990.000077/2026-01" not in prots

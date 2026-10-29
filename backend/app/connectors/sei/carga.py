@@ -120,6 +120,8 @@ def executar_amostra(db: Session, usuario: str, config: ConfigSei | None = None,
                     continue
                 p = pj.projeta_processo(det, cfg.ambiente)
                 p["id_procedimento"] = p["id_procedimento"] or pj._t(item.get("idProcedimento"))
+                if p["id_procedimento"]:
+                    marca_publico(db, ex, usuario, p["id_procedimento"], pj.digitos(prot), cfg.ambiente)
                 procs.append(p)
                 for i in p["interessados"]:
                     cont["interessados_cpf" if i["cidadao_id"] else "interessados_revisao"] += 1
@@ -130,6 +132,7 @@ def executar_amostra(db: Session, usuario: str, config: ConfigSei | None = None,
                     if pd is None:
                         cont["documentos_nao_gravados_sigilo"] += 1
                     else:
+                        pd["id_procedimento"] = pd["id_procedimento"] or p["id_procedimento"]  # vínculo p/ reclassificar
                         docs.append(pd)
             bp = _grava(db, TAB_PROCESSOS, "id_procedimento", procs, ex)
             bd = _grava(db, TAB_DOCUMENTOS, "id_documento", docs, ex)
@@ -175,7 +178,8 @@ def processos_publicos(db: Session, ambiente: str) -> pj.Publicos:
 
 def processos_nao_publicos(db: Session, ambiente: str) -> pj.NaoPublicos:
     ids, prots = set(), set()
-    for m in db.scalars(select(SeiProcessoNaoPublico).where(SeiProcessoNaoPublico.ambiente_origem == ambiente)):
+    for m in db.scalars(select(SeiProcessoNaoPublico).where(SeiProcessoNaoPublico.ambiente_origem == ambiente,
+                                                            SeiProcessoNaoPublico.nivel_acesso != pj.PUBLICO)):
         ids.add(m.id_processo)
         if m.protocolo_digitos:
             prots.add(m.protocolo_digitos)
@@ -242,6 +246,27 @@ def valida_incremental(db: Session, cfg: ConfigSei, agora: datetime) -> None:
         raise CargaRecusada(FORA_JANELA.format(janela=jan))
 
 
+def marca_publico(db: Session, ex: Execucao, usuario: str, idp: str, prot: str | None, ambiente: str) -> int:
+    """O SEI voltou a dizer público: marcador vai para nível "0" (sem apagar) e as linhas ocultadas pela
+    reclassificação saem da quarentena, com auditoria. Devolve 1 se havia marcador não público."""
+    m = db.scalar(select(SeiProcessoNaoPublico).where(SeiProcessoNaoPublico.id_processo == idp,
+                                                      SeiProcessoNaoPublico.ambiente_origem == ambiente))
+    if m is None or m.nivel_acesso == pj.PUBLICO:
+        return 0
+    m.nivel_acesso, m.atualizado_em = pj.PUBLICO, datetime.now(UTC)
+    n = 0
+    for r in db.scalars(select(RegistroBronze).where(RegistroBronze.sistema_origem == SISTEMA,
+                                                     RegistroBronze.quarentena == QUAR_RECLASS)):
+        d = r.dados if isinstance(r.dados, dict) else {}
+        if d.get("ambiente_origem") == ambiente and _do_processo(d, r.tabela, idp, prot):
+            r.quarentena, n = None, n + 1
+    audita(db, usuario, "sei_reclassificacao", f"execucao:{ex.id}",
+           {"id_processo": idp, "nivel_acesso": pj.PUBLICO, "ambiente_origem": ambiente, "linhas_reexpostas": n},
+           commit=False)
+    db.flush()
+    return 1
+
+
 def _pendente(db: Session, chave: str, ambiente: str) -> SeiPaiPendente:
     p = db.scalar(select(SeiPaiPendente).where(SeiPaiPendente.id_processo == chave,
                                                SeiPaiPendente.ambiente_origem == ambiente))
@@ -288,6 +313,7 @@ def _resolve_pais(db: Session, cli: ClienteSei, ex: Execucao, usuario: str, cfg:
             proc = pj.projeta_processo(det, cfg.ambiente)
             proc["id_procedimento"] = id_real
             proc["protocolo"] = proc["protocolo"] or prot_txt
+            marca_publico(db, ex, usuario, id_real, prot_real, cfg.ambiente)
             _grava(db, TAB_PROCESSOS, "id_procedimento", [proc], ex)
             publicos.por_id[id_real] = prot_real
             if prot_real:

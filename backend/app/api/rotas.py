@@ -974,6 +974,11 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
         ag.forcar(db, conector, u.email)
     except LookupError:
         _404()
+    except ag.AgendaDesligada:  # #33 B2: desligado em paralelo entre a checagem acima e a gravação
+        audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
+               {"motivo": "desligado", "conector": conector}, _ip(req))
+        raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
+                                 "executar agora.") from None
     return ag.estado(db)
 
 

@@ -215,7 +215,9 @@ def test_sei4_teto_de_paginas_e_parcial(monkeypatch, db):
     monkeypatch.setenv("SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO", "1")
     ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport())
     assert ex.status == "parcial" and len(api.gets()) == 1
-    assert db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SEI")) is None
+    ck = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SEI"))
+    # M4: janela não terminou; guarda (dataInicio, dataFim, próximo start) e não fecha o dia
+    assert ck.ultima_chave == ["2026-10-28", "2026-10-29", 50] and ck.concluida is False
 
 
 # ------------------------------------------------------------------ SEI5 interessados

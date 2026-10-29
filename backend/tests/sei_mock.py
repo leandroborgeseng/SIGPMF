@@ -50,7 +50,7 @@ class Sei:
     """Responde as rotas da allowlist; registra todas as chamadas."""
 
     def __init__(self, n_processos=3, niveis=None, andamentos=0, repetir_andamentos=False, token_401=0,
-                 total_docs=2, processo_andamento=None):
+                 total_docs=2, processo_andamento=None, inexistentes=(), protocolo_andamento=None):
         self.n, self.niveis = n_processos, niveis or {}
         # andamento i -> número do processo (padrão: processo 1, público e gravado pela amostra)
         self.proc_and = processo_andamento or (lambda i: 1)
@@ -58,6 +58,9 @@ class Sei:
         self.token_401, self.total_docs = token_401, total_docs
         self.chamadas: list[httpx.Request] = []
         self.tokens = 0
+        self.inexistentes = set(inexistentes)  # processos que dão 404 no detalhe
+        # andamento i -> protocolo (padrão: o do mesmo processo do idProcesso)
+        self.prot_and = protocolo_andamento or (lambda i: f"99990.{self.proc_and(i):06d}/2026-01")
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         self.chamadas.append(req)
@@ -82,6 +85,8 @@ class Sei:
                 + [{"idDocumento": "DSIG", "tipo": "G", "nivelAcesso": "2"}]})
         if p.startswith("/processos/"):
             i = int(p.split(".")[-1].split("%2F")[0].split("/")[0])
+            if i in self.inexistentes:
+                return httpx.Response(404, json={})
             return httpx.Response(200, json=processo(i, self.niveis.get(i, "0")))
         if p == "/andamentos/completo":
             st, lim = int(q.get("start", 0)), int(q.get("limit", 50))
@@ -91,7 +96,7 @@ class Sei:
             # formato do andamentosCompletoResponse (OpenAPI): sem campo de nível de acesso
             return httpx.Response(200, json={"Andamentos": [
                 {"idAndamento": f"A{i}", "idProcesso": f"9{self.proc_and(i):06d}",
-                 "protocoloProcedimento": f"99990.{self.proc_and(i):06d}/2026-01",
+                 "protocoloProcedimento": self.prot_and(i),
                  "idTarefa": "1", "descricao": "ZZTESTE texto livre", "dataHora": "01/10/2026 10:00",
                  "usuarios": {"nome": "ZZTESTE USUARIO"}, "unidade": {"idUnidade": "1", "sigla": "ZZ"}}
                 for i in ids]})
