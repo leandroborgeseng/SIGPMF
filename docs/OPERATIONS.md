@@ -212,3 +212,30 @@ gera aviso.
    inteira, sem reler as outras 12 tabelas.
 4. Confira no card que a execução ficou `sucesso`, sem o alerta `tabela_vazia`, e com as linhas lidas da tabela.
 O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
+
+**Releitura no deploy, sem terminal (`SIGPMF_RELEITURA_FONTE`).** Para quando não há terminal no container. É de uso
+único e não fica no Dockerfile: é uma variável de ambiente que você define no Coolify só para um deploy.
+1. Antes, **desligue a agenda da educação** (senão a releitura recusa com `agenda_ligada`) e confira que já existe uma
+   amostra da educação com `sucesso`.
+2. Defina `SIGPMF_RELEITURA_FONTE=PES_PessoaDocumento` (ou outra fonte do catálogo da educação) e faça o deploy no
+   SHA aprovado. **Marcador = fonte + SHA do deploy.** O SHA vem de `SOURCE_COMMIT` (o Coolify injeta; o
+   `docker-compose.yml` já repassa), com fallback para `GIT_SHA` e depois `SIGPMF_BUILD_SHA` (só hex de 7 a 40
+   caracteres). Sem SHA válido, recusa com `sem_sha_deploy` (não lê nada) em vez de arriscar repetir.
+3. O boot não espera: a app sobe e o `/health` responde normalmente. Uma thread em segundo plano espera o `/health`
+   da própria app dar 200 (até `SIGPMF_RELEITURA_SAUDE_MAX_S`, padrão 600 s; senão recusa `sem_saude`) e então:
+   - pega a **mesma trava** da carga da educação (advisory lock do sistema) e a segura até o fim;
+   - roda a mesma lógica de `scripts.releitura_fonte_educacao` com o usuário `sistema-deploy` (auditado em
+     `educacao_releitura_fonte`) e lê só essa fonte. A janela noturna continua valendo (`SIGPMF_EDUCACAO_JANELA_NOTURNA`);
+   - ao fechar o ciclo, reprocessa a prata da educação e o vínculo com o cidadão (ouro), como a carga completa;
+   - grava a auditoria `educacao_releitura_deploy` e o marcador `concluida` em `controle.acoes_unicas` (fonte + SHA).
+4. Recusas, sempre com código fixo e sem texto de exceção: `fonte_desconhecida` (não lê nada), `agenda_ligada`,
+   `sem_amostra`, `fora_janela`, `trava_ocupada`, `em_andamento`, `sem_credencial`, `sem_saude`, `sem_sha_deploy`. Cada uma grava log
+   `WARNING [releitura_deploy:<codigo>]`, a auditoria `educacao_releitura_deploy_recusada` e uma execução
+   `releitura_deploy` com status `recusada` e campo `alerta` (código e texto) na última execução do painel.
+5. Acompanhe em `GET /api/educacao/releitura-deploy` (ADMIN): fonte, SHA (`token`), status (`concluida`, `falha`, `recusada`,
+   `em_andamento`), código e execução.
+6. **Repetição.** Reiniciar no mesmo SHA não relê (log `INFO [releitura_deploy:ja_executada]`). Falha, recusa ou
+   queda no meio **não** marcam `concluida`: o próximo boot no mesmo SHA tenta de novo. Um deploy de SHA novo com a
+   variável ainda definida relê de novo — por isso remova a variável logo depois.
+7. **Depois de `concluida`, remova `SIGPMF_RELEITURA_FONTE` do Coolify** e religue a agenda
+   da educação, se for o caso. Sem a variável, o boot não faz nada.

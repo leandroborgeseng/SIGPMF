@@ -1075,6 +1075,16 @@ def educacao_revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: 
     return {"cidadao_id": cid, "alunos": alunos, "remascarar_em_segundos": get_settings().revelar_cpf_segundos}
 
 
+@api.get("/educacao/releitura-deploy", dependencies=[Depends(ADMIN)])
+def releitura_deploy_status(db: Session = Depends(get_db)):
+    """Marcadores da releitura de uso único no boot (SIGPMF_RELEITURA_FONTE): fonte, token, status e código fixo."""
+    from app.models.controle import AcaoUnica
+    from app.services import releitura_deploy as rd
+    ms = db.scalars(select(AcaoUnica).where(AcaoUnica.acao == rd.ACAO).order_by(AcaoUnica.id.desc()).limit(50))
+    return [{"fonte": m.fonte, "token": m.token, "status": m.status, "codigo": m.codigo, "execucao_id": m.execucao_id,
+             "tentativas": m.tentativas, "atualizado_em": m.atualizado_em} for m in ms]
+
+
 @api.post("/educacao/conector/cancelar", dependencies=[Depends(ADMIN)])
 def gestaoescolar_cancelar(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Pede o cancelamento da carga completa em andamento; ela para no fim do lote atual (nada é apagado)."""
