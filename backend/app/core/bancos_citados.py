@@ -27,9 +27,40 @@ def _limpa(ident: str) -> str:
     return ident
 
 
+def sem_comentarios(sql: str) -> str:
+    """Troca comentários `/* ... */` e `-- ...` (até o fim da linha) por um espaço, respeitando literais em aspas
+    simples ('a--b' e 'x/*y' não são comentário; '' é aspa escapada dentro do literal). Comentário sem fim vai até o fim."""
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":
+                        j += 2
+                        continue
+                    break
+                j += 1
+            out.append(sql[i:j + 1])
+            i = j + 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            out.append(" ")
+            i = n if j < 0 else j
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            out.append(" ")
+            i = n if j < 0 else j + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def bancos_citados(sql: str) -> list[str]:
     """Bancos citados por nome de 3 partes (na ordem). Levanta AcessoRemotoRecusado para OPEN* ou nome de 4 partes."""
-    texto = unicodedata.normalize("NFKC", str(sql))
+    texto = sem_comentarios(unicodedata.normalize("NFKC", str(sql)))
     if ACESSO_REMOTO_RE.search(texto):
         raise AcessoRemotoRecusado("Acesso remoto (OPENQUERY/OPENROWSET/OPENDATASOURCE) recusado.")
     texto = _LITERAL_RE.sub("''", texto)

@@ -8,11 +8,13 @@ porque lista nomes de permissão que o teste de somente leitura do conector não
 from collections.abc import Callable
 from typing import Any
 
-from app.connectors.sqlserver.politicas import autoriza_base
+from app.connectors.sqlserver.politicas import BaseRecusada, autoriza_base
 
 
 def conecta_guardado(conectar: Callable[..., Any], base: str, *outras_bases: str, **kwargs) -> Any:
     """Autoriza `base` (e bancos citados em consultas cross-database) e só então chama `conectar(database=<canônico>)`."""
+    if base is None or not str(base).strip():
+        raise BaseRecusada("Banco não informado.", "base_nome_invalido")
     canonico = autoriza_base(base)
     for b in outras_bases:
         autoriza_base(b)

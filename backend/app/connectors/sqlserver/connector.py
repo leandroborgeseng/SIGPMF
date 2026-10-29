@@ -109,13 +109,13 @@ class SqlServerConnector:
     def _conectar(self):
         import pymssql  # import tardio: o driver só é necessário com origem real
 
-        from app.connectors.sqlserver.politicas import autoriza_base
+        from app.connectors.sqlserver.guardas import conecta_guardado
         c = self.config
-        banco = autoriza_base(c.database) if c.database else c.database  # A2/R1: canônico da lista
-        # Coolify entrega variáveis como texto: porta e timeout sempre int
-        return pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
-                               database=banco, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
-                               autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
+        # D1 (QA #53): SEMPRE pela guarda. Vazio, None e só espaços são recusados (BaseRecusada) sem chamar o driver;
+        # a conexão usa o nome canônico da lista. Coolify entrega variáveis como texto: porta e timeout sempre int.
+        return conecta_guardado(pymssql.connect, c.database, server=c.host, port=int(c.port), user=c.user,
+                                password=c.password, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
+                                autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
 
     def testar_conexao(self) -> dict[str, Any]:
         if not self.config.resumo_publico()["configurado"]:

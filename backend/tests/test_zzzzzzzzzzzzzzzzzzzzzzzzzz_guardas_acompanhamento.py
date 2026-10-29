@@ -368,3 +368,42 @@ def test_r2_contagem_com_banco_citado_permitido_roda(db, monkeypatch):
     job, conectar, abertas, _ = _contagens_cenario(monkeypatch, qs)
     ex = job.executar(db, None, conectar=conectar)
     assert _resultados(db, ex.id)["ZZ-OK"] == ("ok", None) and abertas == ["zz_contagens_test"]
+
+
+# ---------- ciclo 3 do QA do #53 ----------
+@pytest.mark.parametrize("banco", ["", None, "   "])
+def test_d1_conectar_sem_banco_recusa_sem_chamar_driver(monkeypatch, banco):
+    from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
+    chamado = []
+    monkeypatch.setitem(sys.modules, "pymssql", types.SimpleNamespace(connect=lambda **k: chamado.append(k)))
+    with pytest.raises(BaseRecusada):
+        SqlServerConnector(ConfigSqlServer("h", 1433, banco, "u", "p", 5, 10))._conectar()
+    assert chamado == []
+
+
+def test_d1_conectar_passa_por_conecta_guardado(monkeypatch):
+    from app.connectors.sqlserver import connector as mod
+    from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
+    usados = []
+    monkeypatch.setitem(sys.modules, "pymssql", types.SimpleNamespace(connect=lambda **k: k))
+    orig = G.conecta_guardado
+    monkeypatch.setattr(G, "conecta_guardado", lambda *a, **k: usados.append(a[1]) or orig(*a, **k))
+    assert mod is not None
+    r = SqlServerConnector(ConfigSqlServer("h", 1433, "iss", "u", "p", 5, 10))._conectar()
+    assert usados == ["iss"] and r["database"] == "ISS"
+
+
+@pytest.mark.parametrize("sql", ["SELECT COUNT(*) total FROM Central/*c*/.dbo.zz",
+                                 "SELECT COUNT(*) total -- it's\nFROM Central.dbo.zz",
+                                 "SELECT COUNT(*) total FROM Central--c\n.dbo.zz",
+                                 "SELECT COUNT(*) total FROM dbo.a WHERE x = 'a--b' UNION ALL SELECT 1 FROM Central.dbo.zz",
+                                 "SELECT COUNT(*) total FROM dbo.a WHERE x = 'x/*y' UNION ALL SELECT 1 FROM Central.dbo.zz",
+                                 "SELECT COUNT(*) total FROM dbo.a WHERE x = 'it''s--' UNION ALL SELECT 1 FROM Central.dbo.zz"])
+def test_c3_comentarios_nao_escondem_banco(sql):
+    from app.core.bancos_citados import bancos_citados
+    assert bancos_citados(sql) == ["Central"]
+
+
+def test_c3_sem_comentarios_respeita_literais():
+    from app.core.bancos_citados import sem_comentarios
+    assert sem_comentarios("a/*x*/b--y\nc 'd--e' 'f/*g' 'h''i'") == "a b \nc 'd--e' 'f/*g' 'h''i'"
