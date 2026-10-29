@@ -9,6 +9,7 @@ from app.core.audit import audita
 from app.core.db import get_db
 from app.core.security import ADMIN, REVELA_CPF, exige_perfil, usuario_atual
 from app.models.controle import Usuario
+from app.services.acesso_secretaria import dom_ou_lgpd as _dom_pr06  # noqa: E402  PR-06: motivo do admin_lgpd
 
 contagens = APIRouter(dependencies=[Depends(usuario_atual)])
 LEITURA = exige_perfil("admin", "admin_lgpd")
@@ -45,7 +46,7 @@ def ultima(u: Usuario = Depends(LEITURA), db: Session = Depends(get_db)):
     return _execucao(db, ex)
 
 
-@contagens.get("/contagens/{eid}/cpfs-repetidos")
+@contagens.get("/contagens/{eid}/cpfs-repetidos", dependencies=[Depends(_dom_pr06("qualidade_dados"))])
 def cpfs_repetidos(eid: int, req: Request, u: Usuario = Depends(REVELA_CPF), db: Session = Depends(get_db)):
     ex = db.get(ContagemExecucao, eid)
     if ex is None:

@@ -309,6 +309,12 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
   obrigatório no cabeçalho `X-SIGPMF-Motivo` (mínimo de 10 caracteres; nunca na URL). Sem motivo = 400 e tentativa
   auditada (`acesso_por_funcao_negado`); com motivo = `acesso_por_funcao` (com o motivo) + linha em
   `controle.auditoria_acesso` (secretaria `FUNCAO_ADMIN_LGPD`). Só vale com a regra ligada.
+- Vínculos (QA #50 c2): ninguém concede vínculo a si mesmo (403, auditado, qualquer secretaria). `adicionar` recusa TODAS
+  (422, auditado). O TODAS só sai por `POST /api/ti/acesso-secretaria/vinculos/conceder-prefeito`, exclusivo do
+  `admin_lgpd`, com motivo e sem data de fim. Recusas auditadas: conceder a si mesmo, a conta de perfil admin/admin_lgpd,
+  ou a quem já concedeu TODAS ao solicitante (concessão cruzada). A linha TODAS da referência não muda e nenhum domínio
+  é apontado para TODAS pela API (só o seed). `/contagens/{eid}/cpfs-repetidos` (PR-07): admin_lgpd com motivo no
+  cabeçalho quando a regra está ligada.
 - `/gold/cidadaos/{cid}/sistemas` (e `sistemas` na ficha) sai **vazio para quem não é prefeito** até existir o mapa
   sistema → domínio.
 - **Pós-MVP:** telas para ajustar `controle.secretarias`/`controle.dominio_secretaria` e para a remoção do vínculo

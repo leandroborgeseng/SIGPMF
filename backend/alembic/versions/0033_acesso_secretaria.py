@@ -7,17 +7,17 @@
 - controle.dominio_secretaria: domínio do ouro -> secretaria dona, com `a_confirmar` (cemiterio -> SERVICOS_URBANOS a confirmar).
 - controle.auditoria_acesso: uma linha por consulta nominal liberada pelo vínculo (R1/R3), somente inserção.
 
-Numeração: 0033 reservada ao PR-06 pelo Tech Lead; down_revision '0027' (ponta da main em 29/10); se 0028–0032 entrarem antes, aponta para a nova ponta
+Numeração: 0033 reservada ao PR-06 pelo Tech Lead; down_revision '0034' (ponta da main 44c08e3 em 29/10 18h); se outra migração entrar antes, aponta para a nova ponta
 (no merge, o down_revision passa a apontar para a ponta da main).
 
 Revision ID: 0033
-Revises: 0027
+Revises: 0034
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = '0033'
-down_revision = '0027'
+down_revision = '0034'
 branch_labels = None
 depends_on = None
 

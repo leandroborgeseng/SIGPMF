@@ -245,7 +245,7 @@ def test_r5_fluxo_completo_auditado(client, db, tokens):
 
 def test_r5_prefeito_nao_removido_pela_tela(client, db, tokens):
     alvo, _ = _usuario(db, client)
-    v = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "TODAS"}, headers=tokens["admin"]).json()
+    v = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": alvo.id, "motivo": "ZZTESTE posse do prefeito"}, headers=tokens["admin_lgpd"]).json()
     assert v["prefeito"] is True and v["secretaria_nome"] == "Todas as secretarias (prefeito)"
     r = client.post(B + "/vinculos/remover", json={"vinculo_id": v["id"], "versao": 1, "motivo": "ZZTESTE motivo longo"},
                     headers=tokens["admin"])
@@ -265,7 +265,7 @@ def test_r5_vinculo_removido_corta_acesso_na_hora(client, db, tokens, rbac):
 def test_uxv1_rotas_ti_sem_termo_nem_id_na_url(client):
     from app.api.acesso_ti import ti
     rotas = list(ti.routes)
-    assert len(rotas) == 11 and all("{" not in r.path and r.methods == {"POST"} for r in rotas)
+    assert len(rotas) == 12 and all("{" not in r.path and r.methods == {"POST"} for r in rotas)
 
 
 def test_auditoria_acesso_somente_insercao(db, client, rbac):
@@ -350,7 +350,7 @@ def test_ti_ajusta_referencia_sem_deploy_e_vinculo_valida_tabela(client, db, tok
 
 def test_prefeito_so_admin_lgpd_remove_com_motivo_auditado(client, db, tokens):
     alvo, _ = _usuario(db, client)
-    v = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "TODAS"}, headers=tokens["admin"]).json()
+    v = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": alvo.id, "motivo": "ZZTESTE posse do prefeito"}, headers=tokens["admin_lgpd"]).json()
     corpo = {"vinculo_id": v["id"], "versao": 1, "motivo": "ZZTESTE fim do mandato"}
     assert client.post(B + "/vinculos/remover", json=corpo, headers=tokens["admin"]).status_code == 422
     for perfil in ("admin", "operador", "leitura"):
@@ -449,6 +449,7 @@ PESSOAIS = {
     ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
     ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
     ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),
+    ("GET", "/api/contagens/{eid}/cpfs-repetidos"),
 }
 # Revelação por FUNÇÃO (admin_lgpd), sem vínculo, com motivo obrigatório e auditoria (TL 29/10).
 POR_FUNCAO = {
@@ -458,7 +459,7 @@ POR_FUNCAO = {
 # admin_lgpd entra por função nestas, com motivo no cabeçalho (TL 29/10); os demais seguem a secretaria dona (prefeito).
 POR_FUNCAO_COM_MOTIVO = {
     ("GET", "/api/silver/pendencias"), ("GET", "/api/silver/inconsistencias"),
-    ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"),
+    ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/contagens/{eid}/cpfs-repetidos"),
 } | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
 NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
@@ -479,17 +480,20 @@ NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a pr�
     ("POST", "/api/educacao/conector/cancelar"), ("POST", "/api/educacao/conector/execucoes/{eid:int}/marcar-falha"),
     ("POST", "/api/educacao/conector/{modo}"), ("GET", "/api/health"), ("POST", "/api/auth/login"),
     ("GET", "/api/sei/status"), ("POST", "/api/sei/amostra"), ("POST", "/api/sei/incremental"),
+    ("POST", "/api/contagens/executar"), ("GET", "/api/contagens/ultima"),  # PR-07: só agregados
 } | {("POST", "/api/ti/acesso-secretaria" + r) for r in (
     "/secretarias", "/referencia/listar", "/referencia/secretaria", "/referencia/dominio", "/usuarios/buscar", "/vinculos/listar",
-    "/vinculos/adicionar", "/vinculos/editar", "/vinculos/remover", "/vinculos/historico", "/vinculos/remover-prefeito")}
+    "/vinculos/adicionar", "/vinculos/editar", "/vinculos/remover", "/vinculos/historico", "/vinculos/remover-prefeito",
+    "/vinculos/conceder-prefeito")}
 
 
 def _rotas_app():
     from app.api.acesso_ti import ti
     from app.api.rotas import api, publico
     from app.connectors.sei.rotas import sei
+    from app.contagens.rotas import contagens
     from app.explorador.rotas import explorador
-    return {(m, "/api" + r.path) for R in (api, publico, explorador, sei, ti) for r in R.routes for m in r.methods - {"HEAD"}}
+    return {(m, "/api" + r.path) for R in (api, publico, explorador, sei, ti, contagens) for r in R.routes for m in r.methods - {"HEAD"}}
 
 
 def test_qa2_toda_rota_do_app_esta_classificada():
@@ -533,7 +537,7 @@ def test_qa3_admin_lgpd_revela_cpf_sem_vinculo_com_motivo_e_auditoria(client, db
 
 def test_qa4_todas_nao_e_editado_nem_encerrado(client, db, tokens):
     alvo, _ = _usuario(db, client)
-    v = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "TODAS"}, headers=tokens["admin"]).json()
+    v = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": alvo.id, "motivo": "ZZTESTE posse do prefeito"}, headers=tokens["admin_lgpd"]).json()
     ontem = (HOJE - timedelta(days=1)).isoformat()
     for corpo in ({"vinculo_id": v["id"], "versao": 1, "inicio": "2026-01-01", "fim": ontem},
                   {"vinculo_id": v["id"], "versao": 1, "inicio": (HOJE + timedelta(days=5)).isoformat()}):
@@ -587,3 +591,119 @@ def test_tl_admin_sem_vinculo_perde_e_prefeito_ve(client, db, rbac, tokens, url)
 def test_tl_motivo_por_funcao_so_com_regra_ligada(client, tokens, monkeypatch):
     monkeypatch.delenv("SIGPMF_RBAC_SECRETARIA", raising=False)
     assert client.get("/api/silver/pendencias", headers=tokens["admin_lgpd"]).status_code == 200
+
+
+# ---------- QA #50 ciclo 2 + adendo: autoconcessão, TODAS por fluxo próprio, concessão cruzada ----------
+def _neg(db, acao, razao):
+    db.expire_all()
+    return db.scalar(select(Auditoria).where(Auditoria.acao == acao, Auditoria.detalhe["razao"].as_string() == razao)
+                     .order_by(Auditoria.id.desc()))
+
+
+def _id(db, email):
+    db.expire_all()
+    return db.scalar(select(Usuario.id).where(Usuario.email == email))
+
+
+def test_c2_admin_nao_concede_todas_nem_a_si_mesmo(client, db, rbac, tokens):
+    eu = _id(db, "admin@aion.local")
+    cid = _cidadao(db)
+    for sec in ("TODAS", "SAUDE"):
+        r = client.post(B + "/vinculos/adicionar", json={"usuario_id": eu, "secretaria": sec}, headers=tokens["admin"])
+        assert r.status_code == 403
+    assert _neg(db, "vinculo_secretaria_recusado", "auto_concessao") is not None
+    assert client.get(f"/api/gold/cidadaos/{cid}", headers=tokens["admin"]).status_code == 403  # repro do Tester
+    alvo, _ = _usuario(db, client)
+    ontem = (HOJE - timedelta(days=1)).isoformat()
+    for corpo in ({"usuario_id": alvo.id, "secretaria": "TODAS"}, {"usuario_id": alvo.id, "secretaria": "TODAS", "fim": ontem}):
+        assert client.post(B + "/vinculos/adicionar", json=corpo, headers=tokens["admin"]).status_code == 422
+    assert _neg(db, "vinculo_secretaria_recusado", "todas_fluxo_proprio") is not None
+    db.expire_all()
+    assert db.scalar(select(UsuarioSecretaria).where(UsuarioSecretaria.secretaria == "TODAS",
+                                                     UsuarioSecretaria.usuario_id.in_([eu, alvo.id]))) is None
+
+
+def test_c2_conceder_prefeito_so_admin_lgpd_com_motivo_sem_fim(client, db, tokens):
+    alvo, _ = _usuario(db, client)
+    corpo = {"usuario_id": alvo.id, "motivo": "ZZTESTE posse do prefeito"}
+    for perfil in ("admin", "operador", "leitura"):
+        assert client.post(B + "/vinculos/conceder-prefeito", json=corpo, headers=tokens[perfil]).status_code == 403
+    assert client.post(B + "/vinculos/conceder-prefeito", json={**corpo, "motivo": "curto"},
+                       headers=tokens["admin_lgpd"]).status_code == 422
+    assert _neg(db, "vinculo_prefeito_conceder_recusado", "motivo_invalido") is not None
+    r = client.post(B + "/vinculos/conceder-prefeito", json={**corpo, "fim": "2026-01-01"}, headers=tokens["admin_lgpd"])
+    assert r.status_code == 201 and r.json()["fim"] is None and r.json()["prefeito"] is True  # `fim` é ignorado
+    db.expire_all()
+    a = db.scalar(select(Auditoria).where(Auditoria.acao == "vinculo_prefeito_conceder", Auditoria.alvo == f"usuario:{alvo.id}"))
+    assert a.detalhe["motivo"] == "ZZTESTE posse do prefeito" and a.usuario == "admin_lgpd@aion.local"
+    assert client.post(B + "/vinculos/conceder-prefeito", json=corpo, headers=tokens["admin_lgpd"]).status_code == 409
+
+
+def test_c2_conceder_prefeito_recusa_a_si_e_a_contas_admin(client, db, tokens):
+    eu = _id(db, "admin_lgpd@aion.local")
+    r = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": eu, "motivo": "ZZTESTE motivo longo"},
+                    headers=tokens["admin_lgpd"])
+    assert r.status_code == 403 and _neg(db, "vinculo_prefeito_conceder_recusado", "auto_concessao") is not None
+    for perfil in ("admin", "admin_lgpd"):
+        alvo, _ = _usuario(db, client, perfil)
+        r = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": alvo.id, "motivo": "ZZTESTE motivo longo"},
+                        headers=tokens["admin_lgpd"])
+        assert r.status_code == 422
+    assert _neg(db, "vinculo_prefeito_conceder_recusado", "perfil_administrativo") is not None
+
+
+def test_c2_concessao_cruzada_recusada(client, db):
+    """A (admin_lgpd) concede TODAS a B; B nunca devolve TODAS a A. Para o teste, B tem perfil leitura ao receber e
+    depois vira admin_lgpd (troca de perfil fora da tela) e tenta conceder de volta."""
+    a, ha = _usuario(db, client, "admin_lgpd")
+    b, _hb = _usuario(db, client, "leitura")
+    r = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": b.id, "motivo": "ZZTESTE posse do prefeito"}, headers=ha)
+    assert r.status_code == 201
+    # mesmo sem a regra de perfil, a devolução é recusada: simula um TODAS de A concedido por B
+    db.add(UsuarioSecretaria(usuario_id=a.id, secretaria="TODAS", vigencia_inicio=HOJE, cadastrado_por=b.email, removido_em=None))
+    db.commit()
+    c, hc = _usuario(db, client, "admin_lgpd")
+    db.add(UsuarioSecretaria(usuario_id=c.id, secretaria="TODAS", vigencia_inicio=HOJE - timedelta(days=1),
+                             cadastrado_por=b.email))
+    db.commit()
+    alvo_b = db.get(Usuario, b.id)
+    alvo_b.perfil = "leitura"
+    db.commit()
+    # C recebeu TODAS de B; C tenta conceder TODAS a B (que já tem) -> recusa cruzada antes do 409
+    r = client.post(B + "/vinculos/conceder-prefeito", json={"usuario_id": b.id, "motivo": "ZZTESTE devolução"}, headers=hc)
+    assert r.status_code == 403 and "concedeu acesso de prefeito a você" in r.json()["detail"]
+    assert _neg(db, "vinculo_prefeito_conceder_recusado", "concessao_cruzada") is not None
+
+
+def test_c2_referencia_nao_altera_todas_nem_aponta_dominio_para_todas(client, tokens):
+    h = tokens["admin"]
+    r = client.post(B + "/referencia/secretaria", json={"codigo": "TODAS", "nome": "ZZTESTE renomeado"}, headers=h)
+    assert r.status_code == 422
+    r = client.post(B + "/referencia/dominio", json={"dominio": "tributario", "secretaria": "TODAS"}, headers=h)
+    assert r.status_code == 422
+    nomes = {x["codigo"]: x["nome"] for x in client.post(B + "/referencia/listar", json={}, headers=h).json()["secretarias"]}
+    assert nomes["TODAS"] == "Todas as secretarias (prefeito)"
+
+
+def test_c2_menor_visivel_pela_educacao(client, db, rbac):
+    cid = _cidadao(db, nasc=HOJE - timedelta(days=365 * 9), dominios=["educacao", "saude"])
+    db.add(DadoGold(cidadao_id=cid, dominio="educacao", campo="escola", valor="ZZTESTE ESCOLA", sistema="ZZ"))
+    db.commit()
+    _cpf(db, cid, "15350946056")
+    u, h = _so(db, client, "EDUCACAO")
+    r = client.get(f"/api/gold/cidadaos/{cid}", headers=h)
+    assert r.status_code == 200
+    f = r.json()
+    assert {d["dominio"] for d in f["dados"]} == {"educacao"} and f["cpf"] == "15350946056"
+    ids = {x["cidadao_id"] for x in client.get("/api/silver/cidadaos?limite=200&busca=ZZTESTE", headers=h).json()}
+    assert cid in ids
+    db.expire_all()
+    a = db.scalar(select(AuditoriaAcesso).where(AuditoriaAcesso.usuario == u.email, AuditoriaAcesso.recurso == "ficha"))
+    assert a.secretaria == "EDUCACAO" and a.revelou_cpf is True
+
+
+def test_c2_cpfs_repetidos_admin_lgpd_exige_motivo(client, rbac, tokens):
+    r = client.get("/api/contagens/999999/cpfs-repetidos", headers=tokens["admin_lgpd"])
+    assert r.status_code == 400
+    r = client.get("/api/contagens/999999/cpfs-repetidos", headers={**tokens["admin_lgpd"], **MOT})
+    assert r.status_code == 404  # passou da regra; contagem inexistente

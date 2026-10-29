@@ -21,7 +21,8 @@ from app.services import acesso_secretaria as acs
 
 ti = APIRouter(prefix="/ti/acesso-secretaria", tags=["ti"])
 ACOES = {"vinculo_secretaria_adicionar": "Adicionou", "vinculo_secretaria_editar": "Editou a vigência",
-         "vinculo_secretaria_remover": "Removeu", "vinculo_prefeito_remover": "Removeu (admin_lgpd)"}
+         "vinculo_secretaria_remover": "Removeu", "vinculo_prefeito_remover": "Removeu (admin_lgpd)",
+         "vinculo_prefeito_conceder": "Concedeu acesso de prefeito (admin_lgpd)"}
 CONFLITO = "Este vínculo foi alterado por outra pessoa. Recarregue para ver a versão atual."
 
 
@@ -57,6 +58,17 @@ class DominioIn(BaseModel):
     secretaria: str = Field(min_length=2, max_length=40)
     a_confirmar: bool = False
     obs: str | None = Field(None, max_length=500)
+
+
+class ConcederPrefeitoIn(BaseModel):
+    usuario_id: int
+    motivo: str = Field(default="", max_length=500)
+    inicio: date | None = None  # sem campo de fim: o vínculo TODAS não tem data de fim
+
+
+def _recusa(db: Session, u: Usuario, req: Request, acao: str, alvo_id: int, razao: str, status: int, msg: str):
+    audita(db, u.email, acao, f"usuario:{alvo_id}", {"razao": razao}, _ip(req))
+    raise HTTPException(status, msg)
 
 
 class BuscaIn(BaseModel):
@@ -132,8 +144,8 @@ def referencia(_u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
 @ti.post("/referencia/secretaria")
 def salvar_secretaria(dados: SecretariaIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
     """TI ajusta a tabela sem deploy (upsert, nunca DELETE: desativar = ativo=false). TODAS não é desativada."""
-    if dados.codigo == acs.TODAS and not dados.ativo:
-        raise HTTPException(422, "A linha do prefeito não é desativada.")
+    if dados.codigo == acs.TODAS:
+        raise HTTPException(422, "A linha do prefeito não é alterada.")
     x = db.get(SecretariaRef, dados.codigo)
     antes = None if x is None else {"nome": x.nome, "ativo": x.ativo, "a_confirmar": x.a_confirmar}
     if x is None:
@@ -150,6 +162,8 @@ def salvar_secretaria(dados: SecretariaIn, req: Request, u: Usuario = Depends(ad
 
 @ti.post("/referencia/dominio")
 def salvar_dominio(dados: DominioIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
+    if dados.secretaria == acs.TODAS:
+        raise HTTPException(422, "Um domínio não pode ficar só com o prefeito por esta rota.")
     if dados.secretaria not in acs.secretarias(db):
         raise HTTPException(422, "Secretaria desconhecida.")
     d = db.get(DominioSecretaria, dados.dominio)
@@ -193,6 +207,12 @@ def listar(dados: UsuarioRef, _u: Usuario = Depends(admin_ti), db: Session = Dep
 @ti.post("/vinculos/adicionar", status_code=201)
 def adicionar(dados: AdicionarIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
     alvo = _usuario(db, dados.usuario_id)
+    if alvo.id == u.id:  # QA #50 c2: ninguém concede vínculo a si mesmo (qualquer secretaria)
+        _recusa(db, u, req, "vinculo_secretaria_recusado", alvo.id, "auto_concessao", 403,
+                "Você não pode conceder acesso a si mesmo.")
+    if dados.secretaria == acs.TODAS:  # o acesso de prefeito só sai pelo fluxo próprio do admin_lgpd
+        _recusa(db, u, req, "vinculo_secretaria_recusado", alvo.id, "todas_fluxo_proprio", 422,
+                "O acesso de prefeito é concedido só pelo perfil admin_lgpd, em fluxo próprio.")
     if dados.secretaria not in acs.secretarias(db):  # valida contra a tabela de referência (só ativas)
         raise HTTPException(422, "Secretaria desconhecida.")
     inicio = dados.inicio or date.today()
@@ -281,3 +301,40 @@ def remover_prefeito(dados: RemoverIn, req: Request, u: Usuario = Depends(lgpd_p
            {"secretaria": v.secretaria, "motivo": motivo[:300]}, _ip(req), commit=False)
     db.commit()
     return {"id": v.id, "removido": True}
+
+
+@ti.post("/vinculos/conceder-prefeito", status_code=201)
+def conceder_prefeito(dados: ConcederPrefeitoIn, req: Request, u: Usuario = Depends(lgpd_prefeito),
+                      db: Session = Depends(get_db)):
+    """QA #50 c2 + adendo TL: só o admin_lgpd concede o TODAS, com motivo, auditado, sem data de fim. Recusa (auditada):
+    a si mesmo; a quem tem perfil admin/admin_lgpd; e a quem já concedeu TODAS ao solicitante (concessão cruzada)."""
+    A = "vinculo_prefeito_conceder_recusado"
+    motivo = dados.motivo.strip()
+    if len(motivo) < acs.MOTIVO_MIN:
+        _recusa(db, u, req, A, dados.usuario_id, "motivo_invalido", 422, f"Informe o motivo (mínimo de {acs.MOTIVO_MIN} caracteres).")
+    alvo = _usuario(db, dados.usuario_id)
+    if alvo.id == u.id:
+        _recusa(db, u, req, A, alvo.id, "auto_concessao", 403, "Você não pode conceder acesso a si mesmo.")
+    if alvo.perfil in ("admin", "admin_lgpd"):
+        _recusa(db, u, req, A, alvo.id, "perfil_administrativo", 422,
+                "O acesso de prefeito não é concedido a contas de administração.")
+    cruzada = db.scalar(select(UsuarioSecretaria.id).where(UsuarioSecretaria.usuario_id == u.id,
+                                                          UsuarioSecretaria.secretaria == acs.TODAS,
+                                                          UsuarioSecretaria.cadastrado_por == alvo.email).limit(1))
+    if cruzada is not None:
+        _recusa(db, u, req, A, alvo.id, "concessao_cruzada", 403,
+                "Esta pessoa já concedeu acesso de prefeito a você. Peça a outra pessoa.")
+    inicio = dados.inicio or date.today()
+    v = UsuarioSecretaria(usuario_id=alvo.id, secretaria=acs.TODAS, vigencia_inicio=inicio, vigencia_fim=None,
+                          cadastrado_por=u.email, versao=1)
+    db.add(v)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Este usuário já tem acesso de prefeito.") from None
+    audita(db, u.email, "vinculo_prefeito_conceder", f"usuario:{alvo.id}",
+           {"secretaria": acs.TODAS, "motivo": motivo[:300], "inicio": inicio.isoformat()}, _ip(req), commit=False)
+    db.commit()
+    db.refresh(v)
+    return _vinculo_publico(v, _nomes(db, {u.email}), db)
