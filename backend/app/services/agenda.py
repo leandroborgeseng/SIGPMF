@@ -11,8 +11,9 @@
   Falha avisa por e-mail quando SMTP_HOST e ALERTA_PARA estão configurados (sem host, usuário, senha nem CPF).
 - AG5: só um processo agenda (advisory lock de sessão `agenda:lider`), mesmo com vários workers.
 - AG6: "Executar agora" (admin) marca `forcar`; o próximo ciclo roda o conector mesmo fora do horário e da janela.
-- IN3: no dia a dia a carga é INCREMENTAL (só o alterado desde a marca d'água); a cada AGENDA_COMPLETA_DIAS (e na
-  primeira vez) é COMPLETA, para pegar exclusões na origem. Em ambas, prata/ouro só são refeitas se a bronze mudou.
+- IN3/IN6: a carga da agenda é INCREMENTAL (só o alterado desde a marca d'água). Com AGENDA_COMPLETA_DIAS=0 (padrão)
+  a agenda nunca faz completa: ela só roda manualmente por ADMIN (auditada). Com N > 0, completa a cada N dias e na
+  primeira vez (comportamento antigo). A educação também roda incremental na agenda. Em ambas, prata/ouro só são refeitas se a bronze mudou.
 """
 import logging
 import re
@@ -123,9 +124,13 @@ def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
 
 
 def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
-    """IN3: completa na primeira vez e a cada AGENDA_COMPLETA_DIAS; incremental no resto."""
+    """IN6: AGENDA_COMPLETA_DIAS=0 (padrão) -> sempre incremental (sem marca d'água a tabela é lida inteira, só na
+    primeira vez). N > 0 -> completa na primeira vez e a cada N dias; incremental no resto."""
+    dias = get_settings().agenda_completa_dias
+    if dias <= 0:
+        return "incremental"
     ultima = _utc(ag.ultima_completa_em)
-    if ultima is None or agora - ultima >= timedelta(days=get_settings().agenda_completa_dias):
+    if ultima is None or agora - ultima >= timedelta(days=dias):
         return "completa"
     return "incremental"
 
@@ -261,7 +266,7 @@ def educacao_recusa(db: Session, agora: datetime | None = None) -> tuple[str, st
 
 
 def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=None) -> str:
-    """Mesma carga da rota POST /educacao/conector/completa (cge.completa); a agenda só a dispara."""
+    """IN6/IN9: a agenda dispara a carga INCREMENTAL da educação (cge.incremental); a completa é só manual (ADMIN)."""
     from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
     from app.services import carga_gestaoescolar as cge
     recusa = educacao_recusa(db, agora)
@@ -273,9 +278,9 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
         if leitor is None:
             cfg.valida()
             with LeitorGE(cfg) as lt:
-                ex = cge.completa(db, lt, cfg, USUARIO, agora=agora)
+                ex = cge.incremental(db, lt, cfg, USUARIO, agora=agora)
         else:
-            ex = cge.completa(db, leitor, cfg, USUARIO, agora=agora)
+            ex = cge.incremental(db, leitor, cfg, USUARIO, agora=agora)
     except (PermissionError, cge.CargaRecusada) as exc:
         return _encerra(db, ag, "bloqueada", cge.mensagem_segura(exc), agora, resolvido=False)
     except Exception as exc:  # noqa: BLE001
@@ -284,7 +289,6 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
     ag.ultima_execucao_id = ex.id
     db.commit()
     if ex.status == "sucesso":
-        ag.ultima_completa_em = agora
         _alerta_tabela_vazia(ag, ex)
         return _encerra(db, ag, "sucesso", ex.mensagem or "Carga de educação concluída.", agora, resolvido=True)
     if ex.status == "parcial":
