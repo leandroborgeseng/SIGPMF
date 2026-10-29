@@ -142,6 +142,20 @@ def test_n7_cep():
     assert cep.normaliza(None) == (None, None) and cep.normaliza("") == (None, None) and cep.normaliza(False) == (None, None)
 
 
+@pytest.mark.parametrize("digito", "0123456789")
+def test_n7_nis_digitos_iguais_invalido(digito):
+    # Mata a mutação que remove a checagem de dígitos repetidos: "00000000000" passa no DV.
+    repetido = digito * 11
+    assert nis.normaliza(repetido) == (None, "nis_invalido")
+    assert nis.normaliza(f"{repetido[:3]}.{repetido[3:8]}.{repetido[8:10]}-{repetido[10]}") == (None, "nis_invalido")
+
+
+def test_n7_nis_zeros_passa_no_dv_mas_e_invalido():
+    assert nis.digito_verificador("0" * 10) == "0"
+    assert nis.normaliza("0" * 11) == (None, "nis_invalido")
+    assert nis.normaliza(0) == (None, "nis_invalido")
+
+
 def test_n7_nis():
     n = _nis("1203456789")
     assert nis.normaliza(n) == (n, None)
