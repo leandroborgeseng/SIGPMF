@@ -264,7 +264,10 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
             ex.finalizado_em = datetime.now(UTC)
             parcial = getattr(leitor, "ultima_parcial", None)
             if parcial:  # teto de lotes da SIL: amostra de 1 lote com mais dados na origem (não é a base inteira)
-                ex.mensagem = (f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem. " + ex.mensagem)
+                alerta = parcial.get("alerta")
+                ex.mensagem = (f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem. "
+                               + (f"ALERTA {alerta['motivo']}: {alerta['ccms_distintos']} CCM distinto(s) em "
+                                  f"{alerta['itens']} itens. " if alerta else "") + ex.mensagem)
                 db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"Amostra parcial de {conector}: "
                            f"{parcial['lotes_lidos']} lote(s) lido(s), há mais (teto SIL_MAX_LOTES_POR_EXECUCAO)"))
             db.commit()  # bronze + silver + gold + controle de uma vez
