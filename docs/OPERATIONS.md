@@ -8,6 +8,7 @@
 | HTTP_PORT | porta publicada do frontend |
 | POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD | banco interno (sem porta no host) |
 | JWT_SECRET / JWT_EXPIRA_MINUTOS | assinatura e validade do token |
+| SIGPMF_CHAVE_HASH_SEGREDO | **obrigatório fora de `APP_ENV=test`** (mínimo 32 caracteres; gere com `openssl rand -hex 32`). Segredo do HMAC-SHA256 da `chave_hash` da prata do modelo (`silver.procedencia_valor`, `silver.cidadao_empresa`). Sem ele o backend não sobe e a prata do modelo não calcula chave. Nunca vai para log nem para o `repr` da configuração. Trocar o segredo muda todas as chaves: só com recálculo planejado |
 | ADMIN_EMAIL / ADMIN_PASSWORD | primeiro admin (criado só se não houver usuários) |
 | CPF_REVEAL_PERFIS | perfis que revelam CPF (padrão `admin_lgpd`) |
 | REVELAR_MOTIVO_MIN / REVELAR_CPF_SEGUNDOS | motivo mínimo (10) e tempo até remascarar (60 s) |
@@ -29,6 +30,10 @@
 | CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |
+
+## Prata do modelo (PR-03, migração 0030)
+- **Antes do deploy:** crie `SIGPMF_CHAVE_HASH_SEGREDO` no ambiente (Coolify/Railway). Sem ela o backend recusa subir.
+- **Downgrade da 0030 é destrutivo (R2 do QA #48):** apaga as tabelas `silver.procedencia_valor` (origem/procedência dos valores), `silver.cidadao_empresa` e `silver.empresa`, e as colunas novas de `silver.vinculos`. Faça backup antes e não rode o downgrade em produção sem decisão do Tech Lead/Leandro; os dados só voltam reprocessando a bronze.
 
 ## Backup e restore
 ```bash

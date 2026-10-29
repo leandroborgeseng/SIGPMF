@@ -88,6 +88,12 @@ class Vinculo(Base):
     confianca: Mapped[float] = mapped_column(Float)
     atributos: Mapped[list[str]] = mapped_column(JSONType, default=list)
     fonte_atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 0030 (PR-03): vínculo generalizado; as linhas antigas ficam com os defaults (cidadao/confirmado/producao)
+    entidade: Mapped[str] = mapped_column(String(20), default="cidadao", server_default="cidadao")
+    tipo_chave: Mapped[str | None] = mapped_column(String(30))
+    chave_hash: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="confirmado", server_default="confirmado")
+    ambiente_origem: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
 
 
 class Endereco(Base):

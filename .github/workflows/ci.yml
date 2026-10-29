@@ -78,6 +78,7 @@ jobs:
             echo "HTTP_PORT=18088"
             echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
             echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "SIGPMF_CHAVE_HASH_SEGREDO=$(openssl rand -hex 32)"
             echo "ADMIN_PASSWORD=Ci-$(openssl rand -hex 12)"
           } >> .env
       - run: docker compose config --quiet
