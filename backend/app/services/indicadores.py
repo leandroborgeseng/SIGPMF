@@ -1,7 +1,7 @@
 """Indicador por base: contagens por camada lidas das tabelas reais.
 
 Mapeamento base → camadas (via controle.bases_catalogo.sistemas, códigos de sistema):
-- bronze    = COUNT(*) bronze.registros            WHERE sistema_origem IN sistemas
+- bronze    = COUNT(*) bronze.registros            WHERE sistema_origem IN sistemas (sem SEI reclassificado restrito)
 - prata     = COUNT(*) silver.vinculos             WHERE sistema IN sistemas  (registro correlacionado a um cidadão)
 - ouro      = COUNT(DISTINCT cidadao_id) gold.cidadao_dados WHERE sistema IN sistemas (cidadãos prontos para indicador)
 - pendentes = COUNT(*) silver.correlacoes_pendentes WHERE sistema IN sistemas AND status = 'pendente'
@@ -42,8 +42,17 @@ def ultima_execucao(execs: list[Execucao], b: BaseCatalogo, tipos: tuple[str, ..
     return next((e for e in execs if conj in (e.sistema or "").split("+") and (tipos is None or e.tipo in tipos)), None)
 
 
+def contagem_bronze(db: Session) -> dict[str, int]:
+    """Bronze por sistema SEM as linhas SEI reclassificadas para restrito (#35): a visão de negócio não pode
+    revelar nem a existência do processo."""
+    from app.explorador.servico import QUAR_OCULTA
+    return _por_sistema(db, select(RegistroBronze.sistema_origem, func.count())
+                        .where(RegistroBronze.quarentena.is_distinct_from(QUAR_OCULTA))
+                        .group_by(RegistroBronze.sistema_origem))
+
+
 def indicadores(db: Session) -> list[dict]:
-    bronze = _por_sistema(db, select(RegistroBronze.sistema_origem, func.count()).group_by(RegistroBronze.sistema_origem))
+    bronze = contagem_bronze(db)
     prata = _por_sistema(db, select(Vinculo.sistema, func.count()).group_by(Vinculo.sistema))
     ouro = _por_sistema(db, select(DadoGold.sistema, func.count(func.distinct(DadoGold.cidadao_id))).group_by(DadoGold.sistema))
     # ISS (Munícipe) tem silver própria (silver.municipes), fora de silver.vinculos: conta lá
