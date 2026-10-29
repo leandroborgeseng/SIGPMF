@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     ge_orfa_min: int = Field(30, alias="SIGPMF_EDUCACAO_ORFA_MIN", ge=1, le=1440)
     # Pausa entre lotes da carga completa da educação (ms). Texto: vazio/inválido/negativo = 0 (com WARNING).
     ge_pausa_lote_ms: str | None = Field(None, alias="SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS")
+    # Releitura de UMA fonte da educação no boot (uso único; ver docs/OPERATIONS.md). Vazio = nada acontece.
+    releitura_fonte: str = Field("", alias="SIGPMF_RELEITURA_FONTE")
+    # Espera máxima (s) pelo /health da própria app antes de começar; passou disso = recusa `sem_saude`.
+    releitura_saude_max_s: int = Field(600, alias="SIGPMF_RELEITURA_SAUDE_MAX_S", ge=1, le=3600)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
