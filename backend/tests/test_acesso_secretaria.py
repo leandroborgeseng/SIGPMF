@@ -7,7 +7,7 @@ from sqlalchemy import select, text
 
 from app.core.security import hash_senha
 from app.models.camadas import Cidadao, CidadaoSistemas, DadoGold, EscolaAluno
-from app.models.controle import Auditoria, AuditoriaAcesso, Usuario, UsuarioSecretaria
+from app.models.controle import Auditoria, AuditoriaAcesso, DominioSecretaria, Usuario, UsuarioSecretaria
 from tests.conftest import SENHA
 
 HOJE = date.today()
@@ -707,3 +707,50 @@ def test_c2_cpfs_repetidos_admin_lgpd_exige_motivo(client, rbac, tokens):
     assert r.status_code == 400
     r = client.get("/api/contagens/999999/cpfs-repetidos", headers={**tokens["admin_lgpd"], **MOT})
     assert r.status_code == 404  # passou da regra; contagem inexistente
+
+
+# ---------- QA #50 final (8d90700): D1 domínio do prefeito imutável; D2 ninguém altera o próprio vínculo ----------
+def test_d1_dominio_do_prefeito_nao_muda_de_dono(client, db, rbac, tokens):
+    """Roteiro do Tester: EDUCACAO não vê pendências; admin tenta mover qualidade_dados -> EDUCACAO; continua 403."""
+    _u, h = _so(db, client, "EDUCACAO")
+    assert client.get("/api/silver/pendencias", headers=h).status_code == 403
+    for dominio, destino in (("qualidade_dados", "EDUCACAO"), ("qualidade_dados", "SAUDE"), ("explorador", "EDUCACAO")):
+        r = client.post(B + "/referencia/dominio", json={"dominio": dominio, "secretaria": destino}, headers=tokens["admin"])
+        assert r.status_code == 422, (dominio, destino)
+    assert _neg(db, "dominio_secretaria_recusado", "dominio_do_prefeito") is not None
+    db.expire_all()
+
+    assert db.get(DominioSecretaria, "qualidade_dados").secretaria == "TODAS"
+    assert db.get(DominioSecretaria, "explorador").secretaria == "TODAS"
+    assert client.get("/api/silver/pendencias", headers=h).status_code == 403
+    assert client.get("/api/silver/inconsistencias", headers=h).status_code == 403
+
+
+def _proprio(db, client, perfil, sec, fim=None):
+    eu, h = _usuario(db, client, perfil)
+    _vinculo(db, eu, sec, fim=fim)
+    db.expire_all()
+    v = db.scalar(select(UsuarioSecretaria).where(UsuarioSecretaria.usuario_id == eu.id))
+    return eu, h, v
+
+
+def test_d2_admin_nao_edita_nem_remove_o_proprio_vinculo(client, db, rbac):
+    eu, h, v = _proprio(db, client, "admin", "SAUDE", fim=HOJE + timedelta(days=3))
+    r = client.post(B + "/vinculos/editar", json={"vinculo_id": v.id, "versao": v.versao, "inicio": "2026-01-01", "fim": None}, headers=h)
+    assert r.status_code == 403
+    assert _neg(db, "vinculo_secretaria_editar_recusado", "auto_alteracao") is not None
+    r = client.post(B + "/vinculos/remover", json={"vinculo_id": v.id, "versao": v.versao, "motivo": "ZZTESTE motivo longo"}, headers=h)
+    assert r.status_code == 403
+    assert _neg(db, "vinculo_secretaria_remover_recusado", "auto_alteracao") is not None
+    db.expire_all()
+    linha = db.get(UsuarioSecretaria, v.id)
+    assert linha.vigencia_fim == HOJE + timedelta(days=3) and linha.removido_em is None and linha.versao == v.versao
+
+
+def test_d2_admin_lgpd_nao_remove_o_proprio_prefeito(client, db, rbac):
+    eu, h, v = _proprio(db, client, "admin_lgpd", "TODAS")
+    r = client.post(B + "/vinculos/remover-prefeito", json={"vinculo_id": v.id, "versao": v.versao, "motivo": "ZZTESTE motivo longo"}, headers=h)
+    assert r.status_code == 403
+    assert _neg(db, "vinculo_prefeito_remover_negado", "auto_alteracao") is not None
+    db.expire_all()
+    assert db.get(UsuarioSecretaria, v.id).removido_em is None

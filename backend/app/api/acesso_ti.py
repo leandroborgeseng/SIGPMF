@@ -167,6 +167,10 @@ def salvar_dominio(dados: DominioIn, req: Request, u: Usuario = Depends(admin_ti
     if dados.secretaria not in acs.secretarias(db):
         raise HTTPException(422, "Secretaria desconhecida.")
     d = db.get(DominioSecretaria, dados.dominio)
+    if d is not None and d.secretaria == acs.TODAS:  # QA #50 D1: domínio do prefeito não sai, não muda de dono, nada se altera
+        audita(db, u.email, "dominio_secretaria_recusado", f"dominio:{dados.dominio}",
+               {"razao": "dominio_do_prefeito", "destino": dados.secretaria}, _ip(req))
+        raise HTTPException(422, "Este domínio é do prefeito e não é alterado por esta tela.")
     antes = None if d is None else {"secretaria": d.secretaria, "a_confirmar": d.a_confirmar}
     if d is None:
         d = DominioSecretaria(dominio=dados.dominio)
@@ -244,6 +248,8 @@ def _vinculo_versao(db: Session, vid: int, versao: int) -> UsuarioSecretaria:
 def editar(dados: EditarIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
     _valida_vigencia(dados.inicio, dados.fim)
     v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
+    if v.usuario_id == u.id:  # QA #50 D2: ninguém altera o próprio vínculo
+        _recusa(db, u, req, "vinculo_secretaria_editar_recusado", v.usuario_id, "auto_alteracao", 403, "Você não pode alterar o seu próprio acesso.")
     if v.secretaria == acs.TODAS:  # TL 29/10: o vínculo do prefeito não é editado nem encerrado por nenhuma rota
         raise HTTPException(422, "O acesso do prefeito não é alterado por esta tela. Só o perfil admin_lgpd remove.")
     antes = {"inicio": v.vigencia_inicio.isoformat(), "fim": v.vigencia_fim.isoformat() if v.vigencia_fim else None}
@@ -264,6 +270,8 @@ def remover(dados: RemoverIn, req: Request, u: Usuario = Depends(admin_ti), db: 
     if len(motivo) < acs.MOTIVO_MIN:
         raise HTTPException(422, f"Informe o motivo (mínimo de {acs.MOTIVO_MIN} caracteres).")
     v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
+    if v.usuario_id == u.id:  # QA #50 D2: ninguém altera o próprio vínculo
+        _recusa(db, u, req, "vinculo_secretaria_remover_recusado", v.usuario_id, "auto_alteracao", 403, "Você não pode alterar o seu próprio acesso.")
     if v.secretaria == acs.TODAS:
         raise HTTPException(422, "O acesso do prefeito não é removido por esta tela. Só o perfil admin_lgpd remove.")
     v.removido_por, v.removido_em, v.motivo_remocao = u.email, datetime.now(UTC), motivo
@@ -293,6 +301,8 @@ def remover_prefeito(dados: RemoverIn, req: Request, u: Usuario = Depends(lgpd_p
         audita(db, u.email, "vinculo_prefeito_remover_negado", None, {"razao": "motivo_invalido"}, _ip(req))
         raise HTTPException(422, f"Informe o motivo (mínimo de {acs.MOTIVO_MIN} caracteres).")
     v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
+    if v.usuario_id == u.id:  # QA #50 D2: ninguém altera o próprio vínculo
+        _recusa(db, u, req, "vinculo_prefeito_remover_negado", v.usuario_id, "auto_alteracao", 403, "Você não pode alterar o seu próprio acesso.")
     if v.secretaria != acs.TODAS:
         raise HTTPException(422, "Esta rota remove só o acesso do prefeito.")
     v.removido_por, v.removido_em, v.motivo_remocao = u.email, datetime.now(UTC), motivo
