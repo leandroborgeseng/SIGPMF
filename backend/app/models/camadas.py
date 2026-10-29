@@ -433,3 +433,16 @@ class EscolaResponsavel(Base):
     principal: Mapped[bool | None] = mapped_column(Boolean)
     situacao: Mapped[int | None] = mapped_column(Integer)
     excluido: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SeiProcessoNaoPublico(Base):
+    """0023 (SEI M4): marcador mínimo de processo restrito/sigiloso. Só id, protocolo em dígitos e nível."""
+    __tablename__ = "sei_processos_nao_publicos"
+    __table_args__ = (UniqueConstraint("id_processo", "ambiente_origem", name="uq_sei_nao_publico"),
+                      {"schema": "bronze"})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id_processo: Mapped[str] = mapped_column(String(50))
+    protocolo_digitos: Mapped[str | None] = mapped_column(String(50))
+    nivel_acesso: Mapped[str] = mapped_column(String(5))
+    ambiente_origem: Mapped[str] = mapped_column(String(20))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

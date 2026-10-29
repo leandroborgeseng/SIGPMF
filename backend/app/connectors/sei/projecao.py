@@ -78,25 +78,69 @@ def projeta_documento(d: dict, protocolo: str | None, ambiente: str) -> dict | N
             "unidade": _unidade(d.get("Unidade")), "nivel_acesso": nv, "ambiente_origem": ambiente}
 
 
+def digitos(v: Any) -> str | None:
+    """B6: protocolo comparado só pelos dígitos ("99990.000001/2026-01" == "99990000001202601")."""
+    t = _t(v)
+    d = "".join(ch for ch in t if ch.isdigit()) if t else ""
+    return d or None
+
+
 class Publicos(NamedTuple):
-    """Processos públicos já na bronze: por idProcedimento e por protocolo formatado."""
+    """Processos públicos já na bronze: idProcedimento -> protocolo em dígitos, e dígitos -> idProcedimento."""
+    por_id: dict[str, str | None]
+    por_protocolo: dict[str, str]
+
+    @property
+    def ids(self) -> frozenset[str]:
+        return frozenset(self.por_id)
+
+    @property
+    def protocolos(self) -> frozenset[str]:
+        return frozenset(self.por_protocolo)
+
+
+class NaoPublicos(NamedTuple):
+    """Marcadores mínimos (0023) de processos restritos/sigilosos: por id e por protocolo em dígitos."""
     ids: frozenset[str]
     protocolos: frozenset[str]
 
 
+PUBLICO_OK, RESTRITO, DESCONHECIDO, INCONSISTENTE = "publico", "restrito", "desconhecido", "inconsistente"
+
+
+def classifica_andamento(a: dict, publicos: Publicos, nao_publicos: NaoPublicos | None = None) -> str:
+    """B5: só é público se id E protocolo (dígitos) apontam para o MESMO processo público da bronze.
+    Restrito conhecido (id ou protocolo no marcador) tem precedência; id e protocolo de processos distintos =
+    inconsistente; sem nenhum dos dois conhecido = desconhecido (consulta o pai)."""
+    idp, prot = _t(a.get("idProcesso")), digitos(a.get("protocoloProcedimento"))
+    np = nao_publicos or NaoPublicos(frozenset(), frozenset())
+    if (idp and idp in np.ids) or (prot and prot in np.protocolos):
+        return RESTRITO
+    if idp and prot and idp in publicos.por_id and publicos.por_id[idp] == prot:
+        return PUBLICO_OK
+    if (idp and idp in publicos.por_id) or (prot and prot in publicos.por_protocolo):
+        return INCONSISTENTE
+    return DESCONHECIDO
+
+
 def processo_do_andamento_publico(a: dict, publicos: Publicos) -> bool:
-    idp, prot = _t(a.get("idProcesso")), _t(a.get("protocoloProcedimento"))
-    return bool((idp and idp in publicos.ids) or (prot and prot in publicos.protocolos))
+    return classifica_andamento(a, publicos) == PUBLICO_OK
 
 
-def projeta_andamento(a: dict, ambiente: str, publicos: Publicos) -> dict | None:
+def projeta_andamento(a: dict, ambiente: str, publicos: Publicos, nao_publicos: NaoPublicos | None = None
+                      ) -> dict | None:
     """Só grava andamento cujo processo pai está na bronze como público; o resto não é gravado (revela existência).
     Campos de nível no próprio andamento são ignorados (não existem no OpenAPI)."""
-    if not processo_do_andamento_publico(a, publicos):
+    if classifica_andamento(a, publicos, nao_publicos) != PUBLICO_OK:
         return None
     return {"id_andamento": _t(a.get("idAndamento")), "id_processo": _t(a.get("idProcesso")),
             "protocolo": _t(a.get("protocoloProcedimento")), "id_tarefa": _t(a.get("idTarefa")),
             "data_hora": _t(a.get("dataHora")), "unidade": _unidade(a.get("unidade")), "ambiente_origem": ambiente}
+
+
+def nivel_processo(det: dict) -> str | None:
+    """Nível mais restritivo entre local e global; None (sem nível) é tratado como sigiloso por quem chama."""
+    return nivel(det, "nivelAcessoLocal", "nivelAcessoGlobal")
 
 
 def visao_interessados(lista: list[dict], perfil: str, revela: bool = False) -> list[dict]:

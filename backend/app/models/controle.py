@@ -211,3 +211,16 @@ class CamadasEstado(Base):
     assinatura: Mapped[dict] = mapped_column(JSONType)
     execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
     reconstruido_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SeiPaiPendente(Base):
+    """0023 (SEI M4): tentativas de consulta por processo pai desconhecido (persistem entre execuções; teto 3)."""
+    __tablename__ = "sei_pais_pendentes"
+    __table_args__ = (UniqueConstraint("id_processo", "ambiente_origem", name="uq_sei_pai_pendente"), S)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id_processo: Mapped[str] = mapped_column(String(50))
+    ambiente_origem: Mapped[str] = mapped_column(String(20))
+    tentativas: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    situacao: Mapped[str] = mapped_column(String(20), default="pendente", server_default="pendente")
+    execucao_id: Mapped[int | None] = mapped_column(ForeignKey("controle.execucoes.id"))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -93,7 +93,7 @@ def test_qa_amostra_hml_libera_incremental_oficial(monkeypatch, db):
 def test_qa_andamento_de_processo_sigiloso_gravado(monkeypatch, db):
     a = pj.projeta_andamento({"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026",
                               "descricao": "ZZTESTE livre", "usuarios": {"nome": "ZZ"}}, "oficial",
-                             pj.Publicos(ids=frozenset(), protocolos=frozenset()))
+                             pj.Publicos(por_id={}, por_protocolo={}))
     print("QA_ANDAMENTO_SIGILOSO", a)
     assert a is None  # esperado: não gravar andamento de processo sigiloso
 
@@ -153,12 +153,12 @@ def test_b2_m3_sigilo_vem_do_processo_e_nao_do_andamento(nv):
     a = {"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026"}
     if nv is not None:
         a["nivelAcesso"] = nv
-    vazio = pj.Publicos(ids=frozenset(), protocolos=frozenset())
+    vazio = pj.Publicos(por_id={}, por_protocolo={})
     assert pj.projeta_andamento(a, "oficial", vazio) is None
-    pub = pj.Publicos(ids=frozenset({"9"}), protocolos=frozenset())
+    pub = pj.Publicos(por_id={"9": "112026"}, por_protocolo={"112026": "9"})  # B5: id E protocolo do mesmo público
     assert pj.projeta_andamento(a, "oficial", pub)["id_andamento"] == "A1"
-    pub_prot = pj.Publicos(ids=frozenset(), protocolos=frozenset({"1.1/2026"}))
-    assert pj.projeta_andamento(a, "oficial", pub_prot)["id_andamento"] == "A1"
+    so_id = pj.Publicos(por_id={"9": "999"}, por_protocolo={"999": "9"})
+    assert pj.projeta_andamento(a, "oficial", so_id) is None
 
 
 def test_m1_amostra_oficial_libera_incremental(monkeypatch, db):
