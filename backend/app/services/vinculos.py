@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.identity.cpf import mascara
+from app.identity.nome import mascara_nome
 from app.models.camadas import Cidadao, DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor
 
 NIVEL_MAXIMO = 3
@@ -76,20 +77,22 @@ def _no_possuidor(db: Session, pid: int) -> tuple[dict, ImovelPossuidor]:
             "flags": _flags(0, ["Sem ficha no SIGPMF"]), "cidadao_id": None}, p
 
 
-def _no_empresa(db: Session, ccm: int) -> dict:
+def _no_empresa(db: Session, ccm: int, revela: bool = False) -> dict:
+    """SIL16/ALTO-1: razão social só em claro com revela (admin_lgpd); mascarada por padrão."""
     e = db.get(EmpresaSil, ccm)
     if e is None:
         raise NoInvalido("Empresa não encontrada")
     extra = ["Débito na SIL"] if e.possui_debito else []
     flags = [{"texto": t, "tom": "alerta"} for t in extra]
-    return {"id": f"em:{ccm}", "tipo": "EM", "nome": e.nome or "Empresa sem nome",
+    return {"id": f"em:{ccm}", "tipo": "EM", "nome": (e.nome if revela else mascara_nome(e.nome)) or "Empresa sem nome",
             "doc": f"CCM {ccm} · {mascara_doc(e.documento)}", "flags": flags, "cidadao_id": None}
 
 
-def _empresas_do_doc(db: Session, *, cidadao: str | None = None, documento: str | None = None) -> list[dict]:
+def _empresas_do_doc(db: Session, *, cidadao: str | None = None, documento: str | None = None,
+                     revela: bool = False) -> list[dict]:
     q = select(EmpresaSil.ccm).order_by(EmpresaSil.ccm)
     q = q.where(EmpresaSil.cidadao_id == cidadao) if cidadao else q.where(EmpresaSil.documento == documento)
-    return [_como_vizinho(_no_empresa(db, ccm), f"Titular da inscrição municipal (CCM {ccm})", "SIL · empresa", "Empresas")
+    return [_como_vizinho(_no_empresa(db, ccm, revela), f"Titular da inscrição municipal (CCM {ccm})", "SIL · empresa", "Empresas")
             for ccm in db.scalars(q.limit(100))]
 
 
@@ -97,8 +100,8 @@ def _como_vizinho(no: dict, relacao: str, fonte: str, grupo: str) -> dict:
     return {**no, "relacao": relacao, "fonte": fonte, "grupo": grupo}
 
 
-def explorar(db: Session, no_id: str) -> dict:
-    """Nó + vizinhos diretos agrupados (Imóveis, Possuidores)."""
+def explorar(db: Session, no_id: str, *, revela_empresa: bool = False) -> dict:
+    """Nó + vizinhos diretos agrupados (Imóveis, Possuidores). `revela_empresa` (só admin_lgpd) mostra a razão social."""
     tipo, _, chave = no_id.partition(":")
     vizinhos: list[dict] = []
     if tipo == "pf":
@@ -106,13 +109,13 @@ def explorar(db: Session, no_id: str) -> dict:
         for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == chave)
                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())):
             vizinhos.append(_como_vizinho(_no_imovel(db, p.codi), _rel_posse(p), "IPTU · possuidor", "Imóveis"))
-        vizinhos += _empresas_do_doc(db, cidadao=chave)
+        vizinhos += _empresas_do_doc(db, cidadao=chave, revela=revela_empresa)
     elif tipo == "em":
         try:
             ccm = int(chave)
         except ValueError:
             raise NoInvalido("Nó inválido") from None
-        no = _no_empresa(db, ccm)
+        no = _no_empresa(db, ccm, revela_empresa)
         e = db.get(EmpresaSil, ccm)
         if e.cidadao_id:
             vizinhos.append(_como_vizinho(_no_pessoa(db, e.cidadao_id), "Titular (CPF)", "SIL · empresa", "Titular"))
@@ -139,7 +142,7 @@ def explorar(db: Session, no_id: str) -> dict:
                             .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())):
             vizinhos.append(_como_vizinho(_no_imovel(db, p.codi), _rel_posse(p), "IPTU · possuidor", "Imóveis"))
         if p0.documento:
-            vizinhos += _empresas_do_doc(db, documento=p0.documento)
+            vizinhos += _empresas_do_doc(db, documento=p0.documento, revela=revela_empresa)
     else:
         raise NoInvalido("Nó inválido")
     return {"no": no, "vizinhos": vizinhos}
