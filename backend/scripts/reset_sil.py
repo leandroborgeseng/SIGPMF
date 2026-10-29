@@ -21,12 +21,16 @@ import argparse
 import json
 import re
 import sys
+import zlib
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 SCHEMA_BACKUP_PADRAO = "backup_sil_20261029"
+# Mesma trava das cargas SIL (amostra, amostra_sil e carga completa): crc32("amostra:<SISTEMA>") em app.services.trava,
+# carga_completa._chave_lock e amostra_sil.CHAVE_TRAVA. "sil" minúsculo também, por defesa.
+CHAVES_TRAVA_SIL = (zlib.crc32(b"amostra:SIL"), zlib.crc32(b"amostra:sil"))
 SIL_EXECS = "SELECT id FROM controle.execucoes WHERE lower(sistema) = 'sil'"
 # Cidadão do ouro cuja ÚNICA proveniência é a SIL: sistemas = ["SIL"] e nenhum dado do ouro vindo de outra fonte.
 OURO_SO_SIL = ("SELECT cs.cidadao_id FROM gold.cidadao_sistemas cs WHERE cs.sistemas = '[\"SIL\"]'::jsonb "
@@ -60,7 +64,10 @@ ALVOS_OURO: tuple[Alvo, ...] = (
     Alvo("gold.cidadao_dados", f"cidadao_id IN ({OURO_SO_SIL})"),
     Alvo("gold.cidadao_sistemas", f"cidadao_id IN ({OURO_SO_SIL})"),
 )
+# Sempre: tira "SIL" da lista de sistemas dos cidadãos que ficam no ouro (o só-SIL, sem a flag, fica como está).
+SISTEMAS_COM_SIL = Alvo("gold.cidadao_sistemas", f"sistemas ? 'SIL' AND cidadao_id NOT IN ({OURO_SO_SIL})", "atualiza")
 ATUALIZA = {
+    "gold.cidadao_sistemas": "sistemas = sistemas - 'SIL'",
     "controle.camadas_estado": "execucao_id = NULL",
     "controle.agendamentos": ("ativo = false, forcar = false, ultima_data = NULL, tentativas = 0, "
                               "proxima_tentativa_em = NULL, ultimo_status = NULL, ultima_mensagem = NULL, "
@@ -107,7 +114,7 @@ def alvos(remover_ouro_so_sil: bool) -> list[Alvo]:
     extra = list(ALVOS_OURO) if remover_ouro_so_sil else []
     lst = list(ALVOS)
     i = next(n for n, a in enumerate(lst) if a.tabela == "controle.logs")
-    return lst[:i] + extra + lst[i:]
+    return lst[:i] + extra + [SISTEMAS_COM_SIL] + lst[i:]
 
 
 def _so_sil(a: Alvo) -> bool:
@@ -115,11 +122,13 @@ def _so_sil(a: Alvo) -> bool:
 
 
 def chave(a: Alvo) -> str:
+    if a is SISTEMAS_COM_SIL:
+        return a.tabela + " (tira SIL)"
     return a.tabela + (" (cidadão só SIL)" if _so_sil(a) else "")
 
 
 def nome_backup(a: Alvo) -> str:
-    sufixo = "__so_sil" if _so_sil(a) else ""
+    sufixo = "__so_sil" if _so_sil(a) else "__tira_sil" if a is SISTEMAS_COM_SIL else ""
     return a.tabela.replace(".", "__") + sufixo
 
 
@@ -165,6 +174,11 @@ def _backup(c: Connection, schema: str, lista: list[Alvo], antes: dict[str, int]
         if n != antes[chave(a)]:
             raise Divergencia(f"backup de {a.tabela}: {n} linha(s), esperado {antes[chave(a)]}")
         feito[f"{schema}.{nb}"] = n
+    for a in ALVOS_OURO:  # sem a flag: cópia vazia, para o rollback ser sempre o mesmo SQL
+        if a not in lista:
+            nb = nome_backup(a)
+            c.execute(text(f'CREATE TABLE "{schema}"."{nb}" AS SELECT * FROM {a.tabela} WHERE false'))
+            feito[f"{schema}.{nb}"] = 0
     _restringe(c, schema)
     return feito
 
@@ -196,6 +210,9 @@ def executar(engine: Engine, usuario: str, confirmar: bool = False, remover_ouro
         tx = c.begin()
         try:
             c.execute(text("SET LOCAL lock_timeout = '10s'"))
+            for k in CHAVES_TRAVA_SIL:  # R1: nenhuma carga SIL pode começar (nem estar rodando) durante o reset
+                if not c.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": k}).scalar():
+                    raise Recusa("há uma carga da SIL segurando a trava (amostra:SIL): espere terminar")
             _pre_condicoes(c)
             _verifica_schema(c, schema_backup)
             rel.controles_antes = {k: _conta(c, q) for k, q in CONTROLES.items()}
@@ -211,6 +228,8 @@ def executar(engine: Engine, usuario: str, confirmar: bool = False, remover_ouro
             rel.depois = _contagens(c, [a for a in lista if a.acao == "apaga"])
             ag = c.execute(text("SELECT ativo, ultima_execucao_id FROM controle.agendamentos WHERE conector = 'sil'")).first()
             rel.depois["controle.agendamentos (sil ativo)"] = int(bool(ag and ag.ativo))
+            rel.depois["gold.cidadao_sistemas (tira SIL)"] = _conta(c, f"SELECT count(*) FROM {SISTEMAS_COM_SIL.tabela} "
+                                                                       f"WHERE {SISTEMAS_COM_SIL.filtro}")
             rel.depois["controle.camadas_estado"] = _conta(
                 c, "SELECT count(*) FROM controle.camadas_estado ce JOIN controle.execucoes e ON e.id = ce.execucao_id "
                    "WHERE lower(e.sistema) = 'sil'")
@@ -231,7 +250,9 @@ def executar(engine: Engine, usuario: str, confirmar: bool = False, remover_ouro
             _imprime(saida, "OUTRAS FONTES (iguais antes/depois)", rel.controles_antes)
             if confirmar:
                 tx.commit()
-                saida("COMMIT: reset da SIL aplicado. Agenda da SIL continua ativo=false.")
+                ativo = c.execute(text("SELECT ativo FROM controle.agendamentos WHERE conector = 'sil'")).scalar()
+                c.rollback()
+                saida(f"COMMIT: reset da SIL aplicado. Agenda da SIL (relida após o commit): ativo={str(bool(ativo)).lower()}.")
             else:
                 tx.rollback()
                 saida("SIMULAÇÃO: ROLLBACK, nada foi alterado (nem o schema de backup ficou). "
@@ -253,7 +274,7 @@ def sql_rollback(schema: str = SCHEMA_BACKUP_PADRAO, remover_ouro_so_sil: bool =
     fim a agenda e a camadas_estado voltam aos valores anteriores. A agenda volta como estava (ativo=false)."""
     if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
         raise Recusa("nome de schema de backup inválido")
-    lista = alvos(remover_ouro_so_sil)
+    lista = alvos(True)  # sempre inclui o ouro "só SIL": a cópia fica vazia se a flag não foi usada
     apaga = [a for a in lista if a.acao == "apaga"]
     ordem = [a for a in apaga if a.tabela == "controle.execucoes"] + [a for a in apaga if a.tabela != "controle.execucoes"]
     linhas = ["\\set ON_ERROR_STOP on", "BEGIN;"]
@@ -261,6 +282,8 @@ def sql_rollback(schema: str = SCHEMA_BACKUP_PADRAO, remover_ouro_so_sil: bool =
         linhas.append(f'INSERT INTO {a.tabela} SELECT * FROM "{schema}"."{nome_backup(a)}";')
     sets = ", ".join(f"{c} = b.{c}" for c in AGENDA_ESTADO)
     linhas.append(f'UPDATE controle.agendamentos t SET {sets} FROM "{schema}"."controle__agendamentos" b WHERE t.id = b.id;')
+    linhas.append(f'UPDATE gold.cidadao_sistemas t SET sistemas = b.sistemas '
+                  f'FROM "{schema}"."{nome_backup(SISTEMAS_COM_SIL)}" b WHERE t.cidadao_id = b.cidadao_id;')
     linhas.append(f'UPDATE controle.camadas_estado t SET execucao_id = b.execucao_id '
                   f'FROM "{schema}"."controle__camadas_estado" b WHERE t.id = b.id;')
     linhas.append("INSERT INTO controle.auditoria (usuario, acao, alvo, detalhe) VALUES "
@@ -283,7 +306,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="remove do ouro o cidadão cuja ÚNICA fonte é a SIL (padrão: mantém)")
     p.add_argument("--schema-backup", default=SCHEMA_BACKUP_PADRAO)
     p.add_argument("--imprimir-rollback", action="store_true",
-                   help="só imprime o SQL de rollback (psql -v operador=...); não conecta no banco")
+                   help="só imprime o SQL de rollback (psql -v operador=...); não conecta no banco. Sempre devolve todo o ouro "
+                        "do backup, com ou sem --remover-ouro-so-sil")
     a = p.parse_args(argv)
     if a.imprimir_rollback:
         print(sql_rollback(a.schema_backup, a.remover_ouro_so_sil), end="")

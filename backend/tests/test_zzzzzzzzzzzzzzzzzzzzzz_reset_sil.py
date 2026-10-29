@@ -1,6 +1,8 @@
 """Reset da SIL (scripts/reset_sil.py): só no Postgres de TESTE, com dados sintéticos ZZTESTE. Nenhuma chamada à API."""
 import json
+import threading
 import uuid
+import zlib
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -111,6 +113,11 @@ def _ag(c):
                                 "WHERE conector='sil'")).first())
 
 
+def _sistemas(c, cenario):
+    return dict(c.execute(text("SELECT cidadao_id, sistemas::text FROM gold.cidadao_sistemas WHERE cidadao_id = ANY(:i)"),
+                          {"i": list(cenario.values())}).all())
+
+
 def _schema_existe(c, s):
     return bool(c.execute(text("SELECT 1 FROM pg_namespace WHERE nspname=:s"), {"s": s}).scalar())
 
@@ -158,8 +165,15 @@ def test_reset_so_sil_mantem_outras_fontes_e_auditoria(eng, cenario):
         # backup restrito ao dono e com as contagens do "antes"
         assert c.execute(text(f'SELECT count(*) FROM "{s}"."bronze__registros"')).scalar() == antes["bronze_sil"]
         assert not c.execute(text("SELECT has_schema_privilege('public', :s, 'USAGE')"), {"s": s}).scalar()
+        # "SIL" sai da lista de sistemas de quem fica; o só-SIL (sem a flag) fica como estava
+        sis = dict(c.execute(text("SELECT cidadao_id, sistemas::text FROM gold.cidadao_sistemas WHERE cidadao_id = ANY(:i)"),
+                             {"i": list(cenario.values())}).all())
+        assert sis[cenario["compartilhado"]] == '["SAUDE"]' and sis[cenario["sil_com_obito"]] == "[]"
+        assert sis[cenario["so_sil"]] == '["SIL"]' and sis[cenario["so_outra"]] == '["SAUDE"]'
+        assert c.execute(text(f'SELECT count(*) FROM "{s}"."gold__cidadao_sistemas__tira_sil"')).scalar() >= 2
     assert rel.backup[f"{s}.controle__execucoes"] == antes["ex_sil"]
     assert not any("ZZTESTE-" in x for x in out)  # só contagens na saída
+    assert any("relida após o commit): ativo=false" in x for x in out)
 
 
 def test_flag_ouro_remove_so_quem_e_so_sil(eng, cenario):
@@ -180,9 +194,10 @@ def test_flag_ouro_remove_so_quem_e_so_sil(eng, cenario):
 def test_rollback_do_backup_restaura_contagens_e_checkpoint(eng, cenario, ouro):
     s = _schema()
     with eng.connect() as c:
-        antes, cp, ag = _tudo(c), _cp_sil(c), _ag(c)
+        antes, cp, ag, sis_antes = _tudo(c), _cp_sil(c), _ag(c), _sistemas(c, cenario)
     rs.executar(eng, "ZZTESTE operador", confirmar=True, remover_ouro_so_sil=ouro, schema_backup=s, saida=lambda _: None)
-    sql = rs.sql_rollback(s, ouro).replace(":'operador'", "'ZZTESTE operador'")
+    # sem a flag no rollback: devolve todo o ouro do backup mesmo assim (Low 2)
+    sql = rs.sql_rollback(s).replace(":'operador'", "'ZZTESTE operador'")
     stmts = [x for x in sql.splitlines() if x and not x.startswith("\\") and x not in ("BEGIN;", "COMMIT;")]
     with eng.begin() as c:
         for st in stmts:
@@ -194,6 +209,7 @@ def test_rollback_do_backup_restaura_contagens_e_checkpoint(eng, cenario, ouro):
             {k: v for k, v in antes.items() if k not in ("auditoria", "ce_null")}
         assert depois["ce_null"] == antes["ce_null"]
         assert _cp_sil(c) == cp and _ag(c) == ag
+        assert _sistemas(c, cenario) == sis_antes
 
 
 def test_recusa_agenda_ativa(eng, cenario):
@@ -262,3 +278,104 @@ def test_cli_codigos_de_saida(eng, cenario, monkeypatch, capsys):
     assert "SIMULAÇÃO" in capsys.readouterr().out
     assert rs.main(["--schema-backup", _schema()]) == 2
     assert rs.main(["--imprimir-rollback"]) == 0
+
+
+CHAVE = zlib.crc32(b"amostra:SIL")
+
+
+def test_recusa_com_carga_sil_segurando_a_trava(eng, cenario):
+    """R1: a amostra/carga completa da SIL segura pg_advisory_lock(crc32('amostra:SIL')) -> reset recusa sem mudar nada."""
+    assert CHAVE in rs.CHAVES_TRAVA_SIL
+    from app.services import amostra_sil, carga_completa, trava
+    assert CHAVE == trava.chave_lock("SIL") == carga_completa._chave_lock("SIL") == amostra_sil.CHAVE_TRAVA
+    with eng.connect() as c:
+        antes = _tudo(c)
+    carga = eng.connect()
+    try:
+        assert carga.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": CHAVE}).scalar()
+        s = _schema()
+        with pytest.raises(rs.Recusa, match="trava"):
+            rs.executar(eng, "ZZTESTE operador", confirmar=True, schema_backup=s, saida=lambda _: None)
+        with eng.connect() as c:
+            assert _tudo(c) == antes and not _schema_existe(c, s)
+    finally:
+        carga.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": CHAVE})
+        carga.close()
+
+
+def test_carga_nao_pega_a_trava_durante_o_reset(eng, cenario):
+    """Reverso: enquanto o reset está na transação, a carga SIL (mesma chave, de outra conexão) não consegue a trava."""
+    vistos = []
+
+    def saida(msg):
+        if msg.startswith("== ANTES"):
+            res = {}
+
+            def carga():
+                with eng.connect() as c2:
+                    res["pegou"] = c2.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": CHAVE}).scalar()
+                    if res["pegou"]:
+                        c2.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": CHAVE})
+            t = threading.Thread(target=carga)
+            t.start()
+            t.join(10)
+            vistos.append(res.get("pegou"))
+    rs.executar(eng, "ZZTESTE operador", confirmar=False, schema_backup=_schema(), saida=saida)
+    assert vistos == [False]
+    with eng.connect() as c:  # xact lock solto no fim da transação
+        assert c.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": CHAVE}).scalar()
+        c.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": CHAVE})
+
+
+def test_mutante_mudou_contagem_fora_do_escopo_faz_rollback(eng, cenario, monkeypatch):
+    s = _schema()
+    with eng.connect() as c:
+        antes = _tudo(c)
+    monkeypatch.setitem(rs.CONTROLES, "zz sil (muda)", "SELECT count(*) FROM bronze.registros WHERE upper(sistema_origem)='SIL'")
+    with pytest.raises(rs.Divergencia, match="fora do escopo"):
+        rs.executar(eng, "ZZTESTE operador", confirmar=True, schema_backup=s, saida=lambda _: None)
+    with eng.connect() as c:
+        assert _tudo(c) == antes and not _schema_existe(c, s)
+
+
+def test_mutante_sobrou_linha_sil_faz_rollback(eng, cenario, monkeypatch):
+    s = _schema()
+    with eng.connect() as c:
+        antes = _tudo(c)
+    real, n = rs._contagens, []
+
+    def depois_com_sobra(c, lista):
+        n.append(1)
+        d = real(c, lista)
+        return d if len(n) == 1 else {k: v + 1 for k, v in d.items()}
+    monkeypatch.setattr(rs, "_contagens", depois_com_sobra)
+    with pytest.raises(rs.Divergencia, match="sobraram"):
+        rs.executar(eng, "ZZTESTE operador", confirmar=True, schema_backup=s, saida=lambda _: None)
+    with eng.connect() as c:
+        assert _tudo(c) == antes and not _schema_existe(c, s)
+
+
+def test_mutante_restringe_backup_so_dono(eng, cenario):
+    """Papel de leitura com privilégio padrão em schemas/tabelas novos: o backup tira os dois (e o PUBLIC)."""
+    papel = "zzteste_leitor"
+    with eng.begin() as c:
+        c.execute(text(f"DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{papel}') THEN "
+                       f"CREATE ROLE {papel}; END IF; END$$"))
+        c.execute(text(f"ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO {papel}, PUBLIC"))
+        c.execute(text(f"ALTER DEFAULT PRIVILEGES GRANT USAGE ON SCHEMAS TO {papel}, PUBLIC"))
+    s = _schema()
+    try:
+        rs.executar(eng, "ZZTESTE operador", confirmar=True, schema_backup=s, saida=lambda _: None)
+        with eng.connect() as c:
+            for r in (papel, "public"):
+                assert not c.execute(text("SELECT has_schema_privilege(:r, :s, 'USAGE')"), {"r": r, "s": s}).scalar()
+                assert not c.execute(text("SELECT has_table_privilege(:r, :t, 'SELECT')"),
+                                     {"r": r, "t": f"{s}.bronze__registros"}).scalar()
+            dono = c.execute(text("SELECT current_user")).scalar()
+            assert c.execute(text("SELECT has_table_privilege(:r, :t, 'SELECT')"), {"r": dono, "t": f"{s}.bronze__registros"}).scalar()
+    finally:
+        with eng.begin() as c:
+            c.execute(text(f"ALTER DEFAULT PRIVILEGES REVOKE SELECT ON TABLES FROM {papel}, PUBLIC"))
+            c.execute(text(f"ALTER DEFAULT PRIVILEGES REVOKE USAGE ON SCHEMAS FROM {papel}, PUBLIC"))
+            c.execute(text(f'DROP SCHEMA IF EXISTS "{s}" CASCADE'))
+            c.execute(text(f"DROP ROLE IF EXISTS {papel}"))

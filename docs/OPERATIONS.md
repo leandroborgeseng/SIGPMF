@@ -113,15 +113,19 @@ grava nela uma linha `acao='reset_sil'` (operador, modo, contagens por tabela an
 | `gold.cidadao_dados` | `upper(sistema)='SIL'` de cidadãos que não são "só SIL" | apaga |
 | `controle.logs` | das execuções da SIL | apaga |
 | `controle.checkpoints_carga` | `lower(sistema)='sil'`, produção e o antigo `sandbox` | apaga (a próxima carga recria com `posicao=0`, ou seja, `Sequencia=1`) |
+| `gold.cidadao_sistemas` | cidadãos que ficam no ouro e têm `"SIL"` na lista (menos o "só SIL" mantido sem a flag) | atualiza `sistemas = sistemas - 'SIL'` |
 | `controle.camadas_estado` | as que apontam para uma execução da SIL | atualiza `execucao_id=NULL` |
 | `controle.agendamentos` | `conector='sil'` | volta ao estado inicial, **`ativo=false`** (horário mantido) |
 | `controle.execucoes` | `lower(sistema)='sil'` | apaga |
 | `gold.cidadao_dados` + `gold.cidadao_sistemas` | **só com `--remover-ouro-so-sil`**: cidadão cuja única fonte é a SIL (`sistemas=["SIL"]` e nenhum dado do ouro de outra fonte) | apaga |
 
-Fica de fora: API SIL, outras fontes, `controle.auditoria`, `silver.cidadaos`. O resto do ouro é recalculado pela
-próxima reconstrução da prata/ouro.
+Fica de fora: API SIL, outras fontes, `controle.auditoria`, `silver.cidadaos`. Sem a flag, o cidadão "só SIL"
+continua no ouro com `sistemas=["SIL"]` até a próxima reconstrução do ouro.
 
-**Proteções:** uma transação só; recusa (saída 2) se a agenda da SIL estiver `ativo=true`, se houver execução SIL
+**Proteções:** uma transação só. Logo depois do BEGIN pega `pg_try_advisory_xact_lock` na mesma chave das cargas da
+SIL (`crc32('amostra:SIL')`, a de `app.services.trava.chave_lock`, da carga completa e da `amostra_sil`): se uma carga
+estiver rodando, recusa (saída 2) sem mudar nada; e nenhuma carga SIL começa enquanto o reset não termina. Recusa
+também (saída 2) se a agenda da SIL estiver `ativo=true`, se houver execução SIL
 `em_andamento`, se faltar `--usuario` ou se o schema de backup já existir com tabelas. Confere que nada da SIL sobrou
 e que as contagens das outras fontes (e da auditoria) não mudaram; qualquer divergência dá ROLLBACK (saída 3). A
 saída mostra só contagens.
@@ -130,7 +134,9 @@ saída mostra só contagens.
 `backup_sil_20261029` (`--schema-backup` troca o nome), uma tabela por alvo (`bronze__registros`,
 `controle__execucoes`, ...). Cada cópia tem de bater com a contagem da origem, senão ROLLBACK. O schema fica com
 `REVOKE ALL` de `PUBLIC` e de todos os outros papéis; só o dono (o `POSTGRES_USER`, único papel que o app usa) lê.
-A simulação desfaz também o schema de backup. Opcionalmente, antes de tudo, um dump extra fora do banco:
+A simulação desfaz também o schema de backup. As cópias do ouro "só SIL" (`gold__cidadao_dados__so_sil`,
+`gold__cidadao_sistemas__so_sil`) existem sempre (vazias sem a flag), e `gold__cidadao_sistemas__tira_sil` guarda a
+lista de sistemas anterior. Depois do COMMIT o script relê `controle.agendamentos.ativo` e mostra o valor. Opcionalmente, antes de tudo, um dump extra fora do banco:
 
 ```bash
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc -t bronze.registros -t silver.empresas_sil \
@@ -150,12 +156,13 @@ docker compose exec backend python -m scripts.reset_sil --usuario "Nome do opera
 **Rollback** (devolve as linhas e o checkpoint/agenda anteriores; usa a mesma flag do reset):
 
 ```bash
-docker compose exec backend python -m scripts.reset_sil --imprimir-rollback [--remover-ouro-so-sil] > rollback-sil.sql
+docker compose exec backend python -m scripts.reset_sil --imprimir-rollback > rollback-sil.sql
 docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v operador="Nome"' < rollback-sil.sql
 ```
 
 O SQL é `INSERT INTO <tabela> SELECT * FROM backup_sil_20261029.<cópia>` (execuções primeiro, por causa das FKs),
-depois `UPDATE` da agenda e da `camadas_estado` com os valores do backup, e uma linha `reset_sil_rollback` na
+sempre incluindo todo o ouro que está no backup (com ou sem a flag no reset), depois `UPDATE` da agenda, da
+`gold.cidadao_sistemas` (volta o `"SIL"`) e da `camadas_estado` com os valores do backup, e uma linha `reset_sil_rollback` na
 auditoria, tudo com `ON_ERROR_STOP` numa transação. Só faz sentido antes de uma nova carga da SIL (senão há conflito
 de chave e o psql para sem mudar nada).
 
