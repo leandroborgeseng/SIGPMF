@@ -406,3 +406,32 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .selo.aviso-selo { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-ink); }
 .pp-alerta ul { margin: 0; padding-left: 1.1rem; }
 .pp-alerta p { margin: 0; }
+
+/* PR-06: tela de TI, acesso por secretaria (UXV3/UXV6) */
+.acesso-sec { display: grid; gap: 16px; }
+.acesso-sec form.cartao, .as-form { display: grid; gap: 6px; max-width: 640px; }
+.as-resultados { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.as-usuario { width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 12px; cursor: pointer; font: inherit; color: inherit; min-height: 44px; }
+.as-usuario.ativo, .as-usuario:hover { border-color: var(--brand); background: var(--brand-soft); }
+.as-painel { display: grid; gap: 12px; }
+.as-tabela { width: 100%; border-collapse: collapse; }
+.tabela.as-tabela th, .tabela.as-tabela td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; font-family: var(--font-sans); }
+.as-tabela tbody th { font-weight: 600; }
+.as-acoes { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.perigo { color: var(--danger-ink); }
+.as-historico summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+.as-historico ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.aviso-ok { color: var(--ok-ink); margin: 0; }
+.dialogo label { display: block; margin-top: 8px; }
+.dialogo textarea, .dialogo input { width: 100%; }
+@media (max-width: 760px) {
+  .as-tabela thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .as-tabela, .as-tabela tbody, .as-tabela tr, .as-tabela th, .as-tabela td { display: block; width: 100%; }
+  .as-tabela tr { border: 1px solid var(--line); border-radius: var(--r-card); padding: 10px 12px; margin-bottom: 10px; background: var(--surface); }
+  .as-tabela th, .as-tabela td { border: 0; padding: 4px 0; }
+  .as-tabela td[data-rotulo]::before { content: attr(data-rotulo); display: block; font-size: 12px; color: var(--ink-3); }
+  .as-acoes .btn { flex: 1 1 auto; }
+}
+.btn.danger[disabled], .btn.danger[disabled]:hover { background: var(--muted-bg); color: var(--muted); border-color: var(--line); } /* B1 PR-06: desabilitado padrão (AA) */
+/* M2 PR-06: em telas com a barra inferior fixa (64px), o fim da tela de TI não fica escondido atrás dela */
+@media (max-width: 1023px) { .acesso-sec { padding-bottom: calc(64px + 16px + env(safe-area-inset-bottom)); } }

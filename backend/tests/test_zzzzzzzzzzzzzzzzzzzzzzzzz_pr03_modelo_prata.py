@@ -25,7 +25,10 @@ def _vinculo(db, cid, chave):
 
 
 def test_s1_uma_ponta_e_colunas_aditivas(banco):
-    assert ScriptDirectory.from_config(alembic_cfg()).get_heads() == ["0030"]
+    sd = ScriptDirectory.from_config(alembic_cfg())
+    heads = sd.get_heads()
+    assert len(heads) == 1  # uma ponta só; migrações posteriores (ex.: 0033 do PR-06) podem ficar em cima
+    assert "0030" in {r.revision for r in sd.walk_revisions("base", heads[0])}
     insp = inspect(create_engine(TEST_URL))
     cols = {c["name"] for c in insp.get_columns("vinculos", schema="silver")}
     assert {"entidade", "tipo_chave", "chave_hash", "status", "ambiente_origem"} <= cols

@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
 from app.connectors.sei.rotas import sei
 from app.contagens.rotas import contagens
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(api, prefix="/api")
     app.include_router(explorador, prefix="/api")  # EX1–EX7
     app.include_router(sei, prefix="/api")  # SEI1–SEI8
+    app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
 
     return app

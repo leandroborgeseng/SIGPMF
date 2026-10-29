@@ -290,6 +290,52 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
 7. **Depois de `concluida`, remova `SIGPMF_RELEITURA_FONTE` do Coolify** e religue a agenda
    da educação, se for o caso. Sem a variável, o boot não faz nada.
 
+## Acesso por secretaria (PR-06, `SIGPMF_RBAC_SECRETARIA`)
+
+- Tela de TI: menu **TI → Acesso por secretaria** (`/ti/acesso-secretaria`), só perfil `admin`. Busca por nome ou e-mail
+  (o termo e o id do usuário vão só no corpo de POST, nunca na URL nem no log), vigência, quem cadastrou, remoção com
+  motivo (lógica, nunca DELETE) e histórico vindo de `controle.auditoria`. Prefeito = vínculo "Todas as secretarias".
+- Regra nas consultas nominais (ficha, saúde, impostos, educação, linha do tempo, listas de cidadãos): só com
+  `SIGPMF_RBAC_SECRETARIA=true`. Desligada (padrão) = comportamento de antes. **Ordem para ligar em produção:**
+  1) deploy com a variável ausente; 2) TI cadastra os vínculos de todos os usuários (inclusive o do prefeito);
+  3) só então `SIGPMF_RBAC_SECRETARIA=true` e redeploy. Ligar antes corta o acesso de quem ainda não tem vínculo (403).
+- Com a regra ligada, toda consulta liberada grava `controle.auditoria_acesso` (somente inserção) e toda recusa grava
+  `acesso_secretaria_negado` em `controle.auditoria` (sem PII). Vínculo vencido, futuro ou removido = 403 na hora.
+- Secretarias e mapa domínio → secretaria ficam nas tabelas `controle.secretarias` e `controle.dominio_secretaria`
+  (seed na 0033: EDUCACAO, SAUDE, FAZENDA, ASSISTENCIA_SOCIAL, ADMINISTRACAO, SERVICOS_URBANOS, TODAS; saúde → SAUDE,
+  tributário/impostos → FAZENDA, educação → EDUCACAO, **cemitério → SERVICOS_URBANOS com `a_confirmar=true`**).
+  A TI (admin) ajusta sem deploy por `POST /api/ti/acesso-secretaria/referencia/secretaria|dominio` (upsert auditado,
+  sem DELETE; desativar = `ativo=false`). Vínculo novo só aceita secretaria ativa da tabela. Domínio sem dono = qualquer
+  vínculo vigente.
+- Com vínculo vigente o dado nominal sai **sem máscara, inclusive o CPF completo** (TL 29/10), e a linha de
+  `controle.auditoria_acesso` marca `revelou_cpf`. Admin sem vínculo recebe 403 (confirmado).
+- **Menores só para a Educação; dado clínico (rota da Saúde) só para a Saúde** (prefeito vê tudo, com auditoria).
+- A regra libera só pela secretaria **DONA** do domínio: vínculo com secretaria que não é dona de nenhum domínio do
+  cidadão = 403 (ficha, linha do tempo, /sistemas, acessos); listas e CSV mostram só cidadãos com domínio da dona e
+  escondem menores para quem não é Educação. Domínios do seed além dos da ficha (decisão do TL 29/10):
+  `qualidade_dados` (pendências, inconsistências, confirmar óbito) e `explorador` → TODAS (prefeito); `sei` →
+  ADMINISTRACAO; cemitério → SERVICOS_URBANOS segue `a_confirmar`. Admin sem vínculo perde esses três.
+- **admin_lgpd por função** nesses três (pendências/inconsistências, explorador, confirmar óbito), sem vínculo: motivo
+  obrigatório no cabeçalho `X-SIGPMF-Motivo` (mínimo de 10 caracteres; nunca na URL). Sem motivo = 400 e tentativa
+  auditada (`acesso_por_funcao_negado`); com motivo = `acesso_por_funcao` (com o motivo) + linha em
+  `controle.auditoria_acesso` (secretaria `FUNCAO_ADMIN_LGPD`). Só vale com a regra ligada.
+- Vínculos (QA #50 c2): ninguém concede vínculo a si mesmo (403, auditado, qualquer secretaria). `adicionar` recusa TODAS
+  (422, auditado). O TODAS só sai por `POST /api/ti/acesso-secretaria/vinculos/conceder-prefeito`, exclusivo do
+  `admin_lgpd`, com motivo e sem data de fim. Recusas auditadas: conceder a si mesmo, a conta de perfil admin/admin_lgpd,
+  ou a quem já concedeu TODAS ao solicitante (concessão cruzada). A linha TODAS da referência não muda e nenhum domínio
+  é apontado para TODAS pela API (só o seed). `/contagens/{eid}/cpfs-repetidos` (PR-07): admin_lgpd com motivo no
+  cabeçalho quando a regra está ligada.
+- `/gold/cidadaos/{cid}/sistemas` (e `sistemas` na ficha) sai **vazio para quem não é prefeito** até existir o mapa
+  sistema → domínio.
+- **Pós-MVP:** telas para ajustar `controle.secretarias`/`controle.dominio_secretaria` e para a remoção do vínculo
+  TODAS (hoje só pela API, admin e admin_lgpd respectivamente). Antes de ligar a regra, as telas do explorador e de
+  pendências precisam enviar `X-SIGPMF-Motivo` para o admin_lgpd.
+  O teste `test_qa2_toda_rota_do_app_esta_classificada` falha se surgir rota nova sem classificação.
+- `admin_lgpd` revela CPF, aluno e empresa **por função, sem vínculo**, sempre com motivo e auditoria (sem motivo =
+  400 + `revelar_cpf_negado`). O vínculo TODAS não é editado nem encerrado por `editar`/`remover` (422).
+- Vínculo do prefeito (TODAS): não sai pela tela de TI; só o perfil `admin_lgpd` remove, por
+  `POST /api/ti/acesso-secretaria/vinculos/remover-prefeito`, com motivo (10+ caracteres), auditado.
+
 ## Bancos permitidos da origem SQL Server (R1/R2 do #49)
 - `autoriza_base` aceita só os bancos de `BASES_PERMITIDAS` (`app/connectors/sqlserver/politicas.py`): Saude,
   Cemiterio, ISS, IPTU, Divida, Financeiro, API SIL, FRA_GestaoEscolar, FRA_CoreSSO e Correios. O nome é normalizado

@@ -43,6 +43,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services import acesso_secretaria as acs
 from app.services import agenda as ag
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
@@ -57,6 +58,26 @@ api = APIRouter(dependencies=[Depends(usuario_atual)])
 
 def _ip(req: Request) -> str | None:
     return req.client.host if req.client else None
+
+
+def _dominios_cid(db: Session, cid: str) -> list[str]:
+    """Domínios do cidadão no ouro (para achar a secretaria DONA). Cidadão inexistente = [] (403 antes do 404)."""
+    c = db.get(CidadaoSistemas, cid)
+    return list(c.dominios or []) if c else []
+
+
+dom = acs.dom
+
+
+_AREA_DOMINIO = {"impostos": "tributario"}  # área da linha do tempo -> domínio do ouro
+
+
+def _menor_cid(db: Session, cid: str) -> bool:
+    """R4: o cidadão é menor (ou sem nascimento: trata como menor). Só lê quando a regra está ligada."""
+    if not acs.rbac_ativo():
+        return False
+    c = db.get(Cidadao, cid)
+    return _menor(c.data_nascimento if c else None)
 
 
 @publico.get("/health")
@@ -590,9 +611,35 @@ def _cpfs(db: Session, cids: list[str]) -> dict[str, str]:
         Identificador.cidadao_id.in_(cids), Identificador.tipo == "cpf"))}
 
 
+def _filtra_acesso(q, db: Session, u: Usuario, a: "acs.Acesso"):
+    """PR-06: lista só cidadãos com domínio cuja secretaria dona é do usuário; menores só para Educação/prefeito."""
+    if not a.ativo or a.dominios is None:
+        return q
+    from datetime import date as _date
+
+    from sqlalchemy import String, cast, literal
+    from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+    q = q.where(cast(CidadaoSistemas.dominios, JSONB).op("?|")(cast(literal(sorted(a.dominios)), ARRAY(String))))
+    if not acs.ve_menores(db, u):
+        h = _date.today()
+        try:
+            corte = h.replace(year=h.year - 18)
+        except ValueError:  # 29/02
+            corte = h.replace(year=h.year - 18, day=28)
+        q = q.where(CidadaoSistemas.cidadao_id.in_(select(Cidadao.cidadao_id).where(Cidadao.data_nascimento <= corte)))
+    return q
+
+
 @api.get("/silver/cidadaos")
-def silver_cidadaos(busca: str | None = None, limite: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    q = select(CidadaoSistemas).order_by(CidadaoSistemas.nome)
+def silver_cidadaos(req: Request, busca: str | None = None, limite: int = 50, offset: int = 0,
+                    u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    a = acs.exige_lista(db, u, req, "lista_cidadaos")
+    return _lista_cidadaos(db, u, a, busca, limite, offset)
+
+
+
+def _lista_cidadaos(db: Session, u: Usuario, a, busca: str | None, limite: int, offset: int) -> list[dict]:
+    q = _filtra_acesso(select(CidadaoSistemas).order_by(CidadaoSistemas.nome), db, u, a)
     digitos = normaliza(busca)
     if busca and digitos and len(digitos) == 11:  # busca pelo CPF completo (resposta continua mascarada)
         q = q.where(CidadaoSistemas.cidadao_id.in_(select(Identificador.cidadao_id).where(Identificador.valor == digitos)))
@@ -601,25 +648,26 @@ def silver_cidadaos(busca: str | None = None, limite: int = 50, offset: int = 0,
     rows = list(db.scalars(q.limit(min(limite, 200)).offset(offset)))
     cpfs = _cpfs(db, [r.cidadao_id for r in rows])
     return [{"cidadao_id": r.cidadao_id, "nome": r.nome, "cpf": mascara(cpfs.get(r.cidadao_id)), "sistemas": r.sistemas,
-             "dominios": r.dominios, "atualizado_em": r.atualizado_em} for r in rows]
+             "dominios": [d for d in (r.dominios or []) if a.ve(d)], "atualizado_em": r.atualizado_em} for r in rows]
 
 
 @api.get("/silver/cidadaos.csv", response_class=PlainTextResponse)
-def exporta_csv(db: Session = Depends(get_db)):
-    rows = silver_cidadaos(None, 200, 0, db)
+def exporta_csv(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    a = acs.exige_lista(db, u, req, "lista_cidadaos_csv")
+    rows = _lista_cidadaos(db, u, a, None, 200, 0)
     linhas = ["cidadao_id;nome;cpf;sistemas"] + [
         f"{r['cidadao_id']};{r['nome']};{r['cpf'] or ''};{','.join(r['sistemas'])}" for r in rows]
     return "\n".join(linhas) + "\n"
 
 
-@api.get("/silver/pendencias")
+@api.get("/silver/pendencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def pendencias(db: Session = Depends(get_db)):
     return [{"id": p.id, "sistema": p.sistema, "tabela": p.tabela, "chave_origem": p.chave_origem, "motivo": p.motivo,
              "nome": p.nome, "candidatos": p.candidatos, "detalhe": p.detalhe, "status": p.status}
             for p in db.scalars(select(CorrelacaoPendente).order_by(CorrelacaoPendente.id))]
 
 
-@api.get("/silver/municipes")
+@api.get("/silver/municipes", dependencies=[Depends(dom("tributario"))])
 def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     """M7: documento sempre mascarado; empresas (J) não têm cidadao_id (M3)."""
     q = select(Municipe).order_by(Municipe.nome, Municipe.documento)
@@ -633,7 +681,7 @@ def silver_municipes(tipo: str | None = None, limite: int = 50, offset: int = 0,
 from app.identity.nome import PERFIL_REVELA_EMPRESA, mascara_nome, mascara_texto  # noqa: E402  (reexporta mascara_nome)
 
 
-@api.get("/silver/municipes/pendencias")
+@api.get("/silver/municipes/pendencias", dependencies=[Depends(dom("tributario"))])
 def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """M10: perfil leitura recebe 403; operador/admin veem documento e nome só mascarados (só admin_lgpd vê o nome) (a pendência guarda apenas
     a máscara; a chave é um hash)."""
@@ -646,7 +694,7 @@ def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depe
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 
-@api.get("/silver/inconsistencias")
+@api.get("/silver/inconsistencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def inconsistencias(db: Session = Depends(get_db)):
     return [{"id": i.id, "cidadao_id": i.cidadao_id, "sistema": i.sistema, "chave_origem": i.chave_origem, "tipo": i.tipo,
              "campo": i.campo, "detalhe": i.detalhe} for i in db.scalars(select(Inconsistencia).order_by(Inconsistencia.id))]
@@ -654,12 +702,16 @@ def inconsistencias(db: Session = Depends(get_db)):
 
 @api.get("/gold/cidadaos/{cid}")
 def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    sec = acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid),
+                    revelou_cpf=acs.rbac_ativo())
     c = db.get(CidadaoSistemas, cid) or _404()
     audita(db, u.email, "consulta_ficha", f"cidadao:{cid}", ip=_ip(req))  # FC4: toda abertura de ficha fica registrada
-    dados = list(db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo)))
+    dados = [d for d in db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo))
+             if sec.ve(d.dominio)]
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
-    return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
-            "dominios": c.dominios or [],
+    return {"cidadao_id": cid, "nome": c.nome or "", "cpf": (_cpfs(db, [cid]).get(cid) if sec.sem_mascara else mascara(_cpfs(db, [cid]).get(cid))),
+            "cpf_mascarado": not sec.sem_mascara, "sistemas": (c.sistemas or []) if sec.dominios is None else [],
+            "dominios": [d for d in (c.dominios or []) if sec.ve(d)],
             "dados": [{"dominio": d.dominio, "campo": d.campo,
                        "valor": (normaliza_data_iso(d.valor) or d.valor) if d.campo in CAMPOS_DATA else d.valor, "fonte": d.sistema,
                        "atualizado_em": d.fonte_atualizado_em} for d in dados],
@@ -702,6 +754,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from datetime import date as _date
 
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    acs.exige(db, u, req, "tributario", dominios=["tributario"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
@@ -752,6 +805,8 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
     from datetime import date as _date
 
     from app.models.camadas import Evento
+    sec = acs.exige(db, u, req, "linha_do_tempo", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}",
+                    menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     q = select(Evento).where(Evento.cidadao_id == cid)
     if antes:
@@ -759,7 +814,8 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
             q = q.where(Evento.data < _date.fromisoformat(antes))
         except ValueError:
             raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
-    evs = list(db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200)))))
+    evs = [e for e in db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200))))
+           if sec.ve(_AREA_DOMINIO.get((e.area or "").lower(), (e.area or "").lower()))]
     audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
     return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
                                             "fonte": e.fonte} for e in evs]}
@@ -772,6 +828,7 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
 
     from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
     from app.silver.fatos import nomes
+    acs.exige(db, u, req, "saude", dominios=["saude"], alvo=f"cidadao:{cid}")  # clínico: só a Saúde (inclusive menor)
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
     esp = nomes(db)["especialidades"]
@@ -810,6 +867,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
     if u.perfil not in ("admin", "admin_lgpd"):
         audita(db, u.email, "acesso_negado", req.url.path, {"perfil": u.perfil}, _ip(req))
         raise HTTPException(403, "Perfil sem permissão para esta ação")
+    acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
@@ -820,7 +878,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
                                             "quando": a.criado_em} for a in regs]}
 
 
-@api.get("/vinculos/{no_id}")
+@api.get("/vinculos/{no_id}", dependencies=[Depends(dom("tributario"))])
 def explorar_vinculos(no_id: str, req: Request, motivo: str = "", processo: str = "", nivel: int = 0,
                       u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """VN1–VN4: vizinhos diretos de um nó (pessoa, imóvel ou possuidor). Só admin e admin_lgpd; motivo obrigatório;
@@ -866,9 +924,12 @@ def politicas_retencao_executar(req: Request, u: Usuario = Depends(admin_auditad
 
 
 @api.get("/gold/cidadaos/{cid}/sistemas")
-def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
+def sistemas_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    a = acs.exige(db, u, req, "sistemas", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     c = db.get(CidadaoSistemas, cid) or _404()
-    return {"cidadao_id": cid, "sistemas": c.sistemas, "dominios": c.dominios}
+    # Com a regra ligada, a lista de sistemas (que revela presença em outras áreas) só para o prefeito.
+    return {"cidadao_id": cid, "sistemas": c.sistemas if a.dominios is None else [],
+            "dominios": [d for d in (c.dominios or []) if a.ve(d)]}
 
 
 @api.post("/cidadaos/{cid}/revelar-cpf")
@@ -879,6 +940,8 @@ def revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: Usuario =
         raise HTTPException(403, "Perfil sem permissão para revelar CPF")
     motivo = (dados.motivo or "").strip() if dados else ""
     if len(motivo) < get_settings().revelar_motivo_min:
+        # PR-06 (TL 29/10): admin_lgpd revela por função, sem vínculo; tentativa sem motivo também é auditada (sem PII)
+        audita(db, u.email, "revelar_cpf_negado", f"cidadao:{cid}", {"razao": "motivo_invalido"}, _ip(req))
         raise HTTPException(400, "Informe o motivo para revelar o CPF.")
     cpf = _cpfs(db, [cid]).get(cid)
     if cpf is None:
@@ -891,7 +954,7 @@ MOTIVOS_OBITO = ("obito_revisao", "obito_ambiguo")
 PERFIL_CONFIRMA_OBITO = "admin_lgpd"  # decisão do TL: fixo
 
 
-@api.post("/silver/pendencias/{pid}/confirmar-obito")
+@api.post("/silver/pendencias/{pid}/confirmar-obito", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def confirmar_obito(pid: int, dados: ConfirmaObitoIn, req: Request, u: Usuario = Depends(usuario_atual),
                     db: Session = Depends(get_db)):
     """CM7: só o admin_lgpd confirma; motivo obrigatório; auditado. Nenhum candidato vem pré-selecionado."""
@@ -1060,8 +1123,10 @@ def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
 
 @api.get("/gold/cidadaos/{cid}/educacao")
 def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    sec = acs.exige(db, u, req, "educacao", dominios=["educacao"], alvo=f"cidadao:{cid}", revelou_cpf=acs.rbac_ativo())
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    alunos = _educacao(db, cid, revela=False)
+    # R1 (TL 29/10): com vínculo vigente à Educação, tudo sai sem máscara, inclusive o CPF completo (auditado).
+    alunos = _educacao(db, cid, revela=sec.sem_mascara)
     audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
     return {"cidadao_id": cid, "alunos": alunos}
 
