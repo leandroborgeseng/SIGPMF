@@ -1,7 +1,7 @@
 """Configuração estruturada lida do ambiente (nenhum segredo tem valor padrão)."""
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VERSION = "0.1.0"
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # N3a: números de preenchimento de CPF (vírgula). Dígitos todos iguais já são regra própria.
     cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
     # PR-03 (R1 do QA #48): segredo (>= 32 caracteres, checado no create_app sem ecoar o valor) do HMAC-SHA256 das chaves da prata do modelo. Sem padrão; nunca vai para log.
-    chave_hash_segredo: str | None = Field(None, alias="SIGPMF_CHAVE_HASH_SEGREDO", repr=False)
+    chave_hash_segredo: SecretStr | None = Field(None, alias="SIGPMF_CHAVE_HASH_SEGREDO", repr=False)
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     def _vazio_e_nulo(cls, v):
         """Variável presente e vazia no .env (como no .env.example) = não definida."""
         return None if isinstance(v, str) and not v.strip() else v
+
+    def segredo_chave_hash_ok(self) -> str | None:
+        """Valor do segredo do HMAC, ou None se ausente ou com menos de 32 caracteres úteis (espaços/tabs não contam)."""
+        v = self.chave_hash_segredo.get_secret_value() if self.chave_hash_segredo else ""
+        return v if len((v or "").strip()) >= 32 else None
 
     @property
     def perfis_reveal(self) -> set[str]:

@@ -28,9 +28,9 @@ class ChaveHashSemSegredo(RuntimeError):
 
 
 def segredo_chave_hash() -> bytes:
-    s = get_settings().chave_hash_segredo
-    if not s:
-        raise ChaveHashSemSegredo("SIGPMF_CHAVE_HASH_SEGREDO não definido")
+    s = get_settings().segredo_chave_hash_ok()
+    if s is None:  # ausente, curto ou só espaços/tabs
+        raise ChaveHashSemSegredo("SIGPMF_CHAVE_HASH_SEGREDO ausente ou inválido (mínimo 32 caracteres úteis)")
     return s.encode("utf-8")
 
 

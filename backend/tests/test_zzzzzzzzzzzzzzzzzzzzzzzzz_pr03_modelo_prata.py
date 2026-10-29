@@ -196,3 +196,38 @@ def test_r1_segredo_nunca_aparece_em_repr_nem_log(monkeypatch, caplog):
     finally:
         monkeypatch.undo()
         get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("vazio", [" " * 40, "\t" * 32, " \t" * 20])
+def test_r1_segredo_so_espacos_e_recusado(monkeypatch, vazio):
+    from app.core.config import get_settings
+    from app.main import create_app
+    from app.silver.modelo import ChaveHashSemSegredo, chave_hash
+    try:
+        _com_segredo(monkeypatch, vazio)
+        with pytest.raises(ChaveHashSemSegredo):
+            chave_hash("ZZTESTE-INSC-1")
+        monkeypatch.setenv("APP_ENV", "prod")
+        get_settings.cache_clear()
+        with pytest.raises(RuntimeError, match="SIGPMF_CHAVE_HASH_SEGREDO"):
+            create_app()
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+def test_r1_segredo_secretstr_nao_vaza_em_dump(monkeypatch):
+    from pydantic import SecretStr
+
+    from app.core.config import get_settings
+    segredo = "ZZTESTE-segredo-dump-" + "y" * 20
+    try:
+        _com_segredo(monkeypatch, segredo)
+        s = get_settings()
+        assert isinstance(s.chave_hash_segredo, SecretStr)
+        assert segredo not in str(s.model_dump()) and segredo not in s.model_dump_json()
+        assert segredo not in str(s.model_dump(by_alias=True)) and segredo not in s.model_dump_json(by_alias=True)
+        assert s.segredo_chave_hash_ok() == segredo
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
