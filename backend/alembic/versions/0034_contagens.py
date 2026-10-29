@@ -5,17 +5,17 @@
   auditada. J4b: só a última execução guarda o CPF; as anteriores e as com mais de 30 dias ficam só com os totais
   (cpf = NULL por UPDATE, sem exclusão física).
 
-down_revision = '0026' AINDA (a 0027 já está na main): por decisão do TL, ajustar para a ponta da main só na fila (depois do #47 e #48).
+down_revision = '0029' (ponta da main após #44 0027 e #47 0029).
 
 Revision ID: 0034
-Revises: 0026
+Revises: 0029
 """
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = '0034'
-down_revision = '0026'
+down_revision = '0029'
 branch_labels = None
 depends_on = None
 
