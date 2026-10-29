@@ -391,8 +391,8 @@ def test_cc9_reconciliacao_isolada_bronze_mais_quarentena_igual_origem(db):
                                   execucao_id=ex.id, quarentena="chave_nula", quarentena_campos=["k"]))
     db.commit()
     r = ccomp.reconciliacao(db, sis)
-    assert r["com_pendencia"] == {"origem": 4, "bronze": 3, "quarentena": 1, "ok": True, "status": "ok_com_pendencias"}
-    assert r["faltando"] == {"origem": 4, "bronze": 2, "quarentena": 1, "ok": False, "status": "divergente"}
+    assert r["com_pendencia"] == {"origem": 4, "bronze": 3, "quarentena": 1, "ocultas": 0, "ok": True, "status": "ok_com_pendencias"}
+    assert r["faltando"] == {"origem": 4, "bronze": 2, "quarentena": 1, "ocultas": 0, "ok": False, "status": "divergente"}
 
 
 def test_cc9_limite_proporcional():

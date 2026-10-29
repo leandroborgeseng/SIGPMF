@@ -657,7 +657,10 @@ def decodifica_chave(j: list | None) -> tuple | None:
 
 def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
     """Bronze (chaves distintas por tabela) x COUNT(*) da origem lido no início da carga: ok só se forem iguais
-    (bronze acima = registro que saiu da origem ou chave antiga; bronze abaixo = faltou linha)."""
+    (bronze acima = registro que saiu da origem ou chave antiga; bronze abaixo = faltou linha).
+    `ocultas` (#35): quantas das linhas em quarentena são SEI reclassificado para restrito (só a contagem, sem id
+    nem valor); o total bruto continua igual para bater com a origem."""
+    from app.explorador.servico import QUAR_OCULTA
     out = {}
     for cp in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema)).order_by(CheckpointCarga.id)):
         def conta(quar: bool) -> int:
@@ -665,11 +668,15 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
                 RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
                 RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))) or 0)
         b, q = conta(False), conta(True)
+        oc = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
+            RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
+            RegistroBronze.quarentena == QUAR_OCULTA)) or 0)
         if cp.total_origem is None:  # origem sem contagem (API SIL): não há com o que comparar
-            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ok": True, "status": "sem_contagem"}
+            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ocultas": oc, "ok": True,
+                              "status": "sem_contagem"}
             continue
         ok = b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
-        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ok": ok,
+        out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ocultas": oc, "ok": ok,
                           "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
     return out
 
