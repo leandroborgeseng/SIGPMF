@@ -73,7 +73,7 @@ def test_a2_nenhuma_politica_aponta_para_base_proibida():
 @pytest.mark.parametrize("col", ["Senha", "senha_web", "UserPassword", "api_token", "Renda", "Raca", "Cor",
                                  "Salario_Base", "Religiao", "Etnia", "CID10", "Deficiencia"])
 def test_a3_coluna_proibida_recusada_dentro_de_tabela_permitida(col):
-    pol = Politica(sistema="ZZTESTE", base="ZZTESTE", colunas={"zz_pessoas": ("Codigo", col)})
+    pol = Politica(sistema="ZZTESTE", base="ZZTESTE_test", colunas={"zz_pessoas": ("Codigo", col)})
     with pytest.raises(TabelaRecusada) as e:
         pol.colunas_select("zz_pessoas")
     assert e.value.codigo == "coluna_proibida"

@@ -20,10 +20,13 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.connectors.sqlserver.politicas import BaseRecusada, autoriza_base
 from app.contagens import consultas as C
 from app.contagens.modelos import ContagemCpfRepetido, ContagemExecucao, ContagemResultado
 from app.core.audit import audita
+from app.core.bancos_citados import AcessoRemotoRecusado, bancos_citados
 from app.core.config import get_settings
+from app.core.permissoes_origem import permissoes_de_escrita
 from app.core.sql_guard import ComandoProibido, executa_somente_leitura, garante_somente_leitura
 
 log = logging.getLogger("sigpmf.contagens")
@@ -105,9 +108,11 @@ def valida_agregado(consulta_id: str, linhas: list[dict], numericas, rotulos=())
 def _conector_sqlserver(base: str):
     """Conexão pymssql com o login de contagens (só leitura). Nunca usa SQLSERVER_USER."""
     import pymssql
+
+    from app.connectors.sqlserver.guardas import conecta_guardado
     s = get_settings()
-    return pymssql.connect(server=s.sqlserver_host, port=int(s.sqlserver_port), user=s.sqlserver_contagens_user,
-                           password=s.sqlserver_contagens_password, database=base, login_timeout=int(s.sqlserver_timeout),
+    return conecta_guardado(pymssql.connect, base, server=s.sqlserver_host, port=int(s.sqlserver_port), user=s.sqlserver_contagens_user,
+                           password=s.sqlserver_contagens_password, login_timeout=int(s.sqlserver_timeout),
                            timeout=int(s.sqlserver_consulta_timeout), autocommit=False)
 
 
@@ -151,10 +156,21 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
         if base in falhas_base:
             return None
         if base not in conexoes:
+            try:  # R2 do #49: banco fora da lista permitida nunca abre conexão (vale também para `conectar` injetado)
+                autoriza_base(base)
+            except BaseRecusada as exc:
+                log.info("contagens: base recusada (%s)", exc.codigo)
+                falhas_base[base] = exc.codigo
+                return None
             try:
                 c = conectar(base)
                 if not _login_minimo(c):
                     falhas_base[base] = "login_nao_minimo"
+                    c.close()
+                    return None
+                if permissoes_de_escrita(c):  # R1 do #51: qualquer permissão efetiva de escrita -> recusa
+                    log.warning("contagens: login com permissão de escrita (base %s)", base)
+                    falhas_base[base] = "login_com_escrita"
                     c.close()
                     return None
                 conexoes[base] = c
@@ -176,6 +192,13 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
         db.commit()
 
     def roda(consulta: str, base: str, sql: str, numericas, rotulos=()) -> list[dict] | None:
+        if base != "postgres":
+            try:
+                bancos_citados(sql)
+            except AcessoRemotoRecusado as exc:
+                log.warning("contagens: %s recusada (%s)", consulta, exc.codigo)
+                grava(consulta, base, sql, "falha", exc.codigo, None)
+                return None
         try:
             garante_somente_leitura(sql)
         except ComandoProibido:
@@ -190,6 +213,20 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
                 grava(consulta, base, sql, "falha", "consulta_falhou", None)
                 return None
         else:
+            try:  # TL: consulta cujo banco (ou banco citado no SQL, R2) está fora da lista fica DESLIGADA
+                autoriza_base(base)  # (pulada, sem conexão) até o banco entrar na lista
+                for citado in bancos_citados(sql):
+                    autoriza_base(citado)
+            except AcessoRemotoRecusado as exc:  # OPENQUERY/OPENROWSET/OPENDATASOURCE/4 partes: sempre recusa
+                log.warning("contagens: %s recusada (%s)", consulta, exc.codigo)
+                grava(consulta, base, sql, "falha", exc.codigo, None)
+                return None
+            except BaseRecusada as exc:
+                log.info("contagens: %s desligada (%s)", consulta, exc.codigo)
+                hashes.append({"consulta": consulta, "base": base, "sql_hash": sql_hash(sql)})
+                db.add(ContagemResultado(execucao_id=ex.id, consulta=consulta, base=base, status="desligada",
+                                         codigo=exc.codigo, sql_hash=sql_hash(sql), resultado=None))
+                return None
             c = conn_de(base)
             if c is None:
                 grava(consulta, base, sql, "falha", falhas_base[base], None)
