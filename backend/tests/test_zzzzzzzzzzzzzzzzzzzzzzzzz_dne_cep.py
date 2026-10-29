@@ -156,3 +156,12 @@ def test_r1_colisoes_cep_no_retorno_e_no_log(db, ex, caplog):
     assert "dne_colisoes colisoes_cep=2 linhas_descartadas=3" in caplog.text
     assert a not in caplog.text and "ZZTESTE" not in caplog.text
     assert dne.resolve(db, a)["logradouro"] == "Rua ZZTESTE A1" and dne.resolve(db, b)["logradouro"] == "Rua ZZTESTE B1"
+
+
+def test_ressalva47_id_logradouro_nulo_nao_vence(db, ex):
+    (a,) = _ceps(5, 1)
+    nulo = {**_linha(a, "ZZTESTE Nulo"), "Id_Logradouro": None}
+    for ordem in ([nulo, _linha(a, "ZZTESTE Valido", k=7)], [_linha(a, "ZZTESTE Valido", k=7), nulo]):
+        r = dne.importa(db, ordem, ex)
+        assert r["colisoes_cep"] == 1 and r["duplicados"] == 1
+        assert dne.resolve(db, a)["logradouro"] == "Rua ZZTESTE Valido"

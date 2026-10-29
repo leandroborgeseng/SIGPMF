@@ -42,10 +42,10 @@ def test_timeout_de_consulta_separado_do_login(monkeypatch):
     import pymssql
     visto = {}
     monkeypatch.setattr(pymssql, "connect", lambda **kw: visto.update(kw) or object())
-    SqlServerConnector(ConfigSqlServer("h", 1433, "d", "u", "p", 5, 100, consulta_timeout=120))._conectar()
+    SqlServerConnector(ConfigSqlServer("h", 1433, "zz_d_test", "u", "p", 5, 100, consulta_timeout=120))._conectar()
     assert visto["login_timeout"] == 5 and visto["timeout"] == 120
     # construtor posicional antigo continua valendo (default 120)
-    assert ConfigSqlServer("h", 1433, "d", "u", "p", 5, 100).consulta_timeout == 120
+    assert ConfigSqlServer("h", 1433, "zz_d_test", "u", "p", 5, 100).consulta_timeout == 120
 
 
 class _Leitor:

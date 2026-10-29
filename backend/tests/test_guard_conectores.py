@@ -83,7 +83,7 @@ def test_rollback_mesmo_com_erro_ou_timeout():
 
 
 def _con(limite=100):
-    return SqlServerConnector(ConfigSqlServer(host="h", port=1433, database="d", user="u", password="p",
+    return SqlServerConnector(ConfigSqlServer(host="h", port=1433, database="zz_d_test", user="u", password="p",
                                               timeout=7, amostra_limite=limite))
 
 

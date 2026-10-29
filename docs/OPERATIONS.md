@@ -70,6 +70,11 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   prata/ouro não são refeitas. O log de cada fonte traz "incremental desde <data>; N lidas, X novas, Y alteradas".
   A completa (`/completa`) segue só manual, por ADMIN. Na agenda a educação roda **sempre incremental**, mesmo com
   `AGENDA_COMPLETA_DIAS` > 0 (essa variável não vale para a educação).
+- **Parcial (teto de lotes)**: uma carga que para no teto de lotes (`CARGA_MAX_LOTES`/`GE_MAX_LOTES`) fica "Parcial" e
+  continua do checkpoint na noite seguinte. Parcial não conta como completa (sem `ultima_completa_em`), então uma
+  primeira carga de N lotes leva **~N noites** até a agenda passar para incremental. Quando a mesma agenda termina
+  parcial em duas execuções seguidas, o log traz `WARNING agenda_parcial_repetida conector=<x>` e sai o alerta por
+  e-mail (só com `SMTP_HOST` e `ALERTA_PARA`). Se repetir muitas noites: subir o teto de lotes ou rodar manualmente.
 - **Prata e ouro só quando algo mudou**: antes de reconstruir, compara a assinatura das entradas (bronze: total, maior
   id e quarentena; confirmações de óbito; parâmetros da correlação; hash do código das regras) com a da última
   reconstrução bem-sucedida (`controle.camadas_estado`). Igual = reconstrução pulada ("Nada mudou nas entradas da prata
@@ -259,3 +264,14 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
    variável ainda definida relê de novo — por isso remova a variável logo depois.
 7. **Depois de `concluida`, remova `SIGPMF_RELEITURA_FONTE` do Coolify** e religue a agenda
    da educação, se for o caso. Sem a variável, o boot não faz nada.
+
+## Bancos permitidos da origem SQL Server (R1/R2 do #49)
+- `autoriza_base` aceita só os bancos de `BASES_PERMITIDAS` (`app/connectors/sqlserver/politicas.py`): Saude,
+  Cemiterio, ISS, IPTU, Divida, Financeiro, API SIL, FRA_GestaoEscolar, FRA_CoreSSO e Correios. O nome é normalizado
+  (NFKC, sem caracteres invisíveis, sem colchetes/aspas/`;`/espaços nas pontas, casefold); nome com qualquer decoração
+  além de um par de colchetes é recusado (`base_nome_invalido`), banco de descarte/Internet dá `base_descartada` e o
+  resto `base_fora_da_lista`. Banco novo entra só por PR. **Antes do deploy**, conferir que todo
+  `SQLSERVER_DATABASE*`, `SIGPMF_SRC_GESTAOESCOLAR_DB` e `SIGPMF_SRC_CORESSO_DB` configurado está na lista.
+- Todo leitor novo abre conexão por `app/connectors/sqlserver/guardas.conecta_guardado` (o LeitorGE já usa; o job de
+  contagens do #51 vai usar). `garante_sem_escrita(conn)` usa `fn_my_permissions` (permissões efetivas, inclusive
+  herdadas de papel, `public` e papel customizado) e recusa credencial com INSERT/UPDATE/DELETE/ALTER/CONTROL etc.
