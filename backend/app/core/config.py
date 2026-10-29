@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     cpf_reveal_perfis: str = Field("admin_lgpd", alias="CPF_REVEAL_PERFIS")
     # N3a: números de preenchimento de CPF (vírgula). Dígitos todos iguais já são regra própria.
     cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
+    # PR-03 (R1 do QA #48): segredo (>= 32 caracteres, checado no create_app sem ecoar o valor) do HMAC-SHA256 das chaves da prata do modelo. Sem padrão; nunca vai para log.
+    chave_hash_segredo: str | None = Field(None, alias="SIGPMF_CHAVE_HASH_SEGREDO", repr=False)
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")

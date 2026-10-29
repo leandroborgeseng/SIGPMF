@@ -94,9 +94,16 @@ def test_s4_ligacao_empresa_exige_cpf_valido(db, monkeypatch):
             liga_cidadao_empresa(db, cidadao_id=cid, empresa_id=e.id, cpf=ruim, papel="mei", sistema="ZZ", tabela="t")
     lig = liga_cidadao_empresa(db, cidadao_id=cid, empresa_id=e.id, cpf=CPF_OK, papel="mei", sistema="ZZ", tabela="t")
     assert lig.id and lig.chave_hash != CPF_OK
-    monkeypatch.setenv("CPF_PREENCHIMENTO", CPF_OK)  # N3a: lista vem de configuração
-    with pytest.raises(CpfInvalidoParaLigacao):
-        liga_cidadao_empresa(db, cidadao_id=cid, empresa_id=e.id, cpf=CPF_OK, papel="socio", sistema="ZZ", tabela="t")
+    from app.core.config import get_settings
+    monkeypatch.setenv("CPF_PREENCHIMENTO", CPF_OK)  # N3a: lista vem de configuração (via cpf.classifica)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(CpfInvalidoParaLigacao):
+            liga_cidadao_empresa(db, cidadao_id=cid, empresa_id=e.id, cpf=CPF_OK, papel="socio", sistema="ZZ",
+                                 tabela="t")
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
     db.rollback()
 
 
@@ -121,3 +128,71 @@ def test_status_fora_do_dominio_recusado(db):
         db.execute(text("INSERT INTO silver.vinculos (cidadao_id, sistema, tabela, chave_origem, bronze_id, metodo, "
                         "confianca, atributos, status) VALUES (:c,'ZZ','t','k',0,'cpf',1,'[]','talvez')"), {"c": cid})
     db.rollback()
+
+
+# --- R1 do QA #48: HMAC-SHA256 com segredo do ambiente (dados sintéticos ZZTESTE) ---
+
+def _com_segredo(monkeypatch, valor):
+    from app.core.config import get_settings
+    if valor is None:
+        monkeypatch.delenv("SIGPMF_CHAVE_HASH_SEGREDO", raising=False)
+    else:
+        monkeypatch.setenv("SIGPMF_CHAVE_HASH_SEGREDO", valor)
+    get_settings.cache_clear()
+
+
+def test_r1_chave_hash_e_hmac_com_segredo(monkeypatch):
+    import hashlib
+    import hmac
+
+    from app.core.config import get_settings
+    from app.silver.modelo import chave_hash
+    try:
+        _com_segredo(monkeypatch, "ZZTESTE-segredo-A-" + "a" * 32)
+        h_a = chave_hash(" ZZTESTE-INSC-1 ")
+        assert h_a == hmac.new(("ZZTESTE-segredo-A-" + "a" * 32).encode(), b"ZZTESTE-INSC-1",
+                               hashlib.sha256).hexdigest()
+        assert h_a != hashlib.sha256(b"ZZTESTE-INSC-1").hexdigest()  # não é mais sha256 sem sal
+        assert chave_hash("ZZTESTE-INSC-1") == h_a and len(h_a) == 64
+        _com_segredo(monkeypatch, "ZZTESTE-segredo-B-" + "b" * 32)
+        assert chave_hash("ZZTESTE-INSC-1") != h_a  # depende do segredo
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+def test_r1_sem_segredo_recusa_calcular_e_subir(monkeypatch):
+    from app.core.config import get_settings
+    from app.main import create_app
+    from app.silver.modelo import ChaveHashSemSegredo, chave_hash
+    try:
+        _com_segredo(monkeypatch, None)
+        with pytest.raises(ChaveHashSemSegredo):
+            chave_hash("ZZTESTE-INSC-1")
+        create_app()  # em teste sobe, mas não calcula
+        monkeypatch.setenv("APP_ENV", "prod")
+        get_settings.cache_clear()
+        with pytest.raises(RuntimeError, match="SIGPMF_CHAVE_HASH_SEGREDO"):
+            create_app()
+        _com_segredo(monkeypatch, "ZZTESTE-curto")  # menos de 32 caracteres: não sobe e não ecoa o valor
+        with pytest.raises(RuntimeError) as exc:
+            create_app()
+        assert "ZZTESTE-curto" not in str(exc.value)
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()
+
+
+def test_r1_segredo_nunca_aparece_em_repr_nem_log(monkeypatch, caplog):
+    from app.core.config import get_settings
+    segredo = "ZZTESTE-segredo-que-nao-pode-vazar-" + "x" * 8
+    try:
+        _com_segredo(monkeypatch, segredo)
+        s = get_settings()
+        assert segredo not in repr(s) and segredo not in str(s)
+        from app.silver.modelo import chave_hash
+        chave_hash("ZZTESTE-INSC-9")
+        assert segredo not in caplog.text
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()

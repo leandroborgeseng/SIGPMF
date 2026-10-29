@@ -7,7 +7,7 @@
 - Vínculo: determinístico tem peso 1.0 e status `confirmado`; probabilístico nunca grava `confirmado`.
 """
 import hashlib
-import os
+import hmac
 import unicodedata
 from datetime import datetime
 from typing import Any
@@ -15,28 +15,34 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.identity import cpf as cpf_mod
 from app.models.prata_modelo import CidadaoEmpresa, ProcedenciaValor
 
 METODOS_DETERMINISTICOS = frozenset({"cpf", "cnpj", "inscricao", "cns", "chave_origem", "obito_confirmado",
                                      "confirmacao_humana"})
-# N3a: a lista de preenchimento vem de configuração (env), nunca de constante de dado no código de regra.
-_ENV_PREENCHIMENTO = "CPF_PREENCHIMENTO"
+
+
+class ChaveHashSemSegredo(RuntimeError):
+    """SIGPMF_CHAVE_HASH_SEGREDO ausente: a prata do modelo não calcula chave sem o segredo."""
+
+
+def segredo_chave_hash() -> bytes:
+    s = get_settings().chave_hash_segredo
+    if not s:
+        raise ChaveHashSemSegredo("SIGPMF_CHAVE_HASH_SEGREDO não definido")
+    return s.encode("utf-8")
 
 
 def chave_hash(valor: Any) -> str:
-    """sha256 da chave normalizada: a chave crua (CPF, inscrição) nunca vai para a prata do modelo nem para log."""
-    return hashlib.sha256(str(valor).strip().encode("utf-8")).hexdigest()
-
-
-def cpfs_preenchimento() -> frozenset[str]:
-    bruto = os.environ.get(_ENV_PREENCHIMENTO, "12345678909")
-    return frozenset(d for d in (cpf_mod.normaliza(x.strip()) for x in bruto.split(",")) if d)
+    """HMAC-SHA256 (segredo do ambiente) da chave normalizada: a chave crua (CPF, inscrição) nunca vai para a prata
+    do modelo nem para log, e o hash não pode ser revertido por força bruta sem o segredo."""
+    return hmac.new(segredo_chave_hash(), str(valor).strip().encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def cpf_apto_para_ligacao(valor: Any) -> bool:
-    d = cpf_mod.normaliza(valor)
-    return bool(d) and cpf_mod.valido(d) and d not in cpfs_preenchimento()
+    """N3/N3a pela porta única do PR-01 (`cpf.classifica`): DV, tamanho, dígitos iguais e lista CPF_PREENCHIMENTO."""
+    return cpf_mod.classifica(valor).valor is not None
 
 
 def status_vinculo(metodo: str, confianca: float) -> tuple[str, float]:
