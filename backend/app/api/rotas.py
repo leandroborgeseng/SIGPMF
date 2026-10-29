@@ -977,6 +977,12 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
+    if conector == ag.EDUCACAO:  # educação: trava de concorrência, amostra e janela (mesma regra da carga manual)
+        recusa = ag.educacao_recusa(db)
+        if recusa:
+            audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
+                   {"motivo": recusa[0], "conector": conector}, _ip(req))
+            raise HTTPException(409, recusa[1])
     try:
         ag.forcar(db, conector, u.email)
     except LookupError:
@@ -1072,8 +1078,9 @@ def gestaoescolar_cancelar(req: Request, u: Usuario = Depends(usuario_atual), db
     try:
         ex = cge.solicita_cancelamento(db)
     except cge.CargaRecusada as exc:
-        audita(db, u.email, "gestaoescolar_cancelar_negado", "conector:gestaoescolar:completa", {"motivo": str(exc)}, _ip(req))
-        raise HTTPException(409, str(exc)) from None
+        motivo = cge.mensagem_segura(exc)
+        audita(db, u.email, "gestaoescolar_cancelar_negado", "conector:gestaoescolar:completa", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
     audita(db, u.email, "gestaoescolar_cancelar", f"execucao:{ex.id}",
            {"status": ex.status, "ja_solicitado": ex.ja_solicitado}, _ip(req))
     return {"execucao_id": ex.id, "cancelamento_solicitado": True, "ja_solicitado": ex.ja_solicitado}
@@ -1109,20 +1116,22 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
         cfg.valida()
         if modo == "completa":
             if not cge.amostra_ok(db):
-                raise cge.CargaRecusada(cge.SEM_AMOSTRA)
+                raise cge.CargaRecusada(cge.SEM_AMOSTRA, "sem_amostra")
             if cge.completa_em_andamento(db):
-                raise cge.CargaRecusada(cge.EM_ANDAMENTO)
+                raise cge.CargaRecusada(cge.EM_ANDAMENTO, "em_andamento")
             janela_ignorada = cge.checa_janela(datetime.now(UTC))
             fora_da_janela = not cge.dentro_da_janela(datetime.now(UTC))[0]
     except (PermissionError, cge.CargaRecusada) as exc:
-        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
-        raise HTTPException(409, str(exc)) from None
+        motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
     try:
         with LeitorGE(cfg) as leitor:
             ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
     except cge.CargaRecusada as exc:  # corrida: trava/índice único (0024) recusou a segunda carga
-        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
-        raise HTTPException(409, str(exc)) from None
+        motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
     detalhe = {"status": ex.status, "lidos": ex.lidos}
     if modo == "completa":
         detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela

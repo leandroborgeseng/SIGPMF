@@ -49,6 +49,9 @@ STATUS_TEXTO = {"sucesso": "Concluída", "sem_mudanca": "Sem mudança na origem"
                 "cancelada": "Cancelada", "interrompida": "Interrompida", "demorada": "Ainda em andamento"}
 
 
+MAX_MENSAGEM = 300  # ultima_mensagem na tela (QA #37 R1)
+
+
 class AgendaInvalida(ValueError):
     """Valor recusado (mensagem segura para a tela)."""
 
@@ -219,12 +222,80 @@ def alertar(assunto: str, corpo: str) -> bool:
 
 # ---------------------------------------------------------------- execução
 
+EDUCACAO = "educacao"
+NOME_EDUCACAO = "Educação (GestaoEscolar + CoreSSO)"
+EDUCACAO_SISTEMAS = ("GESTAOESCOLAR",)
+
+
 def _nome(conector: str) -> str:
-    return ccomp.NOMES.get(conector, conector)
+    return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
+
+
+def _educacao_ultima(db: Session) -> Execucao | None:
+    """Última execução real do conector de educação (amostra ou completa, manual ou pela agenda)."""
+    from app.services import carga_gestaoescolar as cge
+    return db.scalar(select(Execucao).where(Execucao.tipo.in_((cge.TIPO_AMOSTRA, cge.TIPO_COMPLETA)))
+                     .order_by(Execucao.id.desc()).limit(1))
+
+
+def educacao_em_andamento(db: Session) -> Execucao | None:
+    """Trava de concorrência da educação: uma execução (amostra ou completa) ainda em andamento."""
+    from app.services import carga_gestaoescolar as cge
+    return db.scalar(select(Execucao).where(Execucao.tipo.in_((cge.TIPO_AMOSTRA, cge.TIPO_COMPLETA)),
+                                            Execucao.status == "em_andamento").order_by(Execucao.id.desc()).limit(1))
+
+
+def educacao_recusa(db: Session, agora: datetime | None = None) -> tuple[str, str] | None:
+    """(motivo, mensagem) que impede rodar a educação agora; None se pode. A janela vem de
+    `carga_gestaoescolar.dentro_da_janela` (um só lugar: a env da janela, quando entrar, vale aqui também)."""
+    from app.services import carga_gestaoescolar as cge
+    if educacao_em_andamento(db) is not None:
+        return "ocupado", "Já existe uma carga de educação em andamento."
+    if not cge.amostra_ok(db):
+        return "sem_amostra", cge.SEM_AMOSTRA
+    try:  # SIGPMF_EDUCACAO_JANELA_NOTURNA=false desliga a trava da janela aqui também (#36)
+        cge.checa_janela(agora or datetime.now(UTC))
+    except cge.CargaRecusada as exc:
+        return "fora_janela", str(exc)
+    return None
+
+
+def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=None) -> str:
+    """Mesma carga da rota POST /educacao/conector/completa (cge.completa); a agenda só a dispara."""
+    from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
+    from app.services import carga_gestaoescolar as cge
+    recusa = educacao_recusa(db, agora)
+    if recusa:
+        return _encerra(db, ag, "ocupada" if recusa[0] == "ocupado" else "bloqueada", recusa[1], agora,
+                        resolvido=False)
+    cfg = ConfigGE.do_ambiente(get_settings())
+    try:
+        if leitor is None:
+            cfg.valida()
+            with LeitorGE(cfg) as lt:
+                ex = cge.completa(db, lt, cfg, USUARIO, agora=agora)
+        else:
+            ex = cge.completa(db, leitor, cfg, USUARIO, agora=agora)
+    except (PermissionError, cge.CargaRecusada) as exc:
+        return _encerra(db, ag, "bloqueada", cge.mensagem_segura(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", cge.mensagem_segura(exc), agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    if ex.status == "sucesso":
+        ag.ultima_completa_em = agora
+        return _encerra(db, ag, "sucesso", ex.mensagem or "Carga de educação concluída.", agora, resolvido=True)
+    if ex.status == "parcial":
+        return _encerra(db, ag, "parcial", ex.mensagem or "Carga de educação parcial.", agora, resolvido=True)
+    return _encerra(db, ag, "falha", ex.mensagem or f"Carga de educação terminou como {ex.status}.", agora,
+                    resolvido=False)
 
 
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
     s = get_settings()
+    if len(mensagem) > MAX_MENSAGEM:
+        mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
     ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
     ini, fim = janela(s.agenda_janela)
     hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
@@ -235,6 +306,8 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
         if ag.tentativas >= s.agenda_tentativas:
             ag.ultima_data, ag.tentativas, ag.proxima_tentativa_em = hoje, 0, None
             mensagem = f"{mensagem} Tentativas esgotadas: fica para o próximo dia."
+            if len(mensagem) > MAX_MENSAGEM:
+                mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
             ag.ultima_mensagem = mensagem
         else:
             ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
@@ -268,6 +341,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
     anterior = ag.ultimo_status
     ag.ultimo_inicio_em, ag.ultimo_status, ag.ultima_mensagem = datetime.now(UTC), "em_andamento", None
     db.commit()
+    if conector == EDUCACAO:
+        return _executar_educacao(db, ag, agora, leitor=leitor)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -331,7 +406,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if ag.conector not in ccomp.CONECTORES_COMPLETA or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector != EDUCACAO) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
@@ -413,7 +488,16 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
         sistema = cc.CONECTORES.get(ag.conector, (None,))[0]
         atual = ccomp.ativa(db, sistema) if sistema else None
         p = proxima(ag, agora, ini, fim)
-        itens.append({
+        extra: dict = {}
+        if ag.conector == EDUCACAO:
+            atual = educacao_em_andamento(db)
+            ult = _educacao_ultima(db)
+            recusa = educacao_recusa(db, agora)
+            extra = {"ultima_execucao_real": _execucao(db, ult.id) if ult else None,
+                     "pode_executar_agora": recusa is None,
+                     "motivo_executar_agora": recusa[1] if recusa else None,
+                     "motivo_executar_agora_codigo": recusa[0] if recusa else None}
+        itens.append({**extra,
             "conector": ag.conector, "nome": _nome(ag.conector), "horario": ag.horario, "ativo": ag.ativo,
             "ordem": ag.ordem, "forcar": ag.forcar, "ultimo_status": ag.ultimo_status,
             "ultimo_status_texto": STATUS_TEXTO.get(ag.ultimo_status or "", ag.ultimo_status),
@@ -424,7 +508,8 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "ultima_execucao": _execucao(db, ag.ultima_execucao_id),
             "em_andamento": _execucao(db, atual.id) if atual else None,
             "atualizado_por": ag.atualizado_por})
-    historico = [{"conector": next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
+    historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS
+                  else next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
                   **_execucao(db, e.id)}
                  for e in db.scalars(select(Execucao).where(Execucao.usuario == USUARIO,
                                                             Execucao.iniciado_em >= agora - timedelta(hours=24))

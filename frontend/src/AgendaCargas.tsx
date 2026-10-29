@@ -9,6 +9,8 @@ type ItemAgenda = {
   ultimo_inicio_em: string | null; ultimo_fim_em: string | null; tentativas: number; proxima_em: string | null
   horario_fora_da_janela: boolean; ultima_execucao: ExecAg | null; em_andamento: ExecAg | null
   proximo_modo?: string; ultima_completa_em?: string | null
+  ultima_execucao_real?: ExecAg | null; pode_executar_agora?: boolean; motivo_executar_agora?: string | null
+  motivo_executar_agora_codigo?: string | null
 }
 export type RespAgenda = {
   habilitada: boolean; janela: string; dia_todo: boolean; fuso: string; pular_sem_mudanca: boolean; alerta_email: boolean
@@ -28,6 +30,8 @@ export function classeStatus(s: string | null): string {
   if (s === 'bloqueada' || s === 'ocupada' || s === 'pausada' || s === 'cancelada') return 'atencao'
   return 'neutro'
 }
+export const EDUCACAO = 'educacao'
+export const STATUS_EXEC: Record<string, string> = { sucesso: 'Concluída', falha: 'Falhou', parcial: 'Parcial', em_andamento: 'Em andamento', sem_novidades: 'Sem novidades' }
 export const MODO: Record<string, string> = { completa: 'Completa', incremental: 'Incremental' }
 const ETAPA: Record<string, string> = { leitura: 'Lendo da origem', prata: 'Tratando (prata)', ouro: 'Unificando cidadãos (ouro)' }
 const hora = (iso: string | null) => iso
@@ -107,6 +111,8 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
         <thead><tr><th scope="col">Conector</th><th scope="col">Horário</th><th scope="col">Próxima</th><th scope="col">Última carga</th>{ehAdmin && <th scope="col"><span className="sr-only">Ações</span></th>}</tr></thead>
         <tbody>
           {d.itens.map((i) => {
+            if (i.conector === EDUCACAO) return <LinhaEducacao key={i.conector} i={i} d={d} ehAdmin={ehAdmin} ocupado={salvando === i.conector}
+              alterar={(dados) => alterar(i, dados)} executar={() => agora(i)} />
             const rodando = i.em_andamento
             const ocupado = salvando === i.conector
             return (
@@ -167,6 +173,80 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
       <LinhaDoTempo d={d} />
     </section>
+  )
+}
+
+/** "00:00-06:00" -> texto do motivo fora da janela, com as horas da configuração real (AGENDA_JANELA). */
+export function foraDaJanela(janela: string): string {
+  const [ini, fim] = janela.split('-')
+  return `Fora da janela noturna (${ini}–${fim}). Disponível a partir das ${ini}.`
+}
+
+/** Educação (GestaoEscolar + CoreSSO): mais uma linha da tabela, com a mesma agenda (PUT/POST) das outras fontes. */
+export function LinhaEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
+  i: ItemAgenda; d: RespAgenda; ehAdmin: boolean; ocupado: boolean
+  alterar: (dados: { horario?: string; ativo?: boolean }) => void; executar: () => void
+}) {
+  const ult = i.ultima_execucao_real ?? null
+  const rodando = i.em_andamento
+  const motivo = !d.habilitada ? 'A agenda está desligada neste ambiente.'
+    : !i.ativo ? 'Ligue a agenda para executar agora.'
+    : rodando ? 'Carga em andamento.'
+    : i.forcar ? 'Já está na fila: começa em até 1 minuto.'
+    : i.pode_executar_agora === false
+      ? (i.motivo_executar_agora_codigo === 'fora_janela' ? foraDaJanela(d.janela) : (i.motivo_executar_agora ?? 'Indisponível agora.'))
+      : null
+  const proxima = i.ativo && d.habilitada && (i.forcar || i.proxima_em)
+    ? (i.forcar ? 'Em até 1 minuto' : curta(i.proxima_em as string)) : 'Sem agendamento'
+  return (
+    <tr>
+      <th scope="row" data-rotulo="Conector">
+        <div className="agenda-ultima">
+          <span>{i.nome}</span>
+          {!i.ativo && <span className="selo neutro"><i aria-hidden="true" />Agenda desligada</span>}
+        </div>
+      </th>
+      <td data-rotulo="Horário">
+        <div className="agenda-horario">
+          {ehAdmin
+            ? <input type="time" className="agenda-hora" aria-label={`Horário da carga de ${i.nome}`} defaultValue={i.horario}
+                key={`edu-${i.horario}`} disabled={ocupado}
+                onBlur={(e) => { if (e.target.value && e.target.value !== i.horario) alterar({ horario: e.target.value }) }} />
+            : <span className="num">{i.horario}</span>}
+          {ehAdmin
+            ? <label className="agenda-chave">
+                <input type="checkbox" role="switch" checked={i.ativo} disabled={ocupado} onChange={(e) => alterar({ ativo: e.target.checked })} />
+                <span>{i.ativo ? 'Ligada' : 'Desligada'}</span><span className="sr-only"> para {i.nome}</span>
+              </label>
+            : <span className="sutil">{i.ativo ? 'Ligada' : 'Desligada'}</span>}
+          <span className="agenda-modo">Diária</span>
+        </div>
+      </td>
+      <td data-rotulo="Próxima"><span>{proxima}</span></td>
+      <td data-rotulo="Última carga">
+        {rodando
+          ? <div className="agenda-ultima"><span className="selo em_andamento"><i aria-hidden="true" />Em andamento · desde {curta(rodando.iniciado_em ?? d.agora)}</span></div>
+          : ult
+            ? <div className="agenda-ultima">
+                <span className={`selo ${classeStatus(ult.status)}`}><i aria-hidden="true" />{STATUS_EXEC[ult.status] ?? ult.status}
+                  {ult.status === 'sucesso' && !ult.lidos ? ' · nenhuma linha nova' : ''}</span>
+                <span className="agenda-modo">{MODO[ult.modo ?? ''] ?? (ult.modo === 'amostra' ? 'Amostra' : ult.modo)}</span>
+                <span className="sutil">{curta(ult.finalizado_em ?? ult.iniciado_em ?? d.agora)}
+                  {ult.lidos ? ` · ${n(ult.lidos)} ${ult.lidos === 1 ? 'linha lida' : 'linhas lidas'}` : ''}</span>
+                {i.ultima_mensagem && <span className="agenda-msg">{i.ultima_mensagem}</span>}
+              </div>
+            : <span className="sutil">Ainda não rodou</span>}
+      </td>
+      {ehAdmin && (
+        <td data-rotulo="Ações">
+          <div className="agenda-ultima">
+            <button className="btn secundario" onClick={executar} disabled={!!motivo || ocupado}
+              aria-describedby={motivo ? 'edu-motivo' : undefined}>Executar agora</button>
+            {motivo && <span id="edu-motivo" className="agenda-msg">{motivo}</span>}
+          </div>
+        </td>
+      )}
+    </tr>
   )
 }
 
