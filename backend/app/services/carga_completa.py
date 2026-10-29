@@ -378,9 +378,12 @@ def _finaliza_parcial(db: Session, ex: Execucao, conector: str, parcial: dict, t
     ex.tabela_atual = None
     _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, **parcial})
     ex.etapa, ex.atualizado_em = "concluida", datetime.now(UTC)
+    motivo = (f"interrompida: página anômala da API ({parcial['alerta']['motivo']}: "
+              f"{parcial['alerta']['ccms_distintos']} CCM distinto(s) em {parcial['alerta']['itens']} itens)"
+              if parcial.get("alerta") else "teto SIL_MAX_LOTES_POR_EXECUCAO")
     _finaliza(db, ex, STATUS_PARCIAL,
               f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem de {NOMES[conector]} "
-              f"(teto SIL_MAX_LOTES_POR_EXECUCAO). lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados}. "
+              f"({motivo}). lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados}. "
               "Não é carga completa: prata e ouro não foram reconstruídas; a próxima execução continua de onde parou.",
               extra=parcial)
 

@@ -39,6 +39,7 @@ class _Sessao:
     def __init__(self, cliente: ClienteSil):
         self.cliente, self.lotes, self.truncado = cliente, 0, False
         self.ultimo_lote_cheio = False  # o último lote veio com LOTE_API itens: a API provavelmente tem mais
+        self.alerta: dict | None = None  # página com CCM repetido / sem CCM novo: a execução para (sem pular checkpoint)
 
     @property
     def ha_mais(self) -> bool:
@@ -46,6 +47,8 @@ class _Sessao:
         return self.truncado and self.ultimo_lote_cheio
 
     def parcial(self) -> dict | None:
+        if self.alerta:
+            return {"parcial": True, "lotes_lidos": self.lotes, "ha_mais": True, "alerta": self.alerta}
         return {"parcial": True, "lotes_lidos": self.lotes, "ha_mais": True} if self.ha_mais else None
 
     def close(self) -> None:
@@ -113,7 +116,19 @@ class SilConnector:
             raise ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
         linhas = [achata_empresa(x.get("empresa") or {}) for x in itens
                   if isinstance(x, dict) and (x.get("empresa") or {}).get("Ccm")]
-        return sorted((r for r in linhas if r["Ccm"] >= sequencia), key=lambda r: r["Ccm"])
+        validas = [r for r in linhas if r["Ccm"] >= sequencia]
+        unicas: dict[int, dict] = {}
+        for r in validas:  # 1 linha por CCM (a 1ª): o checkpoint só anda por CCM distinto de fato gravado
+            unicas.setdefault(r["Ccm"], r)
+        repetidas, fora = len(validas) - len(unicas), len(linhas) - len(validas)
+        if itens and (repetidas or not unicas):
+            # Página com CCM repetido ou sem nenhum CCM novo (>= Sequencia): a execução para aqui, parcial com alerta,
+            # em vez de gastar o teto de lotes em duplicatas. Só contagens no log/auditoria (nada de PII).
+            s.alerta = {"motivo": "ccm_repetido" if repetidas else "sem_ccm_novo", "sequencia": int(sequencia),
+                        "itens": len(itens), "ccms_distintos": len(unicas), "repetidas": repetidas,
+                        "abaixo_da_sequencia": fora}
+            log.warning("SIL: página anômala em consultarlote %s; execução interrompida", s.alerta)
+        return sorted(unicas.values(), key=lambda r: r["Ccm"])
 
     # ------------------------------------------------------------------ interface de leitor
     def _checa_tabela(self, tabela: str) -> None:
@@ -128,6 +143,8 @@ class SilConnector:
         seq = int(ultima[0]) + 1 if ultima and ultima[0] is not None else 1
         out: list[dict] = []
         while len(out) < limite:
+            if conn.alerta:
+                break
             if conn.lotes >= self.max_lotes:
                 if not conn.truncado:
                     conn.truncado = True
@@ -135,9 +152,12 @@ class SilConnector:
                              self.max_lotes)
                 break
             lote = self.lote_empresas(conn, seq)
+            out.extend(lote)
+            if conn.alerta:  # para sem pedir outra página; o checkpoint fica no último CCM gravado
+                conn.truncado = True
+                break
             if not lote:
                 break
-            out.extend(lote)
             if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
                 conn.truncado = True  # teto atingido e a API ainda tem lotes: execução parcial
             prox = lote[-1]["Ccm"] + 1
