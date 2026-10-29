@@ -292,7 +292,7 @@ def _completa(db: Session, leitor, cfg: ConfigGE, usuario, agora: datetime, jane
     teto, lote, pausa = max(1, int(cfg.max_lotes)), int(cfg.lote), pausa_lote_ms()
     try:
         ex = _nova_execucao(db, TIPO_COMPLETA, usuario, "completa")
-    except IntegrityError:  # índice único parcial (0024): outra completa entrou primeiro
+    except IntegrityError:  # índice único parcial (0025): outra completa entrou primeiro
         db.rollback()
         raise CargaRecusada(EM_ANDAMENTO, "em_andamento") from None
     if janela_ignorada:

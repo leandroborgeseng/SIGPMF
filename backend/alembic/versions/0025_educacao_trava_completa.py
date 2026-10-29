@@ -4,14 +4,14 @@ Aditiva. Antes de criar o índice, confere se já existem duplicatas em_andament
 (não apaga nem altera nenhuma linha: resolva com POST /api/educacao/conector/execucoes/{id}/marcar-falha).
 Downgrade remove só o índice.
 
-Revision ID: 0024
-Revises: 0023
+Revision ID: 0025
+Revises: 0024 (0024_agenda_educacao)
 """
 import sqlalchemy as sa
 from alembic import op
 
-revision = '0024'
-down_revision = '0023'
+revision = '0025'
+down_revision = '0024'
 branch_labels = None
 depends_on = None
 
@@ -23,7 +23,7 @@ def upgrade() -> None:
         "SELECT sistema, count(*) FROM controle.execucoes WHERE status = 'em_andamento' "
         "AND tipo = 'carga_gestaoescolar' GROUP BY sistema HAVING count(*) > 1")).fetchall()
     if dup:
-        raise RuntimeError(f"0024: execuções em_andamento duplicadas da educação ({len(dup)} sistema(s)); "
+        raise RuntimeError(f"0025: execuções em_andamento duplicadas da educação ({len(dup)} sistema(s)); "
                            "marque as órfãs como falha antes de migrar.")
     op.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {INDICE} ON controle.execucoes (sistema) "
                "WHERE status = 'em_andamento' AND tipo = 'carga_gestaoescolar'")

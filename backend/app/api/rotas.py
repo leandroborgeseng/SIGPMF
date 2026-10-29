@@ -1128,7 +1128,7 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     try:
         with LeitorGE(cfg) as leitor:
             ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
-    except cge.CargaRecusada as exc:  # corrida: trava/índice único (0024) recusou a segunda carga
+    except cge.CargaRecusada as exc:  # corrida: trava/índice único (0025) recusou a segunda carga
         motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
         audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
         raise HTTPException(409, motivo) from None

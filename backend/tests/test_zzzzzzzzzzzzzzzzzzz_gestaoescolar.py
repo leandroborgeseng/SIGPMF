@@ -890,7 +890,7 @@ def test_b1_corrida_real_duas_threads_20_rodadas_so_uma_inicia(ge):
 
 
 def test_b1_indice_vira_409_auditado_na_rota(monkeypatch, janela_env, ge, client, tokens):
-    """Mesmo se a checagem prévia e a trava falharem (corrida), o índice único (0024) devolve 409 auditado."""
+    """Mesmo se a checagem prévia e a trava falharem (corrida), o índice único (0025) devolve 409 auditado."""
     from app.models.controle import Execucao
     from app.services import carga_gestaoescolar as cge
     _rota_prep(monkeypatch, janela_env, "false")
@@ -1197,3 +1197,36 @@ def test_pausa_mantem_batida(monkeypatch, janela_env, ge):
     ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=2), agora=DIA)
     assert ex.status == "parcial" and len(batidas) >= 4  # antes, ~1 s, ~2 s, depois
     assert max(b - a for a, b in zip(batidas, batidas[1:], strict=False)) < 1.5  # nunca fica > 1,5 s sem batida
+
+
+# ---------------------------------------------------------------- migração 0025: checagem prévia de duplicatas
+def test_migracao_0025_falha_com_duplicatas_sem_apagar_nada(banco):
+    from alembic import command
+    from sqlalchemy import create_engine, text
+
+    from tests.conftest import alembic_cfg
+    eng = create_engine(banco)
+    acfg = alembic_cfg()
+    command.downgrade(acfg, "0024")
+    try:
+        with eng.begin() as c:
+            c.execute(text("UPDATE controle.execucoes SET status = 'falha' WHERE tipo = 'carga_gestaoescolar' "
+                           "AND status = 'em_andamento'"))
+            ids = [c.execute(text("INSERT INTO controle.execucoes (tipo, sistema, status, mensagem) VALUES "
+                                  "('carga_gestaoescolar', 'GESTAOESCOLAR', 'em_andamento', 'ZZTESTE dup') RETURNING id"))
+                   .scalar() for _ in range(2)]
+            antes = c.execute(text("SELECT count(*) FROM controle.execucoes")).scalar()
+        with pytest.raises(RuntimeError, match="duplicadas"):
+            command.upgrade(acfg, "head")
+        with eng.connect() as c:
+            assert c.execute(text("SELECT count(*) FROM controle.execucoes")).scalar() == antes
+            st = dict(c.execute(text("SELECT id, status FROM controle.execucoes WHERE id = ANY(:i)"), {"i": ids}).all())
+            assert st == {ids[0]: "em_andamento", ids[1]: "em_andamento"}
+            assert c.execute(text("SELECT to_regclass('controle.uq_execucoes_educacao_completa_em_andamento')")).scalar() is None
+        with eng.begin() as c:  # resolvidas (como o ADMIN faria com marcar-falha), a migração passa
+            c.execute(text("UPDATE controle.execucoes SET status = 'falha' WHERE id = ANY(:i)"), {"i": ids})
+    finally:
+        command.upgrade(acfg, "head")
+        with eng.connect() as c:
+            assert c.execute(text("SELECT to_regclass('controle.uq_execucoes_educacao_completa_em_andamento')")).scalar()
+        eng.dispose()
