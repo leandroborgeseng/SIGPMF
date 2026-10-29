@@ -358,13 +358,17 @@ def interromper_execucao(conector: str, eid: int, dados: InterromperIn, req: Req
                          u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """CC12: admin interrompe a execução parada (sem processo vivo ou sem atividade além de SIGPMF_CARGA_ALERTA_MIN).
     Motivo obrigatório, auditado. Nada é apagado; a próxima carga começa sem limpar a bronze."""
+    from app.services import carga_gestaoescolar as cge
     from app.services import trava as tv
     conector = _id_conector(db, conector)
-    if conector not in cc.CONECTORES:
+    if conector in ("educacao", "gestaoescolar"):  # carga completa da educação (fora de cc.CONECTORES)
+        sistema, tipos = cge.SISTEMA, (cge.TIPO_COMPLETA,)
+    elif conector in cc.CONECTORES:
+        sistema, tipos = cc.CONECTORES[conector][0], tv.TIPOS_CARGA
+    else:
         _404()
-    sistema = cc.CONECTORES[conector][0]
     ex = db.get(Execucao, eid)
-    if ex is None or ex.sistema != sistema or ex.tipo not in tv.TIPOS_CARGA:
+    if ex is None or ex.sistema != sistema or ex.tipo not in tipos:
         _404()
     if ex.status != "em_andamento":
         raise HTTPException(409, "Esta execução não está em andamento.")
@@ -1070,8 +1074,9 @@ def gestaoescolar_cancelar(req: Request, u: Usuario = Depends(usuario_atual), db
     except cge.CargaRecusada as exc:
         audita(db, u.email, "gestaoescolar_cancelar_negado", "conector:gestaoescolar:completa", {"motivo": str(exc)}, _ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "gestaoescolar_cancelar", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
-    return {"execucao_id": ex.id, "cancelamento_solicitado": True}
+    audita(db, u.email, "gestaoescolar_cancelar", f"execucao:{ex.id}",
+           {"status": ex.status, "ja_solicitado": ex.ja_solicitado}, _ip(req))
+    return {"execucao_id": ex.id, "cancelamento_solicitado": True, "ja_solicitado": ex.ja_solicitado}
 
 
 @api.post("/educacao/conector/execucoes/{eid:int}/marcar-falha", dependencies=[Depends(ADMIN)])
@@ -1112,8 +1117,12 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     except (PermissionError, cge.CargaRecusada) as exc:
         audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
         raise HTTPException(409, str(exc)) from None
-    with LeitorGE(cfg) as leitor:
-        ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
+    try:
+        with LeitorGE(cfg) as leitor:
+            ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
+    except cge.CargaRecusada as exc:  # corrida: trava/índice único (0024) recusou a segunda carga
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": str(exc)}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
     detalhe = {"status": ex.status, "lidos": ex.lidos}
     if modo == "completa":
         detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela

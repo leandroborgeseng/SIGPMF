@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     ge_janela_noturna: str | None = Field(None, alias="SIGPMF_EDUCACAO_JANELA_NOTURNA")
     # Execução da carga completa da educação sem batida (atualizado_em) há mais que N min pode ser marcada falha pelo ADMIN.
     ge_orfa_min: int = Field(30, alias="SIGPMF_EDUCACAO_ORFA_MIN", ge=1, le=1440)
+    # Pausa entre lotes da carga completa da educação (ms). Texto: vazio/inválido/negativo = 0 (com WARNING).
+    ge_pausa_lote_ms: str | None = Field(None, alias="SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS")
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
