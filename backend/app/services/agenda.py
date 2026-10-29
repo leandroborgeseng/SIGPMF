@@ -452,16 +452,22 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
         if horario != ag.horario:
             ag.ultima_data = None  # novo horário vale já hoje
         ag.horario = horario
+    forcar_cancelado = False
     if ativo is not None:
         ag.ativo = ativo
         if ativo:
             ag.tentativas, ag.proxima_tentativa_em = 0, None
+        elif ag.forcar:  # #33 M1: desligar cancela um "Executar agora" pendente (não dispara ao religar)
+            ag.forcar, forcar_cancelado = False, True
     if ordem is not None:
         ag.ordem = ordem
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
            {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}})
+    if forcar_cancelado:
+        audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
+               {"motivo": "forcar_cancelado_desligado", "conector": conector})
     return ag
 
 

@@ -957,14 +957,14 @@ def agenda_alterar(conector: str, dados: AgendaIn, req: Request, u: Usuario = De
 @api.post("/agenda/{conector}/executar-agora", status_code=202)
 def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """AG6: o próximo ciclo da agenda (até AGENDA_INTERVALO_S) roda o conector, mesmo fora do horário e da janela."""
-    if not get_settings().agenda_habilitada:  # #32: desliga geral também recusa e fica na auditoria
-        audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
-               {"motivo": "agenda_desligada", "conector": conector}, _ip(req))
-        raise HTTPException(409, "A agenda está desligada neste ambiente (AGENDA_HABILITADA).")
     from app.models.controle import Agendamento
     item = db.scalar(select(Agendamento).where(Agendamento.conector == conector))
-    if item is None:
+    if item is None:  # #33 B1: conector inexistente dá 404 antes da agenda; nome da URL não vai para a auditoria
         _404()
+    if not get_settings().agenda_habilitada:  # #32: desliga geral também recusa e fica na auditoria
+        audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{item.conector}",
+               {"motivo": "agenda_desligada", "conector": item.conector}, _ip(req))
+        raise HTTPException(409, "A agenda está desligada neste ambiente (AGENDA_HABILITADA).")
     if not item.ativo:  # QA main 3094209: agendamento desligado (ex.: sil, 0015) não roda por "Executar agora"
         audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}", {"motivo": "desligado", "conector": conector},
                _ip(req))

@@ -94,3 +94,68 @@ def test_32_ativo_true_comportamento_mantido(client, tokens, db, monkeypatch):
                      .where(Auditoria.acao == "agenda_executar_agora_recusada")) == n_rec
     _limpa(db)
     get_settings.cache_clear()
+
+
+def test_33_desligar_cancela_executar_agora_pendente_e_audita(client, tokens, db, monkeypatch):
+    """M1: Executar agora pendente + desligar -> forcar False e auditoria; religar não roda fora da janela."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services import agenda as ag
+
+    monkeypatch.setenv("AGENDA_HABILITADA", "true")
+    monkeypatch.setenv("AGENDA_JANELA", "00:00-06:00")
+    get_settings.cache_clear()
+    _ativo(db, True)
+    assert client.post(URL, headers=tokens["admin"]).status_code == 202
+    assert _foto(db)[2] is True
+    execs = _foto(db)[0]
+    r = client.put("/api/agenda/sil", headers=tokens["admin"], json={"ativo": False})
+    assert r.status_code == 200
+    assert next(i for i in r.json()["itens"] if i["conector"] == "sil")["forcar"] is False
+    assert _foto(db)[2] is False
+    aud = db.scalar(select(Auditoria).where(Auditoria.acao == "agenda_executar_agora_cancelado")
+                    .order_by(Auditoria.id.desc()))
+    assert aud.alvo == "agendamento:sil"
+    assert aud.detalhe == {"motivo": "forcar_cancelado_desligado", "conector": "sil"}
+    assert aud.usuario and "@" in aud.usuario
+    _sem_segredo(aud)
+    # religar às 12h (fora da janela 00:00-06:00): nada é devido e o ciclo não abre execução
+    assert client.put("/api/agenda/sil", headers=tokens["admin"], json={"ativo": True}).status_code == 200
+    meio_dia = datetime(2026, 10, 29, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo")).astimezone(UTC)
+    db.expire_all()
+    item = db.scalar(select(Agendamento).where(Agendamento.conector == "sil"))
+    assert item.ativo is True and item.forcar is False
+    assert ag.devido(item, meio_dia, *ag.janela("00:00-06:00")) is False
+    assert ag.ciclo(db, agora=meio_dia, leitores={}, esperar=lambda *a, **k: None) == []
+    assert _foto(db)[0] == execs
+    _limpa(db)
+    get_settings.cache_clear()
+
+
+def test_33_desligar_sem_pendente_nao_audita_cancelamento(client, tokens, db, monkeypatch):
+    monkeypatch.setenv("AGENDA_HABILITADA", "true")
+    get_settings.cache_clear()
+    _ativo(db, True)
+    n = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "agenda_executar_agora_cancelado"))
+    assert client.put("/api/agenda/sil", headers=tokens["admin"], json={"ativo": False}).status_code == 200
+    assert db.scalar(select(func.count()).select_from(Auditoria)
+                     .where(Auditoria.acao == "agenda_executar_agora_cancelado")) == n
+    _limpa(db)
+    get_settings.cache_clear()
+
+
+def test_33_conector_inexistente_404_mesmo_com_agenda_desligada_sem_auditoria(client, tokens, db, monkeypatch):
+    """B1: 404 antes de olhar a agenda; o nome vindo da URL não entra na auditoria."""
+    nome = "conector_inexistente_zz33"
+    for habilitada in ("false", "true"):
+        monkeypatch.setenv("AGENDA_HABILITADA", habilitada)
+        get_settings.cache_clear()
+        n = db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "agenda_executar_agora_recusada"))
+        r = client.post(f"/api/agenda/{nome}/executar-agora", headers=tokens["admin"])
+        assert r.status_code == 404
+        db.expire_all()
+        assert db.scalar(select(func.count()).select_from(Auditoria)
+                         .where(Auditoria.acao == "agenda_executar_agora_recusada")) == n
+        assert db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.alvo.contains(nome))) == 0
+    get_settings.cache_clear()
