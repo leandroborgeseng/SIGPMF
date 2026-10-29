@@ -28,8 +28,8 @@ SECRETARIAS = [("EDUCACAO", "Secretaria de Educação"), ("SAUDE", "Secretaria d
 DOMINIOS = [("educacao", "EDUCACAO", False, None), ("saude", "SAUDE", False, None), ("tributario", "FAZENDA", False, None),
             ("impostos", "FAZENDA", False, None),
             ("cemiterio", "SERVICOS_URBANOS", True, "Valor inicial a confirmar pelo Tech Lead/Leandro"),
-            ("qualidade_dados", "TODAS", True, "Pendências/inconsistências de correlação: só prefeito até decisão"),
-            ("explorador", "TODAS", True, "Explorador de dados brutos: só prefeito até decisão"),
+            ("qualidade_dados", "TODAS", False, "Pendências/inconsistências/óbito: prefeito; admin_lgpd por função com motivo (TL 29/10)"),
+            ("explorador", "TODAS", False, "Explorador: prefeito; admin_lgpd por função com motivo (TL 29/10)"),
             ("sei", "ADMINISTRACAO", True, "Interessados do SEI: a confirmar")]
 
 

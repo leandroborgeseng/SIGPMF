@@ -455,6 +455,11 @@ POR_FUNCAO = {
     ("POST", "/api/cidadaos/{cid}/revelar-cpf"), ("POST", "/api/gold/cidadaos/{cid}/educacao/revelar"),
     ("POST", "/api/gold/cidadaos/{cid}/tributario/revelar-empresas"),
 }
+# admin_lgpd entra por função nestas, com motivo no cabeçalho (TL 29/10); os demais seguem a secretaria dona (prefeito).
+POR_FUNCAO_COM_MOTIVO = {
+    ("GET", "/api/silver/pendencias"), ("GET", "/api/silver/inconsistencias"),
+    ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"),
+} | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
 NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
     ("PUT", "/api/catalogo/sistemas/{sid}"), ("POST", "/api/catalogo/sistemas/{sid}/tabelas"), ("GET", "/api/conectores"),
@@ -503,7 +508,8 @@ def test_qa2_toda_rota_pessoal_aplica_a_regra(client, db, rbac, perfil):
         url = path.replace("{cid}", cid).replace("{pid}", "1").replace("{no_id}", f"pf:{cid}")
         url += "?motivo=ZZTESTE+motivo+longo" if "vinculos" in url else ""
         r = client.request(m, url, headers=h, json={})
-        assert r.status_code == 403, (m, path, r.status_code)
+        esperado = 400 if perfil == "admin_lgpd" and (m, path) in POR_FUNCAO_COM_MOTIVO else 403  # sem motivo
+        assert r.status_code == esperado, (m, path, r.status_code)
         assert "ZZTESTE" not in r.text
 
 
@@ -536,3 +542,48 @@ def test_qa4_todas_nao_e_editado_nem_encerrado(client, db, tokens):
     db.expire_all()
     linha = db.get(UsuarioSecretaria, v["id"])
     assert linha.vigencia_fim is None and linha.removido_em is None and linha.versao == 1
+
+
+# ---------- TL 29/10 18h23: pendências, explorador e óbito = prefeito; admin_lgpd por função com motivo ----------
+MOT = {"X-SIGPMF-Motivo": "ZZTESTE auditoria de qualidade"}
+
+
+@pytest.mark.parametrize("m,url", [("GET", "/api/silver/pendencias"), ("GET", "/api/silver/inconsistencias"),
+                                   ("POST", "/api/explorar/conectores")])
+def test_tl_admin_lgpd_por_funcao_exige_motivo_e_audita(client, db, rbac, tokens, m, url):
+    h = tokens["admin_lgpd"]  # sem vínculo nenhum
+    r = client.request(m, url, headers=h, json={})
+    assert r.status_code == 400
+    db.expire_all()
+    neg = db.scalar(select(Auditoria).where(Auditoria.acao == "acesso_por_funcao_negado").order_by(Auditoria.id.desc()))
+    assert neg.usuario == "admin_lgpd@aion.local" and neg.detalhe == {"razao": "motivo_invalido"}
+    curto = client.request(m, url, headers={**h, "X-SIGPMF-Motivo": "curto"}, json={})
+    assert curto.status_code == 400
+    ok = client.request(m, url, headers={**h, **MOT}, json={})
+    assert ok.status_code == 200, ok.text
+    db.expire_all()
+    a = db.scalar(select(Auditoria).where(Auditoria.acao == "acesso_por_funcao").order_by(Auditoria.id.desc()))
+    assert a.detalhe["motivo"] == MOT["X-SIGPMF-Motivo"] and a.usuario == "admin_lgpd@aion.local"
+    aa = db.scalar(select(AuditoriaAcesso).where(AuditoriaAcesso.usuario == "admin_lgpd@aion.local")
+                   .order_by(AuditoriaAcesso.id.desc()))
+    assert aa.secretaria == "FUNCAO_ADMIN_LGPD"
+
+
+def test_tl_confirmar_obito_admin_lgpd_por_funcao(client, db, rbac, tokens):
+    url = "/api/silver/pendencias/999999/confirmar-obito"
+    corpo = {"cidadao_id": str(uuid.uuid4()), "motivo": "ZZTESTE certidão conferida"}
+    assert client.post(url, headers=tokens["admin_lgpd"], json=corpo).status_code == 400
+    r = client.post(url, headers={**tokens["admin_lgpd"], **MOT}, json=corpo)
+    assert r.status_code not in (400, 403)  # passou da regra; pendência inexistente = 404 da própria rota
+
+
+@pytest.mark.parametrize("url", ["/api/silver/pendencias", "/api/silver/inconsistencias"])
+def test_tl_admin_sem_vinculo_perde_e_prefeito_ve(client, db, rbac, tokens, url):
+    assert client.get(url, headers={**tokens["admin"], **MOT}).status_code == 403  # admin não entra por função
+    _u, hp = _so(db, client, "TODAS", "leitura")
+    assert client.get(url, headers=hp).status_code == 200
+
+
+def test_tl_motivo_por_funcao_so_com_regra_ligada(client, tokens, monkeypatch):
+    monkeypatch.delenv("SIGPMF_RBAC_SECRETARIA", raising=False)
+    assert client.get("/api/silver/pendencias", headers=tokens["admin_lgpd"]).status_code == 200

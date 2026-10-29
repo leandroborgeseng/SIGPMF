@@ -163,3 +163,30 @@ def dom(*dominios: str):
     def dep(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Acesso:
         return exige(db, u, req, req.url.path.split("/api/", 1)[-1][:50], dominios=dominios)
     return dep
+
+
+HEADER_MOTIVO = "X-SIGPMF-Motivo"  # motivo no cabeçalho: nunca na URL nem no log de acesso
+
+
+def dom_ou_lgpd(*dominios: str):
+    """Como `dom`, mas o admin_lgpd entra POR FUNÇÃO, sem vínculo (TL 29/10): motivo obrigatório no cabeçalho
+    X-SIGPMF-Motivo (mínimo MOTIVO_MIN). Sem motivo = 400 e tentativa auditada; com motivo = auditoria + auditoria_acesso."""
+    from fastapi import Depends
+
+    from app.core.db import get_db
+    from app.core.security import usuario_atual
+
+    def dep(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Acesso:
+        recurso = req.url.path.split("/api/", 1)[-1][:50]
+        if rbac_ativo() and u.perfil == "admin_lgpd":
+            ip = req.client.host if req.client else None
+            motivo = (req.headers.get(HEADER_MOTIVO) or "").strip()
+            if len(motivo) < MOTIVO_MIN:
+                audita(db, u.email, "acesso_por_funcao_negado", recurso, {"razao": "motivo_invalido"}, ip)
+                raise HTTPException(400, f"Informe o motivo (mínimo de {MOTIVO_MIN} caracteres).")
+            audita(db, u.email, "acesso_por_funcao", recurso, {"motivo": motivo[:300]}, ip, commit=False)
+            db.add(AuditoriaAcesso(usuario=u.email, secretaria="FUNCAO_ADMIN_LGPD", recurso=recurso, ip=ip))
+            db.commit()
+            return Acesso(True, None)
+        return exige(db, u, req, recurso, dominios=dominios)
+    return dep

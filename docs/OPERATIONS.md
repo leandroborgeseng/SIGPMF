@@ -282,8 +282,18 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
 - **Menores só para a Educação; dado clínico (rota da Saúde) só para a Saúde** (prefeito vê tudo, com auditoria).
 - A regra libera só pela secretaria **DONA** do domínio: vínculo com secretaria que não é dona de nenhum domínio do
   cidadão = 403 (ficha, linha do tempo, /sistemas, acessos); listas e CSV mostram só cidadãos com domínio da dona e
-  escondem menores para quem não é Educação. Domínios do seed além dos da ficha: `qualidade_dados` (pendências,
-  inconsistências, confirmar óbito) e `explorador` → TODAS, `sei` → ADMINISTRACAO, todos `a_confirmar`.
+  escondem menores para quem não é Educação. Domínios do seed além dos da ficha (decisão do TL 29/10):
+  `qualidade_dados` (pendências, inconsistências, confirmar óbito) e `explorador` → TODAS (prefeito); `sei` →
+  ADMINISTRACAO; cemitério → SERVICOS_URBANOS segue `a_confirmar`. Admin sem vínculo perde esses três.
+- **admin_lgpd por função** nesses três (pendências/inconsistências, explorador, confirmar óbito), sem vínculo: motivo
+  obrigatório no cabeçalho `X-SIGPMF-Motivo` (mínimo de 10 caracteres; nunca na URL). Sem motivo = 400 e tentativa
+  auditada (`acesso_por_funcao_negado`); com motivo = `acesso_por_funcao` (com o motivo) + linha em
+  `controle.auditoria_acesso` (secretaria `FUNCAO_ADMIN_LGPD`). Só vale com a regra ligada.
+- `/gold/cidadaos/{cid}/sistemas` (e `sistemas` na ficha) sai **vazio para quem não é prefeito** até existir o mapa
+  sistema → domínio.
+- **Pós-MVP:** telas para ajustar `controle.secretarias`/`controle.dominio_secretaria` e para a remoção do vínculo
+  TODAS (hoje só pela API, admin e admin_lgpd respectivamente). Antes de ligar a regra, as telas do explorador e de
+  pendências precisam enviar `X-SIGPMF-Motivo` para o admin_lgpd.
   O teste `test_qa2_toda_rota_do_app_esta_classificada` falha se surgir rota nova sem classificação.
 - `admin_lgpd` revela CPF, aluno e empresa **por função, sem vínculo**, sempre com motivo e auditoria (sem motivo =
   400 + `revelar_cpf_negado`). O vínculo TODAS não é editado nem encerrado por `editar`/`remover` (422).

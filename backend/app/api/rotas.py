@@ -660,7 +660,7 @@ def exporta_csv(req: Request, u: Usuario = Depends(usuario_atual), db: Session =
     return "\n".join(linhas) + "\n"
 
 
-@api.get("/silver/pendencias", dependencies=[Depends(dom("qualidade_dados"))])
+@api.get("/silver/pendencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def pendencias(db: Session = Depends(get_db)):
     return [{"id": p.id, "sistema": p.sistema, "tabela": p.tabela, "chave_origem": p.chave_origem, "motivo": p.motivo,
              "nome": p.nome, "candidatos": p.candidatos, "detalhe": p.detalhe, "status": p.status}
@@ -694,7 +694,7 @@ def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depe
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 
-@api.get("/silver/inconsistencias", dependencies=[Depends(dom("qualidade_dados"))])
+@api.get("/silver/inconsistencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def inconsistencias(db: Session = Depends(get_db)):
     return [{"id": i.id, "cidadao_id": i.cidadao_id, "sistema": i.sistema, "chave_origem": i.chave_origem, "tipo": i.tipo,
              "campo": i.campo, "detalhe": i.detalhe} for i in db.scalars(select(Inconsistencia).order_by(Inconsistencia.id))]
@@ -954,7 +954,7 @@ MOTIVOS_OBITO = ("obito_revisao", "obito_ambiguo")
 PERFIL_CONFIRMA_OBITO = "admin_lgpd"  # decisão do TL: fixo
 
 
-@api.post("/silver/pendencias/{pid}/confirmar-obito", dependencies=[Depends(dom("qualidade_dados"))])
+@api.post("/silver/pendencias/{pid}/confirmar-obito", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def confirmar_obito(pid: int, dados: ConfirmaObitoIn, req: Request, u: Usuario = Depends(usuario_atual),
                     db: Session = Depends(get_db)):
     """CM7: só o admin_lgpd confirma; motivo obrigatório; auditado. Nenhum candidato vem pré-selecionado."""
