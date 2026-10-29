@@ -71,6 +71,8 @@ class Execucao(Base):
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # IN2 (0012): 'completa' (relê tudo) ou 'incremental' (só o alterado desde a marca d'água); nulo = completa
     modo: Mapped[str | None] = mapped_column(String(20))
+    # SEI7 (0022): ambiente de onde a execução leu ("oficial" ou "homologacao"); nulo nos conectores sem essa noção
+    ambiente_origem: Mapped[str | None] = mapped_column(String(20))
 
     def registra_erro(self, exc: BaseException) -> None:
         from app.services.diagnostico import categoria

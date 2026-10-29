@@ -35,7 +35,10 @@ def _data(v: Any) -> datetime | None:
 
 
 def ambiente_da_origem(sistema: str) -> str:
-    """SIL: o ambiente da base realmente usada (SIL_USAR_SANDBOX); demais sistemas: 'producao'."""
+    """SIL: o ambiente da base realmente usada (SIL_USAR_SANDBOX); SEI: homologação -> 'sandbox'; demais: 'producao'."""
+    if sistema == "SEI":
+        from app.connectors.sei.config import HOMOLOGACAO, ConfigSei
+        return "sandbox" if ConfigSei.do_ambiente().ambiente == HOMOLOGACAO else "producao"
     if sistema != "SIL":
         return "producao"
     from app.connectors.sil.config import ConfigSil
