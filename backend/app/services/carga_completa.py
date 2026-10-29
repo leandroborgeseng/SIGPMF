@@ -29,7 +29,7 @@ from decimal import Decimal
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
-from app.bronze.ingestao import ingere
+from app.bronze.ingestao import ambiente_da_origem, ingere
 from app.connectors.sqlserver.politicas import politica
 from app.core import recursos
 from app.core.audit import audita
@@ -177,9 +177,32 @@ def ordem(sistema: str, tabela: str) -> tuple[str, ...]:
     return tuple(ch) if isinstance(ch, tuple) else (ch,)
 
 
+def _do_ambiente(sistema: str):
+    """A1: checkpoint é por (sistema, tabela, ambiente); só o do ambiente em uso é lido/gravado."""
+    return CheckpointCarga.ambiente == ambiente_da_origem(sistema)
+
+
 def bronze_do_sistema(db: Session, sistema: str) -> int:
+    """M1: só linhas do ambiente em uso contam (na oficial: só 'producao'; bronze da homologação não libera)."""
     return int(db.scalar(select(func.count()).select_from(RegistroBronze)
-                         .where(RegistroBronze.sistema_origem == sistema)) or 0)
+                         .where(RegistroBronze.sistema_origem == sistema,
+                                RegistroBronze.ambiente_origem == ambiente_da_origem(sistema))) or 0)
+
+
+def _ambiente_da_amostra(db: Session, ex: Execucao) -> str:
+    """M1: 'sandbox' se a execução registrou 'ambiente=sandbox' (mensagem/log) ou é uma das amostras da homologação
+    já conhecidas (25/31, ver 0020); senão 'producao'."""
+    from app.services.marca_sandbox_sil import EXECUCOES
+    if ex.id in EXECUCOES or "ambiente=sandbox " in (ex.mensagem or ""):
+        return "sandbox"
+    n = db.scalar(select(func.count()).select_from(Log).where(
+        Log.execucao_id == ex.id, Log.mensagem.contains("ambiente=sandbox ")))
+    return "sandbox" if n else "producao"
+
+
+def _amostra_no_ambiente(db: Session, ex: Execucao) -> bool:
+    """M1: amostra da SIL só libera a carga do mesmo ambiente (na oficial: só amostra feita na oficial)."""
+    return ex.sistema != "SIL" or _ambiente_da_amostra(db, ex) == ambiente_da_origem("SIL")
 
 
 # A amostra da SIL disparada pela tela (amostra_sil -> sil/carga.py) grava o tipo "enriquecimento_sil".
@@ -194,9 +217,9 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     sistema = _sistema(conector)
     tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
     # CC12: amostra órfã (em andamento/interrompida) não apaga a última amostra concluída
-    a = db.scalar(select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
-                                         Execucao.status.not_in(("em_andamento", "interrompida")))
-                  .order_by(Execucao.id.desc()).limit(1))
+    q = (select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
+                                Execucao.status.not_in(("em_andamento", "interrompida"))).order_by(Execucao.id.desc()))
+    a = next((e for e in db.scalars(q.limit(50)) if _amostra_no_ambiente(db, e)), None)
     if a is None:
         return SEM_AMOSTRA
     if a.status not in ("sucesso", "sem_novidades") or bronze_do_sistema(db, sistema) == 0:
@@ -239,7 +262,7 @@ def pode_retomar_camadas(db: Session, sistema: str) -> bool:
                    .order_by(Execucao.id.desc()).limit(1))
     if ex is None or ex.status != "interrompida":
         return False
-    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     tabs = set(cc.tabelas_do_conector(sistema))
     return bool(cps) and tabs <= {c.tabela for c in cps if c.concluida}
 
@@ -324,7 +347,7 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
                       modo=None if somente_camadas else modo)
         if somente_camadas:  # leitura já concluída: total/contagens vêm da bronze, a origem não é lida
             ex.total_origem = sum(c.total_origem or 0 for c in db.scalars(
-                select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
+                select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
         db.add(ex)
         db.commit()
     except Exception:
@@ -354,10 +377,11 @@ def cancelar(db: Session, conector: str) -> Execucao | None:
 
 
 def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, CheckpointCarga]:
-    cps = {c.tabela: c for c in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema))}
+    cps = {c.tabela: c for c in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema)))}
     for t in tabelas:
         if t not in cps:
-            cps[t] = CheckpointCarga(sistema=sistema, tabela=t, posicao=0, concluida=False)
+            cps[t] = CheckpointCarga(sistema=sistema, tabela=t, ambiente=ambiente_da_origem(sistema), posicao=0,
+                                     concluida=False)
             db.add(cps[t])
     cps = {t: cps[t] for t in tabelas}
     if all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
@@ -635,7 +659,7 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
     """Bronze (chaves distintas por tabela) x COUNT(*) da origem lido no início da carga: ok só se forem iguais
     (bronze acima = registro que saiu da origem ou chave antiga; bronze abaixo = faltou linha)."""
     out = {}
-    for cp in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema).order_by(CheckpointCarga.id)):
+    for cp in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema)).order_by(CheckpointCarga.id)):
         def conta(quar: bool) -> int:
             return int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
                 RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
@@ -666,7 +690,7 @@ def situacao(db: Session, conector: str) -> dict:
     sistema = _sistema(conector)
     ex = db.scalar(select(Execucao).where(Execucao.tipo == TIPO, Execucao.sistema == sistema)
                    .order_by(Execucao.id.desc()).limit(1))
-    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema)))
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     motivo = motivo_bloqueio(db, conector) if conector in cc.CONECTORES else None
     if motivo is None and (ex is None or ex.status != "em_andamento"):
         motivo = recursos.motivo_disco_cheio(exige_leitura=True)

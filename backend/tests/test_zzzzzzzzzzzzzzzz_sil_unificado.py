@@ -218,7 +218,9 @@ def _ultima_aud(db, acao):
 def _checkpoint_sil(db):
     from app.models.controle import CheckpointCarga
     db.expire_all()
-    return db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL", CheckpointCarga.tabela == "Empresas"))
+    from app.bronze.ingestao import ambiente_da_origem
+    return db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL", CheckpointCarga.tabela == "Empresas",
+                                                   CheckpointCarga.ambiente == ambiente_da_origem("SIL")))
 
 
 def _zera_checkpoint_sil(db):

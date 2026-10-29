@@ -66,7 +66,7 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_dat
         ids = [k[0] for k in linhas]
         existentes = set(db.scalars(select(RegistroBronze.id_origem).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
-            RegistroBronze.id_origem.in_(ids))))
+            RegistroBronze.id_origem.in_(ids), RegistroBronze.ambiente_origem == amb)))  # LOW: por ambiente
         stmt = insert(RegistroBronze).values(list(linhas.values())).on_conflict_do_nothing(
             index_elements=["sistema_origem", "tabela", "id_origem", "hash"]).returning(RegistroBronze.id_origem)
         inseridos = [row[0] for row in db.execute(stmt)]
