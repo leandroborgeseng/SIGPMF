@@ -163,7 +163,7 @@ def test_m1_amostra_oficial_libera_incremental(monkeypatch, db):
     carga.valida_incremental(db, ConfigSei.do_ambiente(), NOITE)
 
 
-@pytest.mark.parametrize("v,esperado", [("1", 1), ("2", 1), ("10000", 1)])
+@pytest.mark.parametrize("v,esperado", [("1", 1), ("2", 1), ("10", 1), ("10000", 1)])
 def test_teto_paginas_travado_em_1(monkeypatch, caplog, v, esperado):
     sm.env_oficial(monkeypatch)
     monkeypatch.setenv("SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO", v)
