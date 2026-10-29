@@ -250,7 +250,13 @@ def _prep_m3(monkeypatch, db, **api_kw):
     sm.env_oficial(monkeypatch, CARGA_LIBERADA="true", MAX_PAGINAS_POR_EXECUCAO="5")
     from app.connectors.sei import config as cfg_sei
     monkeypatch.setattr(cfg_sei, "TETO_PAGINAS", 5)
-    # amostra: processo 1 público; processo 2 restrito (não vai para a bronze)
+    # banco de teste: tira da bronze o processo 2 gravado como público por testes anteriores;
+    # na amostra abaixo ele vem restrito (não vai para a bronze). Processo 1 público.
+    for r in db.scalars(select(RegistroBronze).where(RegistroBronze.sistema_origem == "SEI",
+                                                     RegistroBronze.tabela == "processos")):
+        if (r.dados or {}).get("protocolo") == "99990.000002/2026-01":
+            db.delete(r)
+    db.commit()
     am = carga.executar_amostra(db, "zz@aion.local", transport=sm.Sei(niveis={2: "1"}).transport(),
                                 dormir=lambda s: None)
     assert am.status == "sucesso"
