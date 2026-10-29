@@ -33,8 +33,8 @@ describe('educação nas fontes prioritárias', () => {
     const card = (await screen.findByRole('heading', { name: 'Educação (GestaoEscolar + CoreSSO)' })).closest('article') as HTMLElement
     expect(within(card).getByText('Agenda desligada')).toHaveClass('neutro')
     expect(within(card).queryByText('Ativo')).toBeNull()
-    expect(within(card).getByText('Concluída')).toBeVisible()  // texto, não só cor
-    expect(within(card).getByText(/0 linhas lidas/)).toBeVisible()
+    expect(within(card).getByText(/Concluída · nenhuma linha nova/)).toBeVisible()  // texto, não só cor
+    expect(within(card).queryByText(/0 linhas lidas/)).toBeNull()
     expect(within(card).getByText('Diária')).toBeVisible()
     expect(within(card).getByText('Sem agendamento')).toBeVisible()
     expect(within(card).getByRole('switch')).not.toBeChecked()
@@ -68,11 +68,17 @@ describe('educação nas fontes prioritárias', () => {
   })
 
   it('fora da janela: motivo escrito ao lado do botão', async () => {
-    mock(() => [200, resp({ ativo: true, pode_executar_agora: false,
-      motivo_executar_agora: 'Carga completa do conector de educação só roda na janela noturna (00:00-06:00).' })])
+    mock(() => [200, ({ ...resp({ ativo: true, pode_executar_agora: false,
+      motivo_executar_agora_codigo: 'fora_janela', motivo_executar_agora: 'x' }), janela: '22:00-05:00' })])
     render(<AgendaCargas ehAdmin />)
-    expect(await screen.findByText(/só roda na janela noturna/)).toBeVisible()
+    expect(await screen.findByText('Fora da janela noturna (22:00–05:00). Disponível a partir das 22:00.')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Executar agora' })).toBeDisabled()
+  })
+
+  it('com linhas lidas mostra a contagem', async () => {
+    mock(() => [200, resp({ ultima_execucao_real: { ...EX, lidos: 1234 } })])
+    render(<AgendaCargas ehAdmin />)
+    expect(await screen.findByText(/1\.234 linhas lidas/)).toBeVisible()
   })
 
   it('sem execução: "Ainda não rodou"; leitura não vê botão nem chave', async () => {

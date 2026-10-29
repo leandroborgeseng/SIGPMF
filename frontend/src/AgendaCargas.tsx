@@ -10,6 +10,7 @@ type ItemAgenda = {
   horario_fora_da_janela: boolean; ultima_execucao: ExecAg | null; em_andamento: ExecAg | null
   proximo_modo?: string; ultima_completa_em?: string | null
   ultima_execucao_real?: ExecAg | null; pode_executar_agora?: boolean; motivo_executar_agora?: string | null
+  motivo_executar_agora_codigo?: string | null
 }
 export type RespAgenda = {
   habilitada: boolean; janela: string; dia_todo: boolean; fuso: string; pular_sem_mudanca: boolean; alerta_email: boolean
@@ -177,6 +178,12 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
   )
 }
 
+/** "00:00-06:00" -> texto do motivo fora da janela, com as horas da configuração real (AGENDA_JANELA). */
+export function foraDaJanela(janela: string): string {
+  const [ini, fim] = janela.split('-')
+  return `Fora da janela noturna (${ini}–${fim}). Disponível a partir das ${ini}.`
+}
+
 /** Educação (GestaoEscolar + CoreSSO) entre as fontes prioritárias: mesma agenda (PUT/POST) das outras fontes. */
 export function CartaoEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
   i: ItemAgenda; d: RespAgenda; ehAdmin: boolean; ocupado: boolean
@@ -188,7 +195,9 @@ export function CartaoEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
     : !i.ativo ? 'Ligue a agenda para executar agora.'
     : rodando ? 'Carga em andamento.'
     : i.forcar ? 'Já está na fila: começa em até 1 minuto.'
-    : i.pode_executar_agora === false ? (i.motivo_executar_agora ?? 'Indisponível agora.') : null
+    : i.pode_executar_agora === false
+      ? (i.motivo_executar_agora_codigo === 'fora_janela' ? foraDaJanela(d.janela) : (i.motivo_executar_agora ?? 'Indisponível agora.'))
+      : null
   const proxima = i.ativo && d.habilitada && (i.forcar || i.proxima_em)
     ? `Próxima execução: ${i.forcar ? 'em até 1 minuto' : curta(i.proxima_em as string)}` : 'Sem agendamento'
   return (
@@ -203,8 +212,10 @@ export function CartaoEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
             ? <span className="selo em_andamento"><i aria-hidden="true" />Em andamento · desde {curta(rodando.iniciado_em ?? d.agora)}</span>
             : ult
               ? <span className="agenda-ultima">
-                  <span className={`selo ${classeStatus(ult.status)}`}><i aria-hidden="true" />{STATUS_EXEC[ult.status] ?? ult.status}</span>
-                  <span className="sutil">{curta(ult.finalizado_em ?? ult.iniciado_em ?? d.agora)} · {n(ult.lidos ?? 0)} {ult.lidos === 1 ? 'linha lida' : 'linhas lidas'}</span>
+                  <span className={`selo ${classeStatus(ult.status)}`}><i aria-hidden="true" />{STATUS_EXEC[ult.status] ?? ult.status}
+                    {ult.status === 'sucesso' && !ult.lidos ? ' · nenhuma linha nova' : ''}</span>
+                  <span className="sutil">{curta(ult.finalizado_em ?? ult.iniciado_em ?? d.agora)}
+                    {ult.lidos ? ` · ${n(ult.lidos)} ${ult.lidos === 1 ? 'linha lida' : 'linhas lidas'}` : ''}</span>
                 </span>
               : <span className="sutil">Ainda não rodou</span>}
         </dd></div>

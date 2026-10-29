@@ -488,7 +488,8 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             recusa = educacao_recusa(db, agora)
             extra = {"ultima_execucao_real": _execucao(db, ult.id) if ult else None,
                      "pode_executar_agora": recusa is None,
-                     "motivo_executar_agora": recusa[1] if recusa else None}
+                     "motivo_executar_agora": recusa[1] if recusa else None,
+                     "motivo_executar_agora_codigo": recusa[0] if recusa else None}
         itens.append({**extra,
             "conector": ag.conector, "nome": _nome(ag.conector), "horario": ag.horario, "ativo": ag.ativo,
             "ordem": ag.ordem, "forcar": ag.forcar, "ultimo_status": ag.ultimo_status,

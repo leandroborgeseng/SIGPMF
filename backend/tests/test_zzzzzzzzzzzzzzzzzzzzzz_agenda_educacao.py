@@ -125,6 +125,7 @@ def test_fora_da_janela_recusa_e_mostra_motivo(client, tokens, db, monkeypatch):
     assert _recusa(db).detalhe["motivo"] == "fora_janela"
     item = next(i for i in client.get("/api/agenda", headers=tokens["leitura"]).json()["itens"] if i["conector"] == "educacao")
     assert item["pode_executar_agora"] is False and "janela noturna" in item["motivo_executar_agora"]
+    assert item["motivo_executar_agora_codigo"] == "fora_janela"
     _limpa(db)
     get_settings.cache_clear()
 
