@@ -970,6 +970,12 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
+    if conector == ag.EDUCACAO:  # educação: trava de concorrência, amostra e janela (mesma regra da carga manual)
+        recusa = ag.educacao_recusa(db)
+        if recusa:
+            audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
+                   {"motivo": recusa[0], "conector": conector}, _ip(req))
+            raise HTTPException(409, recusa[1])
     try:
         ag.forcar(db, conector, u.email)
     except LookupError:
