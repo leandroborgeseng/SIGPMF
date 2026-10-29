@@ -105,3 +105,37 @@ def test_b2_amostra_sem_linha_reclassificada(db, zzq):
     a = sv.amostra(db, S, "bronze", "Processos", 1, {})
     assert [x["id_origem"] for x in a["linhas"]] == ["ZZTESTE-1", "ZZTESTE-2"]
     assert OCULTO_VAL not in json.dumps(a, default=str)
+
+
+def test_t35_funil_e_reconciliacao_total_bruto_e_ocultas_sem_id(db, zzq):
+    from app.models.controle import CheckpointCarga
+    if not db.query(CheckpointCarga).filter_by(sistema=S, tabela="Processos").first():
+        db.add(CheckpointCarga(sistema=S, tabela="Processos", posicao=3, total_origem=3, concluida=True))
+        db.commit()
+    f = sv.funil(db, S)
+    # reclassificadas contam SÓ em `ocultas`: fora de bronze, quarentena e "Chave nula na origem" (sem dupla contagem)
+    assert f["ocultas"] == 3 and f["bronze"] == 4 and f["bronze_unicos"] == 4
+    assert f["quarentena"] == 1 and f["bronze_ok"] == 3
+    em_quar = [d for d in f["descartes"] if d["motivo"] == "em_quarentena"]
+    assert em_quar == [{"etapa": "Bronze → Prata", "motivo": "em_quarentena", "quantidade": 1,
+                        "rotulo": "Chave nula na origem"}]
+    rec = f["reconciliacao"]
+    t = {x["tabela"]: x for x in rec["tabelas"]}["Processos"]
+    assert t["origem"] == 3 and t["bronze"] + t["quarentena"] == 3 and t["ok"] is True
+    assert t["ocultas"] == 1 and rec["ocultas"] == 1
+    s = json.dumps(f, default=str)
+    assert OCULTO_VAL not in s and "ZZCODINT" not in s and OCULTO_CHAVE not in s
+
+
+def test_t35_indicadores_bronze_sem_reclassificadas(db, zzq):
+    from app.services.indicadores import contagem_bronze
+    assert contagem_bronze(db)[S] == 4  # 7 brutas - 3 reclassificadas; quarentena comum continua
+
+
+def test_t35_dashboard_bronze_sem_reclassificadas(client, tokens, db, zzq):
+    visiveis = db.execute(text("SELECT count(*) FROM bronze.registros WHERE quarentena IS DISTINCT FROM :oc"),
+                          {"oc": sv.QUAR_OCULTA}).scalar()
+    assert db.execute(text("SELECT count(*) FROM bronze.registros WHERE quarentena = :oc"),
+                      {"oc": sv.QUAR_OCULTA}).scalar() >= 3
+    r = client.get("/api/dashboard", headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["bronze"]["registros"] == visiveis

@@ -409,13 +409,18 @@ def funil(db: Session, c: str) -> dict:
 
     def distintos(quar: bool | None) -> int:
         q = select(func.count(func.distinct(func.concat(RegistroBronze.tabela, "|", RegistroBronze.id_origem)))).where(
-            RegistroBronze.sistema_origem == c)
+            RegistroBronze.sistema_origem == c, _bronze_visivel())  # #35: reclassificada só conta em `ocultas`
         if quar is not None:
             q = q.where(RegistroBronze.quarentena.is_not(None) if quar else RegistroBronze.quarentena.is_(None))
         return int(db.scalar(q) or 0)
 
-    bronze = int(db.scalar(select(func.count()).select_from(RegistroBronze).where(RegistroBronze.sistema_origem == c)) or 0)
+    bronze = int(db.scalar(select(func.count()).select_from(RegistroBronze)
+                           .where(RegistroBronze.sistema_origem == c, _bronze_visivel())) or 0)
     unicos, bronze_ok, quar = distintos(None), distintos(False), distintos(True)
+    # #35: reclassificadas contam SÓ aqui (fora de bronze/quarentena/descartes), sem id nem valor;
+    # o total bruto que bate com a origem fica na `reconciliacao`
+    ocultas = int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
+        RegistroBronze.sistema_origem == c, RegistroBronze.quarentena == QUAR_OCULTA)) or 0)
     prata = int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == c)) or 0)
     ouro = int(db.scalar(select(func.count(func.distinct(DadoGold.cidadao_id))).where(DadoGold.sistema == c)) or 0)
     descartes = []
@@ -439,10 +444,12 @@ def funil(db: Session, c: str) -> dict:
         o = sum(x for x in origem if x is not None) if all(x is not None for x in origem) else None
         b, q = sum(r["bronze"] for r in rec.values()), sum(r["quarentena"] for r in rec.values())
         ok = all(r["ok"] for r in rec.values())
-        rec_tot = {"origem": o, "bronze": b, "quarentena": q, "ok": ok,
+        oc = sum(r.get("ocultas", 0) for r in rec.values())
+        rec_tot = {"origem": o, "bronze": b, "quarentena": q, "ocultas": oc, "ok": ok,
                    "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente",
                    "tabelas": [{"tabela": t, **r} for t, r in rec.items()]}
     return {"conector": c, "bronze": bronze, "bronze_unicos": unicos, "bronze_ok": bronze_ok, "quarentena": quar,
+            "ocultas": ocultas,
             "prata": prata, "prata_cidadaos": cid_prata, "ouro": ouro, "descartes": descartes, "estado": estado(db, c),
             "quarentena_disponivel": True, "reconciliacao": rec_tot}
 

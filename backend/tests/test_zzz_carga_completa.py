@@ -577,6 +577,6 @@ def test_reconciliacao_unitaria_isolada_igual_ok_menor_e_maior_divergem(db):
                           execucao_id=ex.id))
     db.commit()
     r = ccomp.reconciliacao(db, sis)
-    assert r["igual"] == {"origem": 3, "bronze": 3, "quarentena": 0, "ok": True, "status": "ok"}
-    assert r["menor"] == {"origem": 3, "bronze": 2, "quarentena": 0, "ok": False, "status": "divergente"}
-    assert r["maior"] == {"origem": 3, "bronze": 4, "quarentena": 0, "ok": False, "status": "divergente"}
+    assert r["igual"] == {"origem": 3, "bronze": 3, "quarentena": 0, "ocultas": 0, "ok": True, "status": "ok"}
+    assert r["menor"] == {"origem": 3, "bronze": 2, "quarentena": 0, "ocultas": 0, "ok": False, "status": "divergente"}
+    assert r["maior"] == {"origem": 3, "bronze": 4, "quarentena": 0, "ocultas": 0, "ok": False, "status": "divergente"}

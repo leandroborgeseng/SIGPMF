@@ -55,16 +55,29 @@ do checkpoint, e não avance o checkpoint à mão: isso descartaria andamentos s
     FROM controle.sei_pais_pendentes WHERE situacao='pendente' AND tentativas >= 3;`
 2. Descubra a causa fora do SIGPMF (processo existe no SEI? a API estava fora? permissão da unidade?). Se a causa
    persiste, **não** destrave: o alerta continua sendo o comportamento correto.
-3. Corrigida a causa, com aprovação registrada (chamado), rearme só aquele pai numa única transação, com auditoria:
+3. Corrigida a causa, com aprovação registrada (chamado), rearme só aquele pai numa única transação, com auditoria.
+   Rode com `psql -v ON_ERROR_STOP=1` (qualquer erro aborta tudo) e passe os valores como variáveis, por exemplo
+   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v id=123 -v operador="'fulano@aion.eng.br'" -v chamado="'CH-456'" -f rearma.sql`:
    ```sql
    BEGIN;
-   UPDATE controle.sei_pais_pendentes SET tentativas = 0, atualizado_em = now()
-    WHERE id = :id AND situacao = 'pendente' AND tentativas >= 3;   -- deve afetar exatamente 1 linha
+   WITH antes AS (
+     SELECT id, tentativas FROM controle.sei_pais_pendentes
+      WHERE id = :id AND situacao = 'pendente' AND tentativas >= 3
+      FOR UPDATE
+   ), rearmado AS (
+     UPDATE controle.sei_pais_pendentes p SET tentativas = 0, atualizado_em = now()
+       FROM antes WHERE p.id = antes.id
+     RETURNING p.id, antes.tentativas AS tentativas_antes
+   )
    INSERT INTO controle.auditoria (usuario, acao, alvo, detalhe)
-   VALUES (:operador, 'sei_pai_rearmado', 'sei_pais_pendentes:' || :id,
-           jsonb_build_object('tentativas_antes', 3, 'chamado', :chamado, 'motivo', :motivo_sem_dado_pessoal));
+   SELECT :operador, 'sei_pai_rearmado', 'sei_pais_pendentes:' || id,
+          jsonb_build_object('tentativas_antes', tentativas_antes, 'chamado', :chamado)
+     FROM rearmado
+   RETURNING alvo, detalhe;   -- esperado: exatamente 1 linha
    COMMIT;
    ```
+   `tentativas_antes` vem do valor real lido na mesma transação (não é fixo). Se a saída tiver 0 linhas, nada foi
+   alterado (o id não existe, já foi resolvido ou não está esgotado): reveja o id antes de tentar de novo.
    Nada é apagado: a linha continua, só o contador volta a zero e a próxima execução tenta de novo (até 3 vezes).
 4. Rode a próxima execução incremental na janela normal. Se o pai for resolvido, `situacao` vira `publico` ou
    `restrito` e o checkpoint avança; se esgotar de novo, o alerta volta e o caso sobe para o Tech Lead.
