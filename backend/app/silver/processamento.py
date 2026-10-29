@@ -110,7 +110,8 @@ def tabelas_fato() -> list[str]:
 def _ultimas_versoes(db: Session):
     """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor). Antes vinham como
     objetos ORM completos (com `dados`) numa lista: centenas de MB a mais por 100 mil linhas."""
-    so_fatos = sistemas_so_fatos()  # TR3: fatos tributários (milhões de linhas) nem saem do banco
+    # GE: GESTAOESCOLAR/CORESSO têm prata própria (app.silver.educacao); dados de menores nunca viram cidadão aqui
+    so_fatos = sistemas_so_fatos() + ("GESTAOESCOLAR", "CORESSO")  # TR3: fatos tributários (milhões de linhas) nem saem do banco
     sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None),  # CC9
                                                     RegistroBronze.sistema_origem.not_in(so_fatos),
                                                     func.concat(RegistroBronze.sistema_origem, "|", RegistroBronze.tabela)

@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     sil_grant_type: str = Field("client_credentials", alias="SIL_GRANT_TYPE")
     sil_timeout: int = Field(60, alias="SIL_TIMEOUT", ge=1, le=600)
     sil_intervalo_ms: int = Field(150, alias="SIL_INTERVALO_MS", ge=0, le=10000)  # pausa entre chamadas
+    # Conector de educação (FRA_GestaoEscolar + FRA_CoreSSO), só leitura. Credencial só por variável de ambiente.
+    ge_host: str | None = Field(None, alias="SIGPMF_SRC_GESTAOESCOLAR_HOST")  # vazio = SQLSERVER_HOST
+    ge_port: int | None = Field(None, alias="SIGPMF_SRC_GESTAOESCOLAR_PORT")  # vazio = SQLSERVER_PORT
+    ge_user: str | None = Field(None, alias="SIGPMF_SRC_GESTAOESCOLAR_USER")
+    ge_password: str | None = Field(None, alias="SIGPMF_SRC_GESTAOESCOLAR_PASSWORD")
+    ge_banco_escolar: str = Field("FRA_GestaoEscolar", alias="SIGPMF_SRC_GESTAOESCOLAR_DB")
+    ge_banco_pessoas: str = Field("FRA_CoreSSO", alias="SIGPMF_SRC_CORESSO_DB")
+    ge_lote: int = Field(1000, alias="SIGPMF_GESTAOESCOLAR_LOTE", ge=1, le=5000)
+    ge_max_lotes: int = Field(1, alias="SIGPMF_GESTAOESCOLAR_MAX_LOTES", ge=1, le=10000)  # teto por execução
+    ge_amostra: int = Field(50, alias="SIGPMF_GESTAOESCOLAR_AMOSTRA", ge=1, le=50)
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.
@@ -82,7 +92,7 @@ class Settings(BaseSettings):
     alerta_de: str | None = Field(None, alias="ALERTA_DE")
     alerta_para: str = Field("", alias="ALERTA_PARA")  # e-mails separados por vírgula
 
-    @field_validator("financeiro_exercicio_min", mode="before")
+    @field_validator("financeiro_exercicio_min", "ge_port", mode="before")
     @classmethod
     def _vazio_e_nulo(cls, v):
         """Variável presente e vazia no .env (como no .env.example) = não definida."""

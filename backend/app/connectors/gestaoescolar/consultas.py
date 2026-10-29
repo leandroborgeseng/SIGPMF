@@ -1,0 +1,279 @@
+"""Conector de educação: FRA_GestaoEscolar (aluno, matrícula, turma, escola, responsável) + FRA_CoreSSO (pessoa).
+
+GE1/GE2/GE10/GE11:
+- Só SELECT, montado aqui e validado por `garante_somente_leitura`; cada consulta roda pelo guard (ROLLBACK).
+- Lista fechada de fontes (FONTES): tabela fora dela é recusada antes da rede. Colunas explícitas, nunca `*`.
+- Toda tabela lida com WITH (NOLOCK), TOP (lote) e keyset pela chave primária (parametrizado).
+- Tabelas e colunas sensíveis (saúde, deficiência, raça/cor, religião, indígena, socioeconômico, foto,
+  SYS_Usuario*, InscricaoListaUsuariosErro) estão em EXCLUIDAS e são recusadas por `valida_fontes`.
+- A pessoa do CoreSSO só é lida no escopo da escola (aluno, responsável ou mãe de aluno), pela junção direta
+  entre os bancos (mesma instância) por pes_id.
+- Credencial só por SIGPMF_SRC_GESTAOESCOLAR_USER / _PASSWORD; o login `sistema` é recusado.
+"""
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.connectors.sqlserver.connector import SqlServerConnector
+from app.connectors.sqlserver.politicas import TabelaRecusada, coluna_proibida
+from app.core.sql_guard import garante_somente_leitura
+
+ESCOLAR = "GESTAOESCOLAR"
+PESSOAS = "CORESSO"
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# GE10: nada disto é lido. Regex sem distinção de caixa, aplicada ao nome da tabela e da coluna.
+TABELAS_EXCLUIDAS = (
+    r"FichaMedica", r"IMC$", r"IndiceMassaCorporea", r"Vacinacao", r"AlunoRefeicao", r"Deficien", r"Transtorno",
+    r"AtendimentoEspecial", r"Religiao", r"Indigena", r"ProgramaSocial", r"^PPE_", r"Socioeconomico", r"BolsaFamilia",
+    r"^SYS_Usuario", r"^VW_SYS_Usuario", r"InscricaoListaUsuariosErro", r"^SYS_Grupo", r"^SYS_Perfil", r"^LOG_",
+    r"^ARA_", r"Anexo", r"Ocorrencia", r"JustificativaFalta", r"AlunoAnotacao", r"AutorizadoBuscar", r"^REL_",
+    r"^PES_PessoaDeficiencia", r"^PES_TipoDeficiencia", r"CamposAdicionais", r"^ACA_PessoaResponsavel$",
+)
+COLUNAS_EXCLUIDAS = frozenset({
+    # CoreSSO PES_Pessoa / PES_PessoaDocumento
+    "pes_racaCor", "pes_foto", "arq_idFoto", "pes_sobreMim", "pes_estadoCivil", "psd_infoComplementares",
+    "psd_regiaoMilitar", "psd_numeroRA", "psd_tipoGuarda", "end_latitude", "end_longitude",
+    # ACA_Aluno
+    "rlg_id", "pin_id", "alu_observacao", "alu_rendaFamiliar", "alu_maeSituacaoViolencia",
+    "alu_situacaoVulnerabilidadeSocial", "alu_tipoMobilidadeReduzida", "alu_tipoCuidador", "alu_tipoProfissionalSaude",
+    "alu_tratamentoSaude", "alu_nivelSuporte", "alu_impactaDesenvolvimentoAprendizagem", "alu_Quilomba",
+    "alu_circenseCigana", "alu_acolhimentoFamilias", "alu_responsavelInfoDoc", "alu_aulaReligiao",
+    "alu_maeEstudanteEducacaoBasica", "alu_maeTrabalhaForaLar", "alu_imovel", "alu_qtdPessoasResidencia",
+    "alu_posInternet", "alu_posNoteSmartPhoneTablet", "alu_justificativaDocFaltantes", "alu_autorizacaoUsoImagem",
+    "alu_motivoNegacaoRematricula",
+    # ACA_AlunoResponsavel
+    "alr_rendaFamiliarMensal", "alr_programaSocial", "alr_despesaMoradia", "alr_localTrabalho", "alr_empresa",
+    "alr_omitidoFormaLei", "alr_tipoGuarda", "alr_profissao", "alr_aposentado", "alr_pensionista",
+    "alr_tipoConectividade", "alr_aparelhoAcessoInternet", "alr_horarioExpediente",
+})
+_COLUNAS_EXCLUIDAS_RE = (r"^alu_observacao", r"MobilidadeReduzida", r"^alu_responsavelInfo", r"^alu_qtdPessoasResidencia",
+                         r"racaCor", r"foto", r"religi", r"indigena", r"deficien", r"saude", r"renda")
+
+
+def coluna_excluida(nome: str) -> bool:
+    n = nome.split(".")[-1]
+    return (n.lower() in {c.lower() for c in COLUNAS_EXCLUIDAS} or coluna_proibida(n)
+            or any(re.search(p, n, re.IGNORECASE) for p in _COLUNAS_EXCLUIDAS_RE))
+
+
+def tabela_excluida(nome: str) -> bool:
+    return any(re.search(p, nome.split(".")[-1], re.IGNORECASE) for p in TABELAS_EXCLUIDAS)
+
+
+@dataclass(frozen=True)
+class Fonte:
+    """Uma consulta da carga: tabela principal (+ junções de domínio), colunas explícitas e chave do keyset.
+    `colunas` são (expressão alias.coluna, nome de saída). A chave usa os nomes de saída."""
+    nome: str                       # nome lógico gravado na bronze (= tabela principal)
+    sistema: str                    # GESTAOESCOLAR | CORESSO
+    banco: str                      # "escolar" | "pessoas"
+    tabela: str
+    alias: str
+    colunas: tuple[tuple[str, str], ...]
+    chave: tuple[str, ...]
+    juncoes: tuple[tuple[str, str, str, str], ...] = ()  # (banco, tabela, alias, condição ON)
+    filtro: str = ""                # condição fixa (literais inteiros, nunca texto de fora)
+    escopo_pessoa: str = ""         # coluna alias.pes_id restrita ao escopo da escola
+    campo_data: str | None = None
+    tabelas_lidas: tuple[str, ...] = field(default=())
+
+    def todas_tabelas(self) -> tuple[str, ...]:
+        return (self.tabela, *(j[1] for j in self.juncoes), *self.tabelas_lidas)
+
+
+def _c(alias: str, *cols: str) -> tuple[tuple[str, str], ...]:
+    return tuple((f"{alias}.{c}", c) for c in cols)
+
+
+FONTES: tuple[Fonte, ...] = (
+    # ---- FRA_GestaoEscolar ----
+    Fonte("ACA_Aluno", ESCOLAR, "escolar", "ACA_Aluno", "a",
+          _c("a", "alu_id", "pes_id", "end_id", "alu_situacao", "alu_dataAlteracao"), ("alu_id",),
+          campo_data="alu_dataAlteracao"),
+    Fonte("ACA_AlunoCurriculo", ESCOLAR, "escolar", "ACA_AlunoCurriculo", "c",
+          _c("c", "alu_id", "alc_id", "alc_matricula", "esc_id", "uni_id", "cur_id", "crr_id", "crp_id", "alc_situacao",
+             "alc_dataAlteracao"), ("alu_id", "alc_id"), campo_data="alc_dataAlteracao"),
+    Fonte("MTR_MatriculaTurma", ESCOLAR, "escolar", "MTR_MatriculaTurma", "m",
+          _c("m", "alu_id", "mtu_id", "alc_id", "tur_id", "cur_id", "crr_id", "crp_id", "mtu_situacao",
+             "mtu_dataAlteracao"), ("alu_id", "mtu_id"), campo_data="mtu_dataAlteracao"),
+    Fonte("TUR_TurmaCurriculo", ESCOLAR, "escolar", "TUR_TurmaCurriculo", "tc",
+          _c("tc", "tur_id", "cur_id", "crr_id", "crp_id", "tcr_situacao", "tcr_dataAlteracao"),
+          ("tur_id", "cur_id", "crr_id", "crp_id"), campo_data="tcr_dataAlteracao"),
+    Fonte("TUR_Turma", ESCOLAR, "escolar", "TUR_Turma", "t",
+          _c("t", "tur_id", "esc_id", "uni_id", "tur_codigo", "tur_situacao", "tur_dataAlteracao"), ("tur_id",),
+          campo_data="tur_dataAlteracao"),
+    Fonte("ESC_UnidadeEscola", ESCOLAR, "escolar", "ESC_UnidadeEscola", "u",
+          _c("u", "esc_id", "uni_id"), ("esc_id", "uni_id")),
+    Fonte("ESC_Escola", ESCOLAR, "escolar", "ESC_Escola", "e",
+          _c("e", "esc_id", "esc_nome", "esc_codigo", "esc_codigoInep", "esc_situacao", "esc_dataAlteracao"), ("esc_id",),
+          campo_data="esc_dataAlteracao"),
+    Fonte("ACA_AlunoResponsavel", ESCOLAR, "escolar", "ACA_AlunoResponsavel", "r",
+          _c("r", "alu_id", "alr_id", "tra_id", "pes_id", "alr_principal", "alr_constaCertidaoNascimento",
+             "alr_apenasFiliacao", "alr_moraComAluno", "alr_situacao", "alr_dataAlteracao"), ("alu_id", "alr_id"),
+          campo_data="alr_dataAlteracao"),
+    Fonte("ACA_TipoResponsavelAluno", ESCOLAR, "escolar", "ACA_TipoResponsavelAluno", "tr",
+          _c("tr", "tra_id", "tra_nome", "tra_tipoResponsavelPadrao", "tra_situacao"), ("tra_id",)),
+    # ---- FRA_CoreSSO (só pessoas no escopo da escola) ----
+    Fonte("PES_Pessoa", PESSOAS, "pessoas", "PES_Pessoa", "p",
+          _c("p", "pes_id", "pes_nome", "pes_nomeSocial", "pes_dataNascimento", "pes_sexo", "pes_idFiliacaoMae",
+             "pes_idFiliacaoPai", "pes_situacao", "pes_dataAlteracao"), ("pes_id",),
+          escopo_pessoa="p.pes_id", campo_data="pes_dataAlteracao"),
+    # Documento alterado não muda pes_dataAlteracao: hash próprio por linha de documento.
+    Fonte("PES_PessoaDocumento", PESSOAS, "pessoas", "PES_PessoaDocumento", "d",
+          _c("d", "pes_id", "tdo_id", "psd_numero", "psd_situacao", "psd_dataAlteracao")
+          + (("td.tdo_classificacao", "tdo_classificacao"),), ("pes_id", "tdo_id"),
+          juncoes=(("pessoas", "SYS_TipoDocumentacao", "td", "td.[tdo_id] = d.[tdo_id]"),),
+          filtro="td.[tdo_classificacao] IN (1, 3, 4)", escopo_pessoa="d.pes_id", campo_data="psd_dataAlteracao"),
+    Fonte("PES_CertidaoCivil", PESSOAS, "pessoas", "PES_CertidaoCivil", "cc",
+          _c("cc", "pes_id", "ctc_id", "ctc_tipo", "ctc_modeloNovo", "ctc_matricula", "ctc_situacao", "ctc_dataAlteracao"),
+          ("pes_id", "ctc_id"), filtro="cc.[ctc_tipo] = 1", escopo_pessoa="cc.pes_id", campo_data="ctc_dataAlteracao"),
+    Fonte("PES_PessoaEndereco", PESSOAS, "pessoas", "PES_PessoaEndereco", "pe",
+          _c("pe", "pes_id", "pse_id", "pse_numero", "pse_complemento", "pse_enderecoPrincipal", "pse_situacao",
+             "pse_dataAlteracao") + (("en.end_cep", "end_cep"), ("en.end_logradouro", "end_logradouro"),
+                                     ("en.end_bairro", "end_bairro")), ("pes_id", "pse_id"),
+          juncoes=(("pessoas", "END_Endereco", "en", "en.[end_id] = pe.[end_id]"),),
+          filtro="pe.[pse_enderecoPrincipal] = 1", escopo_pessoa="pe.pes_id", campo_data="pse_dataAlteracao"),
+)
+POR_NOME = {f.nome: f for f in FONTES}
+TABELAS_PERMITIDAS = frozenset(t for f in FONTES for t in f.todas_tabelas()) | {"ACA_Aluno", "ACA_AlunoResponsavel"}
+
+
+def valida_fontes(fontes=FONTES) -> None:
+    """GE10: nenhuma tabela ou coluna excluída aparece em consulta alguma (falha no import e no teste)."""
+    for f in fontes:
+        for t in f.todas_tabelas():
+            if tabela_excluida(t):
+                raise TabelaRecusada(f"Tabela excluída pela LGPD na fonte {f.nome}: {t}")
+        ruins = [saida for _e, saida in f.colunas if coluna_excluida(saida)]
+        if ruins:
+            raise TabelaRecusada(f"Colunas excluídas pela LGPD na fonte {f.nome}: {ruins}")
+        saidas = [s for _e, s in f.colunas]
+        if any(k not in saidas for k in f.chave):
+            raise TabelaRecusada(f"Chave de {f.nome} fora das colunas.")
+
+
+valida_fontes()
+
+
+def _ident(nome: str) -> str:
+    if not _IDENT.match(nome or ""):
+        raise ValueError(f"Identificador inválido: {nome!r}")
+    return f"[{nome}]"
+
+
+def _col(expr: str) -> str:
+    alias, col = expr.split(".")
+    return f"{_ident(alias)}.{_ident(col)}"
+
+
+@dataclass(repr=False)
+class ConfigGE:
+    host: str | None
+    port: int
+    user: str | None
+    password: str | None
+    banco_escolar: str
+    banco_pessoas: str
+    lote: int
+    max_lotes: int
+    amostra: int
+    timeout: int = 5
+    consulta_timeout: int = 120
+
+    @classmethod
+    def do_ambiente(cls, s) -> "ConfigGE":
+        return cls(s.ge_host or s.sqlserver_host, int(s.ge_port or s.sqlserver_port), s.ge_user, s.ge_password,
+                   s.ge_banco_escolar, s.ge_banco_pessoas, int(s.ge_lote), int(s.ge_max_lotes), int(s.ge_amostra),
+                   int(s.sqlserver_timeout), int(s.sqlserver_consulta_timeout))
+
+    def __repr__(self) -> str:  # nunca expõe host, usuário nem senha
+        return (f"ConfigGE(host=***, user=***, password=***, banco_escolar={self.banco_escolar!r}, "
+                f"banco_pessoas={self.banco_pessoas!r}, lote={self.lote}, max_lotes={self.max_lotes})")
+
+    __str__ = __repr__
+
+    def configurado(self) -> bool:
+        return bool(self.host and self.user and self.password)
+
+    def valida(self) -> None:
+        """GE11: só a credencial própria do conector; o login `sistema` (da aplicação) é recusado."""
+        if not self.configurado():
+            raise PermissionError("Origem de educação não configurada (SIGPMF_SRC_GESTAOESCOLAR_USER/_PASSWORD).")
+        if str(self.user).strip().lower().split("\\")[-1] == "sistema":
+            raise PermissionError("O usuário `sistema` não pode ser usado pelo conector de educação.")
+        _ident(self.banco_escolar)
+        _ident(self.banco_pessoas)
+
+
+class ConsultasGE:
+    """Monta os SELECT do conector (sem rede). A execução é do leitor (guard + ROLLBACK)."""
+
+    def __init__(self, banco_escolar: str = "FRA_GestaoEscolar", banco_pessoas: str = "FRA_CoreSSO"):
+        self.bancos = {"escolar": _ident(banco_escolar), "pessoas": _ident(banco_pessoas)}
+
+    def _tab(self, banco: str, tabela: str) -> str:
+        if tabela not in TABELAS_PERMITIDAS or tabela_excluida(tabela):
+            raise TabelaRecusada(f"Tabela {tabela} fora da lista permitida do conector de educação.")
+        return f"{self.bancos[banco]}.[dbo].{_ident(tabela)}"
+
+    def escopo(self, coluna_pes: str) -> str:
+        """Pessoa ligada à escola: aluno, responsável ou mãe (pes_idFiliacaoMae) de aluno. Junção direta entre bancos."""
+        c = _col(coluna_pes)
+        aluno, resp, pes = (self._tab("escolar", "ACA_Aluno"), self._tab("escolar", "ACA_AlunoResponsavel"),
+                            self._tab("pessoas", "PES_Pessoa"))
+        return (f"(EXISTS (SELECT 1 FROM {aluno} AS [xa] WITH (NOLOCK) WHERE [xa].[pes_id] = {c})"
+                f" OR EXISTS (SELECT 1 FROM {resp} AS [xr] WITH (NOLOCK) WHERE [xr].[pes_id] = {c})"
+                f" OR EXISTS (SELECT 1 FROM {aluno} AS [xm] WITH (NOLOCK) JOIN {pes} AS [xp] WITH (NOLOCK)"
+                f" ON [xp].[pes_id] = [xm].[pes_id] WHERE [xp].[pes_idFiliacaoMae] = {c}))")
+
+    def pagina(self, fonte: Fonte | str, limite: int, ultima: tuple | None = None) -> tuple[str, tuple]:
+        f = POR_NOME[fonte] if isinstance(fonte, str) else fonte
+        if f.nome not in POR_NOME or POR_NOME[f.nome] != f:
+            raise TabelaRecusada(f"Fonte {f.nome} fora da lista do conector de educação.")
+        if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
+            raise ValueError(f"Lote inválido: {limite!r}")
+        expr = dict((s, e) for e, s in f.colunas)
+        cols = ", ".join(f"{_col(e)} AS {_ident(s)}" for e, s in f.colunas)
+        sql = f"SELECT TOP ({int(limite)}) {cols} FROM {self._tab(f.banco, f.tabela)} AS {_ident(f.alias)} WITH (NOLOCK)"
+        for banco, tabela, alias, on in f.juncoes:
+            sql += f" JOIN {self._tab(banco, tabela)} AS {_ident(alias)} WITH (NOLOCK) ON {on}"
+        chave_expr = tuple(expr[k] for k in f.chave)
+        where, params = SqlServerConnector.filtro_keyset(chave_expr, ultima)
+        conds = [where.removeprefix(" WHERE ")] if where else []
+        if f.filtro:
+            conds.append(f"({f.filtro})")
+        if f.escopo_pessoa:
+            conds.append(self.escopo(f.escopo_pessoa))
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY " + ", ".join(_col(e) for e in chave_expr)
+        return garante_somente_leitura(sql), params
+
+
+class LeitorGE:
+    """Leitor real: uma conexão pymssql com a credencial do conector; cada SELECT pelo guard (ROLLBACK, timeout)."""
+
+    def __init__(self, config: ConfigGE):
+        config.valida()
+        self.config = config
+        self.consultas = ConsultasGE(config.banco_escolar, config.banco_pessoas)
+        self._conn = None
+
+    def __enter__(self):
+        import pymssql  # import tardio: só com origem real
+        c = self.config
+        self._conn = pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
+                                     database=c.banco_escolar, login_timeout=int(c.timeout),
+                                     timeout=int(c.consulta_timeout), autocommit=False)
+        return self
+
+    def __exit__(self, *exc):
+        if self._conn is not None:
+            self._conn.close()
+        return False
+
+    def ler(self, fonte: Fonte, ultima: tuple | None, limite: int) -> list[dict[str, Any]]:
+        from app.core.sql_guard import executa_somente_leitura
+        sql, params = self.consultas.pagina(fonte, limite, ultima)
+        return executa_somente_leitura(self._conn, sql, params or None, limite=limite)
