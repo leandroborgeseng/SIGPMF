@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     ge_lote: int = Field(1000, alias="SIGPMF_GESTAOESCOLAR_LOTE", ge=1, le=5000)
     ge_max_lotes: int = Field(1, alias="SIGPMF_GESTAOESCOLAR_MAX_LOTES", ge=1, le=10000)  # teto por execução
     ge_amostra: int = Field(50, alias="SIGPMF_GESTAOESCOLAR_AMOSTRA", ge=1, le=50)
+    # Carga completa da educação só na janela noturna (AGENDA_JANELA). Só "false" (qualquer caixa) desliga a trava;
+    # ausente, vazio ou qualquer outro valor = ligada. Texto (não bool) para valor inválido não derrubar a app nem desligar.
+    ge_janela_noturna: str | None = Field(None, alias="SIGPMF_EDUCACAO_JANELA_NOTURNA")
+    # Execução da carga completa da educação sem batida (atualizado_em) há mais que N min pode ser marcada falha pelo ADMIN.
+    ge_orfa_min: int = Field(30, alias="SIGPMF_EDUCACAO_ORFA_MIN", ge=1, le=1440)
+    # Pausa entre lotes da carga completa da educação (ms). Texto: vazio/inválido/negativo = 0 (com WARNING).
+    ge_pausa_lote_ms: str | None = Field(None, alias="SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS")
     correlacao_limiar: float = Field(0.9, alias="CORRELACAO_LIMIAR", ge=0, le=1)
     lote_tamanho: int = Field(500, alias="LOTE_TAMANHO", ge=1)
     # Carga completa por conector: lote limitado (teto 5000) e pausa entre lotes para não pesar na origem.

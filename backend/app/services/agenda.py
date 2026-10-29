@@ -253,9 +253,10 @@ def educacao_recusa(db: Session, agora: datetime | None = None) -> tuple[str, st
         return "ocupado", "Já existe uma carga de educação em andamento."
     if not cge.amostra_ok(db):
         return "sem_amostra", cge.SEM_AMOSTRA
-    ok, jan = cge.dentro_da_janela(agora or datetime.now(UTC))
-    if not ok:
-        return "fora_janela", cge.FORA_JANELA.format(janela=jan)
+    try:  # SIGPMF_EDUCACAO_JANELA_NOTURNA=false desliga a trava da janela aqui também (#36)
+        cge.checa_janela(agora or datetime.now(UTC))
+    except cge.CargaRecusada as exc:
+        return "fora_janela", str(exc)
     return None
 
 

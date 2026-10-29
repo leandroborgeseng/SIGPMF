@@ -521,3 +521,712 @@ def test_amostra_pode_rodar_de_dia(limpo):
     assert all(s.startswith("SELECT TOP (50) ") and "WITH (NOLOCK)" in s for s in lei.sqls)
     with pytest.raises(cge.CargaRecusada, match="janela"):
         cge.completa(limpo, lei, cfg(), agora=DIA)
+
+
+# ---------------------------------------------------------------- SIGPMF_EDUCACAO_JANELA_NOTURNA
+@pytest.fixture
+def janela_env(monkeypatch):
+    """Liga/desliga a trava pela env (None = env ausente) e limpa o cache de settings antes e depois."""
+    from app.core.config import get_settings
+
+    def _set(valor):
+        if valor is None:
+            monkeypatch.delenv("SIGPMF_EDUCACAO_JANELA_NOTURNA", raising=False)
+        else:
+            monkeypatch.setenv("SIGPMF_EDUCACAO_JANELA_NOTURNA", valor)
+        get_settings.cache_clear()
+    yield _set
+    get_settings.cache_clear()
+
+
+def test_janela_env_ausente_e_ligada_por_padrao(janela_env, limpo):
+    from app.core.config import get_settings
+    from app.services import carga_gestaoescolar as cge
+    janela_env(None)
+    assert get_settings().ge_janela_noturna is None and cge.janela_exigida() is True
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    with pytest.raises(cge.CargaRecusada) as e:
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+    assert str(e.value) == cge.FORA_JANELA.format(janela=get_settings().agenda_janela)
+
+
+@pytest.mark.parametrize("valor,exigida", [("false", False), ("FALSE", False), (" False ", False), ("true", True),
+                                           ("", True), ("0", True), ("no", True), ("off", True), ("falso", True),
+                                           ("xyz", True)])
+def test_janela_so_false_explicito_desliga(janela_env, valor, exigida):
+    from app.services import carga_gestaoescolar as cge
+    janela_env(valor)
+    assert cge.janela_exigida() is exigida
+
+
+def test_janela_env_invalida_recusa_fora_da_janela(janela_env, limpo):
+    from app.services import carga_gestaoescolar as cge
+    janela_env("desligado")
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    with pytest.raises(cge.CargaRecusada, match="janela"):
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+
+
+def test_completa_concorrente_recusada(janela_env, limpo):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    rodando = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento")
+    limpo.add(rodando)
+    limpo.commit()
+    try:
+        with pytest.raises(cge.CargaRecusada, match="em andamento"):
+            cge.completa(limpo, lei, cfg(), agora=DIA)
+    finally:
+        rodando.status = "falha"
+        limpo.commit()
+
+
+def test_carga_so_le_fontes_do_catalogo(janela_env, limpo):
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    lei.sqls.clear()
+    cge.completa(limpo, lei, cfg(lote=1000, max_lotes=50), agora=DIA)
+    permitidas = ({f.tabela for f in cq.FONTES} | {j[1] for f in cq.FONTES for j in f.juncoes}
+                  | {"ACA_Aluno", "ACA_AlunoResponsavel", "PES_Pessoa"})  # escopo da escola
+    for sql in lei.sqls:
+        tabs = set(re.findall(r"\]\.\[dbo\]\.\[([A-Za-z0-9_]+)\]", sql))
+        assert tabs and tabs <= permitidas, tabs
+    assert len(lei.sqls) >= len(cq.FONTES)
+
+
+def test_janela_env_ligada_fora_da_janela_recusa_igual_a_hoje(janela_env, limpo):
+    from app.core.config import get_settings
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("true")
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    antes = limpo.scalar(select(func.count()).select_from(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA))
+    with pytest.raises(cge.CargaRecusada) as e:
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+    assert str(e.value) == cge.FORA_JANELA.format(janela=get_settings().agenda_janela)
+    depois = limpo.scalar(select(func.count()).select_from(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA))
+    assert antes == depois  # nada iniciado
+
+
+def test_janela_env_desligada_fora_da_janela_inicia_e_registra_no_log(janela_env, limpo):
+    from app.models.controle import Log
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    ex = cge.completa(limpo, lei, cfg(lote=2, max_lotes=1), agora=DIA)
+    assert ex.status == "parcial" and ex.lotes == 1  # lote e teto inalterados
+    msgs = list(limpo.scalars(select(Log.mensagem).where(Log.execucao_id == ex.id)))
+    assert any("Janela noturna ignorada" in m for m in msgs)
+    # trava ligada: nenhuma linha de "janela ignorada" no log
+    janela_env("true")
+    ex2 = cge.completa(limpo, lei, cfg(lote=2, max_lotes=1), agora=NOITE)
+    assert not [m for m in limpo.scalars(select(Log.mensagem).where(Log.execucao_id == ex2.id)) if "ignorada" in m]
+
+
+def test_janela_env_desligada_ainda_exige_amostra(janela_env, limpo):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    limpo.add(Execucao(tipo=cge.TIPO_AMOSTRA, sistema="GESTAOESCOLAR", status="falha"))
+    limpo.commit()
+    with pytest.raises(cge.CargaRecusada, match="amostra"):
+        cge.completa(limpo, LeitorMock(origem()), cfg(), agora=DIA)
+
+
+class _LeitorRota(LeitorMock):
+    def __init__(self, _cfg):
+        super().__init__(origem())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _rota_prep(monkeypatch, janela_env, valor):
+    from app.services import carga_gestaoescolar as cge
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_HOST", "zz-host-teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_USER", "zz_leitor_teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_PASSWORD", "zz-senha-teste")
+    monkeypatch.setattr(cq, "LeitorGE", _LeitorRota)  # nunca abre conexão real
+    monkeypatch.setattr(cge, "dentro_da_janela", lambda agora: (False, "00:00-06:00"))  # sempre "fora da janela"
+    janela_env(valor)
+
+
+def _ultima_auditoria(db, acao):
+    from app.models.controle import Auditoria
+    db.expire_all()
+    return db.scalar(select(Auditoria).where(Auditoria.acao == acao).order_by(Auditoria.id.desc()).limit(1))
+
+
+def test_rota_env_ligada_fora_da_janela_409_e_auditada(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "true")
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and "janela noturna" in r.json()["detail"]
+    a = _ultima_auditoria(limpo, "gestaoescolar_negado")
+    assert a and "janela" in a.detalhe["motivo"]
+
+
+def test_rota_env_desligada_fora_da_janela_inicia_admin_amostra_e_auditoria(monkeypatch, janela_env, limpo, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    # ADMIN continua obrigatório
+    for perfil in ("operador", "leitura"):
+        assert client.post("/api/educacao/conector/completa", headers=tokens[perfil]).status_code == 403
+    # amostra continua obrigatória (e a recusa é auditada)
+    limpo.add(Execucao(tipo=cge.TIPO_AMOSTRA, sistema="GESTAOESCOLAR", status="falha"))
+    limpo.commit()
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and "amostra" in r.json()["detail"]
+    assert "amostra" in _ultima_auditoria(limpo, "gestaoescolar_negado").detalhe["motivo"]
+    # com amostra ok, fora da janela, a carga começa e a auditoria registra que a janela foi ignorada
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] in ("parcial", "sucesso") and r.json()["lotes"] >= 1
+    a = _ultima_auditoria(limpo, "gestaoescolar_completa")
+    assert a.alvo == f"execucao:{r.json()['execucao_id']}" and a.detalhe["janela_ignorada"] is True
+    assert a.detalhe["fora_da_janela"] is True
+
+
+def test_rota_completa_concorrente_409(monkeypatch, janela_env, limpo, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    rodando = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento")
+    limpo.add(rodando)
+    limpo.commit()
+    try:
+        r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+        assert r.status_code == 409 and "em andamento" in r.json()["detail"]
+        assert "em andamento" in _ultima_auditoria(limpo, "gestaoescolar_negado").detalhe["motivo"]
+    finally:
+        rodando.status = "falha"
+        limpo.commit()
+
+
+# ---------------------------------------------------------------- cancelar e execução órfã
+class _LeitorCancela(LeitorMock):
+    """Pede o cancelamento (outra sessão, como a rota faria) durante a leitura do 2º lote."""
+
+    def __init__(self, dados):
+        super().__init__(dados)
+        self.leituras = 0
+
+    def ler(self, f, ultima, limite):
+        self.leituras += 1
+        if self.leituras == 2:
+            from app.core.db import SessionLocal
+            from app.services import carga_gestaoescolar as cge
+            with SessionLocal() as outra:
+                cge.solicita_cancelamento(outra)
+        return super().ler(f, ultima, limite)
+
+
+def test_cancelar_para_no_fim_do_lote_e_libera_nova_carga(janela_env, limpo):
+    from app.models.controle import CheckpointCarga, Execucao
+    from app.services import carga_gestaoescolar as cge
+    janela_env("false")
+    lei = _LeitorCancela(origem())
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    ex = cge.completa(limpo, lei, cfg(lote=1, max_lotes=50), agora=DIA)
+    assert ex.status == "cancelada" and ex.lotes == 2 and lei.leituras == 2  # termina o lote em curso e para
+    assert ex.atualizado_em is not None  # batida por lote
+    ck = limpo.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "GESTAOESCOLAR",
+                                                    CheckpointCarga.tabela == "ACA_Aluno"))
+    assert ck.posicao == 2  # o já gravado fica
+    assert not cge.completa_em_andamento(limpo)
+    nova = cge.completa(limpo, LeitorMock(origem()), cfg(lote=1, max_lotes=1), agora=DIA)
+    assert nova.status == "parcial" and limpo.get(Execucao, nova.id).cancelar is False
+
+
+def _rodando(db, minutos_sem_batida):
+    from datetime import timedelta
+
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    ex = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento",
+                  atualizado_em=datetime.now(UTC) - timedelta(minutes=minutos_sem_batida))
+    db.add(ex)
+    db.commit()
+    return ex
+
+
+def test_rota_cancelar_admin_409_e_auditoria(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "false")
+    for perfil in ("operador", "leitura", "admin_lgpd"):
+        assert client.post("/api/educacao/conector/cancelar", headers=tokens[perfil]).status_code == 403
+    r = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+    assert r.status_code == 409 and "Nenhuma" in r.json()["detail"]
+    assert _ultima_auditoria(limpo, "gestaoescolar_cancelar_negado") is not None
+    ex = _rodando(limpo, 0)
+    try:
+        r = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+        assert r.status_code == 200 and r.json()["execucao_id"] == ex.id
+        limpo.refresh(ex)
+        assert ex.cancelar is True
+        assert _ultima_auditoria(limpo, "gestaoescolar_cancelar").alvo == f"execucao:{ex.id}"
+    finally:
+        ex.status = "falha"
+        limpo.commit()
+
+
+def test_rota_marcar_falha_orfa(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "false")
+    monkeypatch.setenv("SIGPMF_EDUCACAO_ORFA_MIN", "30")
+    janela_env("false")
+    recente = _rodando(limpo, 5)
+    url = f"/api/educacao/conector/execucoes/{recente.id}/marcar-falha"
+    assert client.post(url, headers=tokens["operador"]).status_code == 403
+    r = client.post(url, headers=tokens["admin"])
+    assert r.status_code == 409 and "30 min" in r.json()["detail"]
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha_negado").detalhe["motivo"] == "batida_recente"
+    recente.status = "falha"
+    limpo.commit()
+    velha = _rodando(limpo, 45)
+    # ainda em andamento: nova carga recusada
+    assert client.post("/api/educacao/conector/amostra", headers=tokens["admin"]).status_code == 200
+    assert client.post("/api/educacao/conector/completa", headers=tokens["admin"]).status_code == 409
+    r = client.post(f"/api/educacao/conector/execucoes/{velha.id}/marcar-falha", headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["status"] == "falha"
+    limpo.refresh(velha)
+    assert velha.status == "falha" and velha.finalizado_em is not None
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha").alvo == f"execucao:{velha.id}"
+    # de novo: já não está em andamento -> 409 auditado
+    r = client.post(f"/api/educacao/conector/execucoes/{velha.id}/marcar-falha", headers=tokens["admin"])
+    assert r.status_code == 409
+    assert _ultima_auditoria(limpo, "gestaoescolar_marcar_falha_negado").detalhe["motivo"] == "nao_em_andamento"
+    # trava de concorrência liberada
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert client.post("/api/educacao/conector/execucoes/999999/marcar-falha", headers=tokens["admin"]).status_code == 404
+
+
+# ---------------------------------------------------------------- ciclo 2: trava atômica, órfã, cancelar, pausa
+@pytest.fixture
+def ge(janela_env, limpo):
+    """Banco limpo, janela desligada e nenhuma completa da educação em_andamento sobrando de outro teste."""
+    from sqlalchemy import update
+
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+
+    def _zera():
+        limpo.execute(update(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA, Execucao.status == "em_andamento")
+                      .values(status="falha"))
+        limpo.commit()
+    _zera()
+    janela_env("false")
+    assert cge.amostra(limpo, LeitorMock(origem()), cfg()).status == "sucesso"
+    yield limpo
+    _zera()
+
+
+def _n_completas(db):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    db.expire_all()
+    return db.scalar(select(func.count()).select_from(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA))
+
+
+def test_b1_indice_unico_parcial_recusa_segunda_em_andamento(ge):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    ge.add(Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento"))
+    ge.commit()
+    ge.add(Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento"))
+    with pytest.raises(IntegrityError):
+        ge.commit()
+    ge.rollback()
+    # outros status e outros tipos não são afetados
+    ge.add(Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="parcial"))
+    ge.add(Execucao(tipo=cge.TIPO_AMOSTRA, sistema="GESTAOESCOLAR", status="em_andamento"))
+    ge.commit()
+    a = ge.scalar(select(Execucao).where(Execucao.tipo == cge.TIPO_AMOSTRA, Execucao.status == "em_andamento"))
+    a.status = "falha"
+    ge.commit()
+
+
+class _LeitorLento(LeitorMock):
+    def ler(self, f, ultima, limite):
+        import time
+        time.sleep(0.15)
+        return super().ler(f, ultima, limite)
+
+
+def test_b1_corrida_real_duas_threads_20_rodadas_so_uma_inicia(ge):
+    import threading
+
+    from app.core.db import SessionLocal
+    from app.services import carga_gestaoescolar as cge
+    for rodada in range(20):
+        antes = _n_completas(ge)
+        barreira, res = threading.Barrier(2), []
+
+        def roda():
+            with SessionLocal() as s:
+                barreira.wait()
+                try:
+                    res.append(cge.completa(s, _LeitorLento(origem()), cfg(lote=1, max_lotes=1), agora=DIA).status)
+                except cge.CargaRecusada as e:
+                    res.append(str(e))
+        ts = [threading.Thread(target=roda) for _ in range(2)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert sorted(res) == sorted(["parcial", cge.EM_ANDAMENTO]), (rodada, res)
+        assert _n_completas(ge) == antes + 1, rodada
+
+
+def test_b1_indice_vira_409_auditado_na_rota(monkeypatch, janela_env, ge, client, tokens):
+    """Mesmo se a checagem prévia e a trava falharem (corrida), o índice único (0025) devolve 409 auditado."""
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    ge.add(Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento",
+                    atualizado_em=datetime.now(UTC)))
+    ge.commit()
+
+    class _Conn:
+        def execute(self, *a, **k):
+            return None
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+    monkeypatch.setattr(cge, "completa_em_andamento", lambda db: False)
+    monkeypatch.setattr(cge, "_trava", lambda db: _Conn())
+    monkeypatch.setattr(cge, "_solta", lambda c: None)
+    antes = _n_completas(ge)
+    r = client.post("/api/educacao/conector/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and r.json()["detail"] == cge.EM_ANDAMENTO
+    assert _ultima_auditoria(ge, "gestaoescolar_negado").detalhe["motivo"] == cge.EM_ANDAMENTO
+    assert _n_completas(ge) == antes
+
+
+class _LeitorAcao(LeitorMock):
+    """Executa `acao(n)` (em outra sessão) durante a leitura n."""
+
+    def __init__(self, dados, acao):
+        super().__init__(dados)
+        self.n, self.acao = 0, acao
+
+    def ler(self, f, ultima, limite):
+        self.n += 1
+        self.acao(self.n)
+        return super().ler(f, ultima, limite)
+
+
+def _cancela_em(k):
+    def acao(n):
+        if n == k:
+            from app.core.db import SessionLocal
+            from app.services import carga_gestaoescolar as cge
+            with SessionLocal() as s:
+                cge.solicita_cancelamento(s)
+    return acao
+
+
+def test_b3_cancelar_fronteira_do_lote_bronze_bate_checkpoint_e_retoma_sem_lacuna(ge):
+    from app.models.camadas import RegistroBronze
+    from app.models.controle import CheckpointCarga
+    from app.services import carga_gestaoescolar as cge
+    dados = origem()
+    lei = _LeitorAcao(dados, _cancela_em(2))
+    ex = cge.completa(ge, lei, cfg(lote=2, max_lotes=50), agora=DIA)
+    assert ex.status == "cancelada" and ex.lotes == 2 and lei.n == 2  # lote 2 gravado inteiro, 3 não começou
+    ck = ge.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "GESTAOESCOLAR",
+                                                 CheckpointCarga.tabela == "ACA_Aluno"))
+    assert ck.posicao == 4 and ck.ultima_chave == [4]  # 2 lotes x 2, sem lote parcial
+    assert ex.lidos == 4  # lido nesta execução = posição do checkpoint
+    assert ge.scalar(select(func.count()).select_from(RegistroBronze).where(
+        RegistroBronze.sistema_origem == "GESTAOESCOLAR", RegistroBronze.tabela == "ACA_Aluno")) > 0
+    assert not cge.completa_em_andamento(ge)
+    final = _ciclo(ge, LeitorMock(dados), cfg(lote=2, max_lotes=50))  # retoma do checkpoint
+    assert final.status == "sucesso"
+    for nome, linhas in dados.items():
+        f = cq.POR_NOME[nome]
+        ids = set(ge.scalars(select(RegistroBronze.id_origem).where(RegistroBronze.sistema_origem == f.sistema,
+                                                                   RegistroBronze.tabela == nome)))
+        assert len(ids) == len(linhas), nome
+
+
+def test_b3_cancelar_duas_vezes_idempotente_e_auditado(monkeypatch, janela_env, ge, client, tokens):
+    from app.models.controle import Auditoria, Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    ex = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento", atualizado_em=datetime.now(UTC))
+    ge.add(ex)
+    ge.commit()
+    n_aud = ge.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.acao == "gestaoescolar_cancelar"))
+    r1 = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+    r2 = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+    assert r1.status_code == r2.status_code == 200
+    assert r1.json()["ja_solicitado"] is False and r2.json()["ja_solicitado"] is True
+    ge.expire_all()
+    assert ge.scalar(select(func.count()).select_from(Auditoria).where(
+        Auditoria.acao == "gestaoescolar_cancelar")) == n_aud + 2
+    ge.refresh(ex)
+    assert ex.status == "em_andamento" and ex.finalizado_em is None  # pedido não muda status nem finalizado_em
+    # depois de finalizada: 409 auditado, nada muda
+    ex.status, ex.finalizado_em = "cancelada", datetime.now(UTC)
+    ge.commit()
+    fim = ex.finalizado_em
+    r3 = client.post("/api/educacao/conector/cancelar", headers=tokens["admin"])
+    assert r3.status_code == 409
+    ge.refresh(ex)
+    assert ex.status == "cancelada" and ex.finalizado_em == fim
+
+
+def test_b2_falha_marcada_no_meio_nao_e_sobrescrita_pelo_fim(ge):
+    """Corrida: se outro caminho finalizou a execução (falha/interrompida), o fim da carga não sobrescreve."""
+    from sqlalchemy import update
+
+    from app.core.db import SessionLocal
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+
+    def marca(n):
+        if n == 1:
+            with SessionLocal() as s:
+                s.execute(update(Execucao).where(Execucao.tipo == cge.TIPO_COMPLETA, Execucao.status == "em_andamento")
+                          .values(status="interrompida"))
+                s.commit()
+    ex = cge.completa(ge, _LeitorAcao(origem(), marca), cfg(lote=2, max_lotes=5), agora=DIA)
+    assert ex.status == "interrompida" and ex.lotes is not None
+
+
+def test_b3_cancelar_vs_fim_20_rodadas_estado_unico(ge):
+    from app.models.controle import CheckpointCarga
+    from app.services import carga_gestaoescolar as cge
+    for k in range(20):
+        # cancela na última leitura permitida (corrida com o fim do teto)
+        ex = cge.completa(ge, _LeitorAcao(origem(), _cancela_em(1)), cfg(lote=1, max_lotes=1), agora=DIA)
+        assert ex.status in ("cancelada", "parcial"), k
+        assert ex.finalizado_em is not None and not cge.completa_em_andamento(ge)
+        ck = ge.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "GESTAOESCOLAR",
+                                                     CheckpointCarga.tabela == "ACA_Aluno"))
+        assert ck.posicao >= 0
+
+
+def test_b2_batida_por_lote_em_conexao_separada(ge):
+    from app.core.db import get_engine
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    vistos = []
+
+    def olha(n):
+        with get_engine().connect() as c:
+            vistos.append(c.execute(select(Execucao.atualizado_em).where(
+                Execucao.tipo == cge.TIPO_COMPLETA, Execucao.status == "em_andamento")).scalar())
+    cge.completa(ge, _LeitorAcao(origem(), olha), cfg(lote=1, max_lotes=4), agora=DIA)
+    assert len(vistos) == 4 and all(v is not None for v in vistos)
+    assert vistos == sorted(vistos) and len(set(vistos)) == 4  # cresce a cada lote
+
+
+def test_b2_batida_na_etapa_final_processa(monkeypatch, ge):
+    import time
+
+    from app.services import carga_gestaoescolar as cge
+    from app.services import trava as tv
+    batidas = []
+    orig = tv.sinal_de_vida
+    monkeypatch.setattr(tv, "sinal_de_vida", lambda eid, *a, **k: (batidas.append(time.monotonic()), orig(eid, *a, **k)))
+    monkeypatch.setattr(cge, "BATIDA_PROCESSA_S", 0.05)
+    real = cge.educacao.processa
+
+    def lento(db, agora):
+        time.sleep(0.4)
+        return real(db, agora)
+    monkeypatch.setattr(cge.educacao, "processa", lento)
+    ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1000, max_lotes=50), agora=DIA)
+    assert ex.status == "sucesso", ex.mensagem
+    assert len(batidas) >= 5  # antes, durante (a cada 50 ms) e depois do processa
+
+
+def test_b2_startup_interrompe_orfa_da_educacao_e_poupa_viva(ge):
+    from app.core.db import SessionLocal
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    from app.services.carga_completa import interromper_orfas
+    orfa = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento", atualizado_em=datetime.now(UTC))
+    ge.add(orfa)
+    ge.commit()
+    trava = cge._trava(ge)  # processo "vivo" segurando a trava
+    try:
+        with SessionLocal() as s:
+            interromper_orfas(s)
+        ge.refresh(orfa)
+        assert orfa.status == "em_andamento"
+    finally:
+        cge._solta(trava)
+    with SessionLocal() as s:
+        assert interromper_orfas(s) >= 1
+    ge.refresh(orfa)
+    assert orfa.status == "interrompida"
+    assert _ultima_auditoria(ge, "execucao_interrompida").alvo == f"execucao:{orfa.id}"
+    assert not cge.completa_em_andamento(ge)
+    assert cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=1), agora=DIA).status == "parcial"
+
+
+def test_b2_interromper_rota_educacao(monkeypatch, janela_env, ge, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    ex = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status="em_andamento", atualizado_em=datetime.now(UTC))
+    ge.add(ex)
+    ge.commit()
+    url = f"/api/conectores/educacao/execucoes/{ex.id}/interromper"
+    assert client.post(url, json={"motivo": "zzteste orfa"}, headers=tokens["operador"]).status_code == 403
+    trava = cge._trava(ge)
+    try:  # processo vivo com batida recente: recusa
+        assert client.post(url, json={"motivo": "zzteste orfa"}, headers=tokens["admin"]).status_code == 409
+    finally:
+        cge._solta(trava)
+    r = client.post(url, json={"motivo": "zzteste orfa"}, headers=tokens["admin"])
+    assert r.status_code == 200 and r.json()["status"] == "interrompida"
+    assert client.post("/api/educacao/conector/completa", headers=tokens["admin"]).status_code == 200
+
+
+def test_marcar_falha_recusa_status_finalizados(monkeypatch, janela_env, ge, client, tokens):
+    from app.models.controle import Execucao
+    from app.services import carga_gestaoescolar as cge
+    _rota_prep(monkeypatch, janela_env, "false")
+    for st in ("sucesso", "falha", "cancelada", "parcial"):
+        ex = Execucao(tipo=cge.TIPO_COMPLETA, sistema="GESTAOESCOLAR", status=st)
+        ge.add(ex)
+        ge.commit()
+        r = client.post(f"/api/educacao/conector/execucoes/{ex.id}/marcar-falha", headers=tokens["admin"])
+        assert r.status_code == 409, st
+        assert _ultima_auditoria(ge, "gestaoescolar_marcar_falha_negado").alvo == f"execucao:{ex.id}"
+    assert client.post("/api/educacao/conector/execucoes/1/marcar-falha", headers=tokens["leitura"]).status_code == 403
+
+
+# ---------------------------------------------------------------- pausa entre lotes
+def _dormidas(monkeypatch):
+    from app.services import carga_gestaoescolar as cge
+    chamadas = []
+    monkeypatch.setattr(cge.time, "sleep", lambda s: chamadas.append(s))
+    return chamadas
+
+
+@pytest.mark.parametrize("valor", [None, "0", ""])
+def test_pausa_ausente_ou_zero_nao_dorme(monkeypatch, janela_env, ge, valor):
+    from app.services import carga_gestaoescolar as cge
+    if valor is None:
+        monkeypatch.delenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", raising=False)
+    else:
+        monkeypatch.setenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", valor)
+    janela_env("false")
+    d = _dormidas(monkeypatch)
+    ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=3), agora=DIA)
+    assert ex.status == "parcial" and ex.lotes == 3 and d == []
+
+
+@pytest.mark.parametrize("valor", ["abc", "-5", "1.5"])
+def test_pausa_invalida_vira_zero_com_warning(monkeypatch, janela_env, ge, caplog, valor):
+    import logging
+
+    from app.services import carga_gestaoescolar as cge
+    monkeypatch.setenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", valor)
+    janela_env("false")
+    d = _dormidas(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=3), agora=DIA)
+    assert ex.status == "parcial" and ex.lotes == 3 and d == []
+    assert any("PAUSA_LOTE_MS inválida" in r.getMessage() for r in caplog.records)
+    assert valor not in " ".join(r.getMessage() for r in caplog.records if "PAUSA" in r.getMessage()) or valor == "-5"
+
+
+def test_pausa_entre_lotes_dorme_entre_lotes(monkeypatch, janela_env, ge):
+    from app.services import carga_gestaoescolar as cge
+    monkeypatch.setenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", "120")
+    janela_env("false")
+    t0 = __import__("time").monotonic()
+    ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=3), agora=DIA)
+    dt = __import__("time").monotonic() - t0
+    assert ex.status == "parcial" and ex.lotes == 3
+    assert dt >= 0.24  # 2 pausas entre 3 lotes (não pausa depois do último do teto)
+
+
+def test_pausa_cancelar_tem_efeito_durante_a_pausa(monkeypatch, janela_env, ge):
+    import threading
+    import time
+
+    from app.core.db import SessionLocal
+    from app.services import carga_gestaoescolar as cge
+    monkeypatch.setenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", "5000")
+    janela_env("false")
+
+    def cancela():
+        time.sleep(0.4)
+        with SessionLocal() as s:
+            cge.solicita_cancelamento(s)
+    th = threading.Thread(target=cancela)
+    t0 = time.monotonic()
+    th.start()
+    ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=5), agora=DIA)
+    th.join()
+    assert ex.status == "cancelada" and ex.lotes == 1
+    assert time.monotonic() - t0 < 2.0  # não esperou os 5 s da pausa
+
+
+def test_pausa_mantem_batida(monkeypatch, janela_env, ge):
+    import time
+
+    from app.services import carga_gestaoescolar as cge
+    from app.services import trava as tv
+    monkeypatch.setenv("SIGPMF_GESTAOESCOLAR_PAUSA_LOTE_MS", "2300")
+    janela_env("false")
+    batidas = []
+    orig = tv.sinal_de_vida
+    monkeypatch.setattr(tv, "sinal_de_vida", lambda eid, *a, **k: (batidas.append(time.monotonic()), orig(eid, *a, **k)))
+    ex = cge.completa(ge, LeitorMock(origem()), cfg(lote=1, max_lotes=2), agora=DIA)
+    assert ex.status == "parcial" and len(batidas) >= 4  # antes, ~1 s, ~2 s, depois
+    assert max(b - a for a, b in zip(batidas, batidas[1:], strict=False)) < 1.5  # nunca fica > 1,5 s sem batida
+
+
+# ---------------------------------------------------------------- migração 0025: checagem prévia de duplicatas
+def test_migracao_0025_falha_com_duplicatas_sem_apagar_nada(banco):
+    from alembic import command
+    from sqlalchemy import create_engine, text
+
+    from tests.conftest import alembic_cfg
+    eng = create_engine(banco)
+    acfg = alembic_cfg()
+    command.downgrade(acfg, "0024")
+    try:
+        with eng.begin() as c:
+            c.execute(text("UPDATE controle.execucoes SET status = 'falha' WHERE tipo = 'carga_gestaoescolar' "
+                           "AND status = 'em_andamento'"))
+            ids = [c.execute(text("INSERT INTO controle.execucoes (tipo, sistema, status, mensagem) VALUES "
+                                  "('carga_gestaoescolar', 'GESTAOESCOLAR', 'em_andamento', 'ZZTESTE dup') RETURNING id"))
+                   .scalar() for _ in range(2)]
+            antes = c.execute(text("SELECT count(*) FROM controle.execucoes")).scalar()
+        with pytest.raises(RuntimeError, match="duplicadas"):
+            command.upgrade(acfg, "head")
+        with eng.connect() as c:
+            assert c.execute(text("SELECT count(*) FROM controle.execucoes")).scalar() == antes
+            st = dict(c.execute(text("SELECT id, status FROM controle.execucoes WHERE id = ANY(:i)"), {"i": ids}).all())
+            assert st == {ids[0]: "em_andamento", ids[1]: "em_andamento"}
+            assert c.execute(text("SELECT to_regclass('controle.uq_execucoes_educacao_completa_em_andamento')")).scalar() is None
+        with eng.begin() as c:  # resolvidas (como o ADMIN faria com marcar-falha), a migração passa
+            c.execute(text("UPDATE controle.execucoes SET status = 'falha' WHERE id = ANY(:i)"), {"i": ids})
+    finally:
+        command.upgrade(acfg, "head")
+        with eng.connect() as c:
+            assert c.execute(text("SELECT to_regclass('controle.uq_execucoes_educacao_completa_em_andamento')")).scalar()
+        eng.dispose()

@@ -308,7 +308,9 @@ def interromper_orfas(db: Session) -> int:
     'interrompida', auditado. A bronze e os checkpoints ficam."""
     from app.services import trava as tv
     n = 0
-    for ex in list(db.scalars(select(Execucao).where(Execucao.tipo.in_(tv.TIPOS_CARGA), Execucao.status == "em_andamento"))):
+    from app.services.carga_gestaoescolar import TIPO_COMPLETA as TIPO_EDUCACAO  # trava própria (mesma chave)
+    tipos = (*tv.TIPOS_CARGA, TIPO_EDUCACAO)
+    for ex in list(db.scalars(select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.status == "em_andamento"))):
         if ex.sistema and _trava_livre(db, ex.sistema):
             _interrompe_orfa(db, ex, "sistema", "reinício do servidor")
             n += 1

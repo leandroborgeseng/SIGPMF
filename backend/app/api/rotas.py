@@ -358,13 +358,17 @@ def interromper_execucao(conector: str, eid: int, dados: InterromperIn, req: Req
                          u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """CC12: admin interrompe a execução parada (sem processo vivo ou sem atividade além de SIGPMF_CARGA_ALERTA_MIN).
     Motivo obrigatório, auditado. Nada é apagado; a próxima carga começa sem limpar a bronze."""
+    from app.services import carga_gestaoescolar as cge
     from app.services import trava as tv
     conector = _id_conector(db, conector)
-    if conector not in cc.CONECTORES:
+    if conector in ("educacao", "gestaoescolar"):  # carga completa da educação (fora de cc.CONECTORES)
+        sistema, tipos = cge.SISTEMA, (cge.TIPO_COMPLETA,)
+    elif conector in cc.CONECTORES:
+        sistema, tipos = cc.CONECTORES[conector][0], tv.TIPOS_CARGA
+    else:
         _404()
-    sistema = cc.CONECTORES[conector][0]
     ex = db.get(Execucao, eid)
-    if ex is None or ex.sistema != sistema or ex.tipo not in tv.TIPOS_CARGA:
+    if ex is None or ex.sistema != sistema or ex.tipo not in tipos:
         _404()
     if ex.status != "em_andamento":
         raise HTTPException(409, "Esta execução não está em andamento.")
@@ -1067,6 +1071,38 @@ def educacao_revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: 
     return {"cidadao_id": cid, "alunos": alunos, "remascarar_em_segundos": get_settings().revelar_cpf_segundos}
 
 
+@api.post("/educacao/conector/cancelar", dependencies=[Depends(ADMIN)])
+def gestaoescolar_cancelar(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Pede o cancelamento da carga completa em andamento; ela para no fim do lote atual (nada é apagado)."""
+    from app.services import carga_gestaoescolar as cge
+    try:
+        ex = cge.solicita_cancelamento(db)
+    except cge.CargaRecusada as exc:
+        motivo = cge.mensagem_segura(exc)
+        audita(db, u.email, "gestaoescolar_cancelar_negado", "conector:gestaoescolar:completa", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
+    audita(db, u.email, "gestaoescolar_cancelar", f"execucao:{ex.id}",
+           {"status": ex.status, "ja_solicitado": ex.ja_solicitado}, _ip(req))
+    return {"execucao_id": ex.id, "cancelamento_solicitado": True, "ja_solicitado": ex.ja_solicitado}
+
+
+@api.post("/educacao/conector/execucoes/{eid:int}/marcar-falha", dependencies=[Depends(ADMIN)])
+def gestaoescolar_marcar_falha(eid: int, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Execução órfã: em_andamento e sem batida há mais de SIGPMF_EDUCACAO_ORFA_MIN min vira `falha` (UPDATE atômico)."""
+    from app.services import carga_gestaoescolar as cge
+    minutos = get_settings().ge_orfa_min
+    if not cge.marca_falha_orfa(db, eid):
+        ex = db.get(Execucao, eid)
+        if ex is None or ex.tipo != cge.TIPO_COMPLETA:
+            _404()
+        motivo = "nao_em_andamento" if ex.status != "em_andamento" else "batida_recente"
+        audita(db, u.email, "gestaoescolar_marcar_falha_negado", f"execucao:{eid}", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, "Esta execução não está em andamento." if motivo == "nao_em_andamento"
+                            else cge.BATIDA_RECENTE.format(min=minutos))
+    audita(db, u.email, "gestaoescolar_marcar_falha", f"execucao:{eid}", {"orfa_min": minutos}, _ip(req))
+    return {"execucao_id": eid, "status": "falha"}
+
+
 @api.post("/educacao/conector/{modo}", dependencies=[Depends(ADMIN)])
 def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """GE3/GE11: amostra (até 50 linhas por tabela) ou carga completa (janela noturna, teto de lotes, checkpoint)."""
@@ -1075,19 +1111,29 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     if modo not in ("amostra", "completa"):
         _404()
     cfg = ConfigGE.do_ambiente(get_settings())
+    janela_ignorada = fora_da_janela = False
     try:
         cfg.valida()
         if modo == "completa":
             if not cge.amostra_ok(db):
                 raise cge.CargaRecusada(cge.SEM_AMOSTRA, "sem_amostra")
-            ok, jan = cge.dentro_da_janela(datetime.now(UTC))
-            if not ok:
-                raise cge.CargaRecusada(cge.FORA_JANELA.format(janela=jan), "fora_janela")
+            if cge.completa_em_andamento(db):
+                raise cge.CargaRecusada(cge.EM_ANDAMENTO, "em_andamento")
+            janela_ignorada = cge.checa_janela(datetime.now(UTC))
+            fora_da_janela = not cge.dentro_da_janela(datetime.now(UTC))[0]
     except (PermissionError, cge.CargaRecusada) as exc:
         motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
         audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
         raise HTTPException(409, motivo) from None
-    with LeitorGE(cfg) as leitor:
-        ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
-    audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", {"status": ex.status, "lidos": ex.lidos}, _ip(req))
+    try:
+        with LeitorGE(cfg) as leitor:
+            ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
+    except cge.CargaRecusada as exc:  # corrida: trava/índice único (0025) recusou a segunda carga
+        motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
+        audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
+        raise HTTPException(409, motivo) from None
+    detalhe = {"status": ex.status, "lidos": ex.lidos}
+    if modo == "completa":
+        detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela
+    audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", detalhe, _ip(req))
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}
