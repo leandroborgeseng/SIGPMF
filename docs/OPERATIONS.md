@@ -205,7 +205,8 @@ gera aviso.
    `python -m scripts.releitura_fonte_educacao --fonte PES_PessoaDocumento --usuario "Nome do operador"`
    O script só altera `controle.checkpoints_carga`:
    - a fonte volta ao início (posição 0, não concluída);
-   - as outras 12 ficam concluídas, com a posição igual às linhas que já estão na bronze;
+   - os checkpoints das outras 12 tabelas passam a `concluída`, com a posição igual à contagem de linhas que cada
+     uma já tem na bronze. É assim que a carga pula essas 12 e lê só a fonte pedida;
    - o pedido é auditado (`educacao_releitura_fonte`).
 3. Rode a carga completa da educação pela tela, pela agenda ou pelo "Executar agora". A janela noturna continua
    valendo. Ela lê **só** PES_PessoaDocumento e, ao fechar o ciclo, reconstrói a prata da educação a partir da bronze

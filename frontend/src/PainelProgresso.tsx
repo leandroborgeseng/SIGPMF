@@ -10,10 +10,13 @@ export type Progresso = {
   decorrido_s: number; calculando: boolean; previsao_termino: string | null; previsao_termino_brt: string | null
   ultimo_sinal: string; sem_sinal_min: number; orfa_limite_min: number; possivel_travada: boolean
 }
+/** #42: aviso de sucesso com tabela vazia; opcional (API sem o #42 não manda o campo). */
+export type Alerta = { codigo: string; tabelas?: string[]; texto?: string }
 export type FonteProgresso = {
   id: string; nome: string; status: string; status_texto: string; motivo_codigo: string | null; motivo: string | null
   falta: string[] | null; aguardando_em: string | null; aguardando_em_brt: string | null; progresso: Progresso | null
-  ultima_execucao: { execucao_id: number; finalizado_em: string | null; lidas: number; gravadas: number; lotes: number; modo: string } | null
+  ultima_execucao: { execucao_id: number; finalizado_em: string | null; lidas: number; gravadas: number; lotes: number; modo: string
+    alerta?: Alerta | null } | null
   tabelas: Tabela[]
 }
 export type RespProgresso = { agora: string; rodando: boolean; atualizar_a_cada_s: number; fontes: FonteProgresso[] }
@@ -35,14 +38,21 @@ export function textoLote(p: Progresso): string {
   return `Lote ${n(p.lote)} de ~${n(p.lotes_total)} (${p.percentual}%)`
 }
 
+export function alertaDe(f: FonteProgresso): Alerta | null {
+  const a = f.ultima_execucao?.alerta
+  return a && typeof a === 'object' && typeof a.codigo === 'string' ? a : null
+}
+
 function Card({ f }: { f: FonteProgresso }) {
   const p = f.progresso
+  const alerta = f.status === 'concluida' ? alertaDe(f) : null
+  const statusTexto = alerta ? 'Concluída com aviso' : f.status_texto
   const titulo = `pp-${f.id}`
   return (
     <article className={`pp-card${p?.possivel_travada ? ' travada' : ''}`} aria-labelledby={titulo}>
       <header className="pp-cab">
         <h3 id={titulo}>{f.nome}</h3>
-        <span className={`selo ${CLASSE[f.status] ?? ''}`}><span aria-hidden="true">{ICONE[f.status]} </span>{f.status_texto}
+        <span className={`selo ${alerta ? 'aviso-selo' : CLASSE[f.status] ?? ''}`}><span aria-hidden="true">{alerta ? '⚠' : ICONE[f.status]} </span>{statusTexto}
           {f.status === 'aguardando' && f.aguardando_em_brt ? ` · próxima às ${f.aguardando_em_brt} (BRT)` : ''}</span>
       </header>
       {p && (<>
@@ -58,6 +68,13 @@ function Card({ f }: { f: FonteProgresso }) {
         <p>Último sinal há {p.sem_sinal_min} min</p>
         {p.possivel_travada && <p role="alert" className="aviso-ambar">Possível execução travada: sem sinal há {p.sem_sinal_min} min.</p>}
       </>)}
+      {alerta && (
+        <div className="aviso-ambar pp-alerta">
+          {alerta.codigo === 'tabela_vazia' && alerta.tabelas?.length
+            ? <ul>{alerta.tabelas.map((t) => <li key={t}>Tabela vazia: {t}</li>)}</ul>
+            : <p>Aviso: {alerta.texto ?? alerta.codigo}</p>}
+        </div>
+      )}
       {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}</p>}
       {f.falta && <p className="pp-motivo">Não liberada — falta: {f.falta.join(' / ')}</p>}
       {!p && f.ultima_execucao && <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} lidas,

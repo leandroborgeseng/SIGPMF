@@ -123,6 +123,31 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
     expect(r.violations).toEqual([])
   })
 
+  it('#42: concluída com aviso de tabela vazia, em texto (não só cor)', async () => {
+    mock([[200, resp([fonte({ status: 'concluida', status_texto: 'Concluída com aviso', progresso: null,
+      ultima_execucao: { execucao_id: 9, finalizado_em: '2026-10-29T10:00:00Z', lidas: 10, gravadas: 10, lotes: 1, modo: 'Carga completa',
+        alerta: { codigo: 'tabela_vazia', tabelas: ['PES_PessoaDocumento'], texto: 'Atenção: 1 tabela(s)…' } } })], false)]])
+    render(<PainelProgresso />)
+    const card = await screen.findByRole('article', { name: 'Educação' })
+    expect(within(card).getByText('Concluída com aviso')).toBeVisible()
+    expect(within(card).getByText('Tabela vazia: PES_PessoaDocumento')).toBeVisible()
+  })
+
+  it('#42 opcional: API sem o campo alerta (main antiga) e status_texto antigo continuam funcionando', async () => {
+    mock([[200, resp([fonte({ status: 'concluida', status_texto: 'Concluída', progresso: null,
+      ultima_execucao: { execucao_id: 9, finalizado_em: null, lidas: 10, gravadas: 10, lotes: 1, modo: 'Carga completa' } }),
+    fonte({ id: 'iss', nome: 'ISS', status: 'concluida', status_texto: 'Concluída', progresso: null, tabelas: [],
+      ultima_execucao: { execucao_id: 8, finalizado_em: null, lidas: 1, gravadas: 1, lotes: 1, modo: 'Carga completa',
+        alerta: { codigo: 'tabela_vazia', tabelas: ['ZZTESTE_T'] } } })], false)]])
+    render(<PainelProgresso />)
+    const edu = await screen.findByRole('article', { name: 'Educação' })
+    expect(within(edu).getByText('Concluída')).toBeVisible()
+    expect(within(edu).queryByText(/Tabela vazia/)).toBeNull()
+    const iss = screen.getByRole('article', { name: 'ISS' })
+    expect(within(iss).getByText('Concluída com aviso')).toBeVisible()  // derivado no front mesmo com status_texto antigo
+    expect(within(iss).getByText('Tabela vazia: ZZTESTE_T')).toBeVisible()
+  })
+
   it('textoLote', () => {
     expect(textoLote(prog({ lote: 1000, lotes_total: 2400, percentual: 41 }))).toBe('Lote 1.000 de ~2.400 (41%)')
   })

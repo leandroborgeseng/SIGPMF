@@ -261,3 +261,21 @@ def test_pp8_nao_toca_a_origem(client, tokens, monkeypatch):
     monkeypatch.setattr(sq.SqlServerConnector, "__enter__", proibido, raising=False)
     monkeypatch.setattr(sq.SqlServerConnector, "__init__", proibido)
     assert client.get("/api/fontes/progresso", headers=tokens["admin"]).status_code == 200
+
+
+def test_42_concluida_com_aviso_tabela_vazia(limpo):
+    """#42: sucesso com tabela vazia -> 'Concluída com aviso' e o alerta (código, tabelas, texto fixo)."""
+    _ex(limpo, status="sucesso", finalizado_em=AGORA, lidos=10, erro_classe="tabela_vazia",
+        erro_tabela="PES_PessoaDocumento", mensagem="ZZTESTE texto livre")
+    r = pg.fonte(limpo, F, AGORA)
+    assert (r["status"], r["status_texto"]) == ("concluida", "Concluída com aviso")
+    a = r["ultima_execucao"]["alerta"]
+    assert a["codigo"] == "tabela_vazia" and a["tabelas"] == ["PES_PessoaDocumento"] and "texto livre" not in a["texto"]
+
+
+def test_42_sem_aviso_e_tolerante_sem_alerta_publico(limpo, monkeypatch):
+    _ex(limpo, status="sucesso", finalizado_em=AGORA, lidos=10)
+    r = pg.fonte(limpo, F, AGORA)
+    assert r["status_texto"] == "Concluída" and r["ultima_execucao"]["alerta"] is None
+    monkeypatch.delattr(Execucao, "alerta_publico")  # main sem o #42
+    assert pg.fonte(limpo, F, AGORA)["ultima_execucao"]["alerta"] is None

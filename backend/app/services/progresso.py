@@ -174,6 +174,15 @@ def _motivo_fim(ex: Execucao) -> str | None:
     return None
 
 
+def _alerta(ex: Execucao) -> dict | None:
+    """Aviso público da execução (#42), só código, nomes de tabela e texto fixo; tolera main sem o #42."""
+    fn = getattr(ex, "alerta_publico", None)
+    if ex.status not in ("sucesso", "sem_novidades", "parcial") or fn is None:
+        return None
+    a = fn()
+    return {"codigo": a["codigo"], "tabelas": list(a["tabelas"]), "texto": a["texto"]} if a else None
+
+
 def _sei() -> list[str] | None:
     """PP10: o que falta para liberar a carga do SEI (nomes de pendência, nunca valores)."""
     from app.connectors.sei.config import ConfigSei
@@ -219,8 +228,13 @@ def fonte(db: Session, f: Fonte, agora: datetime) -> dict:
     if ult is not None and rodando is None:
         ultima = {"execucao_id": ult.id, "finalizado_em": _utc(ult.finalizado_em), "lidas": int(ult.lidos or 0),
                   "gravadas": int(ult.novos or 0) + int(ult.atualizados or 0), "lotes": int(ult.lotes or 0),
-                  "modo": "Incremental" if ult.modo == "incremental" else "Carga completa"}
-    return {"id": f.id, "nome": f.nome, "status": status, "status_texto": STATUS_TEXTO[status],
+                  "modo": "Incremental" if ult.modo == "incremental" else "Carga completa",
+                  # #42: aviso de sucesso com tabela vazia ({codigo, tabelas, texto}); None sem aviso ou sem o #42
+                  "alerta": _alerta(ult)}
+    texto_status = STATUS_TEXTO[status]
+    if status == CONCLUIDA and ultima and ultima["alerta"]:
+        texto_status = "Concluída com aviso"
+    return {"id": f.id, "nome": f.nome, "status": status, "status_texto": texto_status,
             "motivo_codigo": motivo, "motivo": MOTIVOS.get(motivo) if motivo else None,
             "falta": [MOTIVOS[x] for x in falta] if falta else None,
             "aguardando_em": aguardando_em, "aguardando_em_brt": _hhmm(aguardando_em),
