@@ -150,8 +150,9 @@ def cria_tabela(sid: int, dados: TabelaIn, req: Request, u: Usuario = Depends(AD
         try:
             pol.autoriza(dados.nome)
         except TabelaRecusada as exc:
-            audita(db, u.email, "tabela_recusada", f"{s.codigo}.{dados.nome}", {"motivo": str(exc)}, _ip(req))
-            raise HTTPException(422, str(exc)) from None
+            audita(db, u.email, "tabela_recusada", f"{s.codigo}.{dados.nome}", {"codigo": exc.codigo, "motivo": str(exc)},
+                   _ip(req))
+            raise HTTPException(422, {"codigo": exc.codigo, "mensagem": "Tabela recusada pela política de dados."}) from None
     t = TabelaCatalogo(sistema_id=sid, **dados.model_dump())
     db.add(t)
     try:

@@ -69,7 +69,8 @@ def executar_demo(db: Session, usuario: str, completa: bool = False, origem: Ori
                     colunas = pol.colunas_select(tabela)
                 except TabelaRecusada as exc:
                     db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=str(exc)))
-                    audita(db, usuario, "tabela_recusada", f"{sistema}.{tabela}", {"motivo": str(exc)}, commit=False)
+                    audita(db, usuario, "tabela_recusada", f"{sistema}.{tabela}", {"codigo": exc.codigo, "motivo": str(exc)},
+                           commit=False)
                     db.commit()
                     continue
             m = MAPEAMENTOS.get((sistema, tabela))
