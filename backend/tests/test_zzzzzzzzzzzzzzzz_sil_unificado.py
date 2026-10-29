@@ -306,8 +306,8 @@ def test_agenda_parcial_nao_marca_completa_nem_assinatura(db, sil_mock):
     assert len(sil_mock.gets()) - n_get == 1 and {h[0] for h in sil_mock.hits} == {SANDBOX}
     assert (ag.ultima_completa_em, ag.assinatura_origem) == antes   # IN3/AG3 não veem carga completa
     assert ag.ultimo_status == "parcial" and ag.ultima_mensagem.startswith("parcial:")
-    if antes[0] is None:  # IN3: sem completa registrada, a próxima continua "completa"
-        assert agenda.modo_da_vez(ag, datetime.now(ZoneInfo("UTC"))) == "completa"
+    if antes[0] is None:  # IN6: AGENDA_COMPLETA_DIAS=0 (padrão) -> a agenda nunca escolhe completa
+        assert agenda.modo_da_vez(ag, datetime.now(ZoneInfo("UTC"))) == "incremental"
     _zera_checkpoint_sil(db)
 
 

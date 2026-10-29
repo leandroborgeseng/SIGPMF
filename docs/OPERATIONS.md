@@ -25,7 +25,7 @@
 | AGENDA_INTERVALO_S | de quanto em quanto tempo a agenda confere se há carga a iniciar (padrão 60 s) |
 | AGENDA_PULAR_SEM_MUDANCA | `true` (padrão): antes de ler, compara `COUNT(*)` e `MAX(campo incremental)` de cada tabela com a última carga bem-sucedida; igual = "Sem mudança na origem", nada é lido nem reconstruído |
 | AGENDA_TENTATIVAS / AGENDA_REESPERA_MIN | falha tenta de novo depois de `REESPERA_MIN` (30) até `TENTATIVAS` (3) vezes no dia |
-| AGENDA_COMPLETA_DIAS | a agenda faz carga **incremental** (só o alterado) e uma **completa** a cada N dias e na primeira vez (padrão 7); a completa pega registros excluídos na origem |
+| AGENDA_COMPLETA_DIAS | padrão **0**: a agenda faz **só incremental** (inclusive a educação) e nunca uma completa; a completa só roda manualmente por ADMIN (auditada). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
 | CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |
@@ -57,7 +57,19 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - **Incremental**: por tabela, lê só as linhas com `campo incremental >= marca d'água` (maior data já gravada na bronze
   − `CARGA_INCREMENTAL_MARGEM_H`). Tabela sem campo incremental na política, ou sem histórico, é lida por inteiro.
   Não verifica de novo a unicidade da chave nem atualiza checkpoints (isso é da completa). Exclusões na origem só
-  aparecem na completa (a cada `AGENDA_COMPLETA_DIAS`).
+  aparecem numa completa manual (ADMIN) enquanto a conferência leve por PK/hash (IN5/IN7) não entra.
+- **Saúde**: `Unidades`, `Aux_Vacina` e `Aux_Especialidades` não têm coluna de data e são relidas inteiras em toda
+  incremental (dimensões pequenas; hash evita gravar o que não mudou).
+- **SIL**: a API não tem data; toda execução lê tudo e a bronze só grava a linha cujo hash mudou (exceção ao IN2).
+- **Educação** (`POST /api/educacao/conector/incremental`, e é o que a agenda roda): cada fonte com `*_dataAlteracao`
+  lê só `>= marca d'água − CARGA_INCREMENTAL_MARGEM_H`; a marca fica em `controle.checkpoints_carga.marca_dagua`
+  (0027) e **não é zerada** no fim do ciclo (só o keyset volta ao início). Sem marca, parte da maior data já gravada
+  na bronze. `PES_PessoaEndereco` também entra quando `END_Endereco.end_dataAlteracao` mudou; pessoas do CoreSSO
+  entram também quando o aluno/responsável ligado a elas mudou (entrada no escopo). `ACA_TipoResponsavelAluno`
+  (8 linhas, sem data lida) é relida inteira. Sem linha nova ou alterada: "Concluída · nenhuma linha nova" e a
+  prata/ouro não são refeitas. O log de cada fonte traz "incremental desde <data>; N lidas, X novas, Y alteradas".
+  A completa (`/completa`) segue só manual, por ADMIN. Na agenda a educação roda **sempre incremental**, mesmo com
+  `AGENDA_COMPLETA_DIAS` > 0 (essa variável não vale para a educação).
 - **Prata e ouro só quando algo mudou**: antes de reconstruir, compara a assinatura das entradas (bronze: total, maior
   id e quarentena; confirmações de óbito; parâmetros da correlação; hash do código das regras) com a da última
   reconstrução bem-sucedida (`controle.camadas_estado`). Igual = reconstrução pulada ("Nada mudou nas entradas da prata
@@ -223,8 +235,12 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
    `docker-compose.yml` declara no serviço backend; vazio = ausente), com fallback para `GIT_SHA` e depois `SIGPMF_BUILD_SHA` (só hex de 7 a 40
    caracteres). Sem SHA válido, recusa com `sem_sha_deploy` (não lê nada) em vez de arriscar repetir.
 3. O boot não espera: a app sobe e o `/health` responde normalmente. Uma thread em segundo plano espera o `/health`
-   da própria app dar 200 (até `SIGPMF_RELEITURA_SAUDE_MAX_S`, padrão 600 s; senão recusa `sem_saude`) e então:
+   da própria app dar 200 em `http://127.0.0.1:<SIGPMF_RELEITURA_SAUDE_PORTA>/health` (porta padrão **8000**; se o
+   backend escutar em outra porta, ajuste a variável, senão recusa `sem_saude`), até `SIGPMF_RELEITURA_SAUDE_MAX_S`
+   (padrão 600 s; senão recusa `sem_saude`), e então:
    - pega a **mesma trava** da carga da educação (advisory lock do sistema) e a segura até o fim;
+   - já com a trava, **confere o marcador de novo**: se outra instância no mesmo SHA já concluiu, não relê
+     (log `INFO [releitura_deploy:ja_executada]`). Assim duas instâncias subindo com o mesmo SHA não rodam duas vezes;
    - roda a mesma lógica de `scripts.releitura_fonte_educacao` com o usuário `sistema-deploy` (auditado em
      `educacao_releitura_fonte`) e lê só essa fonte. A janela noturna continua valendo (`SIGPMF_EDUCACAO_JANELA_NOTURNA`);
    - ao fechar o ciclo, reprocessa a prata da educação e o vínculo com o cidadão (ouro), como a carga completa;
@@ -233,6 +249,9 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
    `sem_amostra`, `fora_janela`, `trava_ocupada`, `em_andamento`, `sem_credencial`, `sem_saude`, `sem_sha_deploy`. Cada uma grava log
    `WARNING [releitura_deploy:<codigo>]`, a auditoria `educacao_releitura_deploy_recusada` e uma execução
    `releitura_deploy` com status `recusada` e campo `alerta` (código e texto) na última execução do painel.
+   **Atenção (`fora_janela`):** a janela noturna da educação vale também aqui. Um deploy **de dia** com
+   `SIGPMF_EDUCACAO_JANELA_NOTURNA` ligada recusa com `fora_janela` (nada é lido). Para reler de dia, desligue a janela
+   antes do deploy ou faça o deploy dentro da janela; o próximo boot no mesmo SHA tenta de novo.
 5. Acompanhe em `GET /api/educacao/releitura-deploy` (ADMIN): fonte, SHA (`token`), status (`concluida`, `falha`, `recusada`,
    `em_andamento`), código e execução.
 6. **Repetição.** Reiniciar no mesmo SHA não relê (log `INFO [releitura_deploy:ja_executada]`). Falha, recusa ou
