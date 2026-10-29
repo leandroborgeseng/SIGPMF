@@ -4,13 +4,13 @@
 Downgrade remove só esta tabela nova.
 
 Revision ID: 0029
-Revises: 0026  (o #44 reserva a 0027 e o PR-01 não precisou da 0028; ajustar para a ponta da main no merge)
+Revises: 0027  (#44 na main; a 0028 reservada ao PR-01 não foi usada)
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = '0029'
-down_revision = '0026'
+down_revision = '0027'
 branch_labels = None
 depends_on = None
 
