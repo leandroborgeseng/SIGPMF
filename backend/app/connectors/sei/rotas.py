@@ -24,6 +24,7 @@ from app.core.db import get_db
 from app.core.security import ADMIN, usuario_atual
 from app.models.camadas import RegistroBronze
 from app.models.controle import Usuario
+from app.services.acesso_secretaria import dom as _dom_pr06  # noqa: E402
 
 sei = APIRouter(prefix="/sei", tags=["sei"], dependencies=[Depends(usuario_atual)])
 PERFIS_CONSULTA = ("admin", "admin_lgpd", "operador")
@@ -81,7 +82,7 @@ def _interessados(db: Session, id_proc: str) -> list[dict]:
     return list((r.dados or {}).get("interessados") or [])
 
 
-@sei.post("/interessados")
+@sei.post("/interessados", dependencies=[Depends(_dom_pr06("sei"))])
 def interessados(dados: ProcessoIn, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     if u.perfil not in PERFIS_CONSULTA:
         audita(db, u.email, "sei_interessados_negado", "sei:processo", {"perfil": u.perfil}, _ip(req))
@@ -89,7 +90,7 @@ def interessados(dados: ProcessoIn, req: Request, u: Usuario = Depends(usuario_a
     return {"interessados": visao_interessados(_interessados(db, dados.id_procedimento), u.perfil)}
 
 
-@sei.post("/interessados/revelar")
+@sei.post("/interessados/revelar", dependencies=[Depends(_dom_pr06("sei"))])
 def revelar(dados: RevelarIn, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     alvo = f"sei:processo:{dados.id_procedimento}"
     if u.perfil not in PERFIS_REVELAM:

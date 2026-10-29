@@ -150,7 +150,7 @@ def salvar_secretaria(dados: SecretariaIn, req: Request, u: Usuario = Depends(ad
 
 @ti.post("/referencia/dominio")
 def salvar_dominio(dados: DominioIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
-    if dados.secretaria not in acs.secretarias(db) or dados.secretaria == acs.TODAS:
+    if dados.secretaria not in acs.secretarias(db):
         raise HTTPException(422, "Secretaria desconhecida.")
     d = db.get(DominioSecretaria, dados.dominio)
     antes = None if d is None else {"secretaria": d.secretaria, "a_confirmar": d.a_confirmar}
@@ -224,6 +224,8 @@ def _vinculo_versao(db: Session, vid: int, versao: int) -> UsuarioSecretaria:
 def editar(dados: EditarIn, req: Request, u: Usuario = Depends(admin_ti), db: Session = Depends(get_db)):
     _valida_vigencia(dados.inicio, dados.fim)
     v = _vinculo_versao(db, dados.vinculo_id, dados.versao)
+    if v.secretaria == acs.TODAS:  # TL 29/10: o vínculo do prefeito não é editado nem encerrado por nenhuma rota
+        raise HTTPException(422, "O acesso do prefeito não é alterado por esta tela. Só o perfil admin_lgpd remove.")
     antes = {"inicio": v.vigencia_inicio.isoformat(), "fim": v.vigencia_fim.isoformat() if v.vigencia_fim else None}
     v.vigencia_inicio, v.vigencia_fim = dados.inicio, dados.fim
     v.atualizado_por, v.atualizado_em, v.versao = u.email, datetime.now(UTC), v.versao + 1

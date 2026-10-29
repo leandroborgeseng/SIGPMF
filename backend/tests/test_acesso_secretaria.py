@@ -34,10 +34,10 @@ def _vinculo(db, u, sec, inicio=None, fim=None):
     db.commit()
 
 
-def _cidadao(db, nasc=date(1980, 1, 1)):
+def _cidadao(db, nasc=date(1980, 1, 1), dominios=("saude", "tributario")):
     cid = str(uuid.uuid4())
     db.add(Cidadao(cidadao_id=cid, nome="ZZTESTE CIDADAO", data_nascimento=nasc))
-    db.add(CidadaoSistemas(cidadao_id=cid, nome="ZZTESTE CIDADAO", sistemas=["ZZ"], dominios=["saude", "tributario"]))
+    db.add(CidadaoSistemas(cidadao_id=cid, nome="ZZTESTE CIDADAO", sistemas=["ZZ"], dominios=list(dominios)))
     db.add(DadoGold(cidadao_id=cid, dominio="saude", campo="cns", valor="ZZTESTE-CNS", sistema="ZZ"))
     db.add(DadoGold(cidadao_id=cid, dominio="tributario", campo="inscricao", valor="ZZTESTE-INSC", sistema="ZZ"))
     db.commit()
@@ -152,7 +152,7 @@ def test_r3_prefeito_ve_tudo_com_auditoria(client, db, rbac):
 
 # ---------- R4 ----------
 def test_r4_menor_so_educacao_clinico_so_saude(client, db, rbac):
-    cid = _cidadao(db, nasc=HOJE - timedelta(days=365 * 12))
+    cid = _cidadao(db, nasc=HOJE - timedelta(days=365 * 12), dominios=["saude", "tributario", "educacao"])
     fz, hf = _usuario(db, client)
     _vinculo(db, fz, "FAZENDA")
     assert client.get(f"/api/gold/cidadaos/{cid}", headers=hf).status_code == 403
@@ -369,3 +369,170 @@ def test_prefeito_so_admin_lgpd_remove_com_motivo_auditado(client, db, tokens):
     r = client.post(B + "/vinculos/remover-prefeito", json={"vinculo_id": s["id"], "versao": 1, "motivo": "ZZTESTE motivo longo"},
                     headers=tokens["admin_lgpd"])
     assert r.status_code == 422
+
+
+# ---------- QA #50 (b31722c): secretaria DONA, rotas cobertas, revelar por função, TODAS imutável ----------
+def _so(db, client, sec, perfil="leitura"):
+    u, h = _usuario(db, client, perfil)
+    _vinculo(db, u, sec)
+    return u, h
+
+
+@pytest.mark.parametrize("rota", ["", "/linha-do-tempo", "/sistemas", "/acessos"])
+def test_qa1_outra_secretaria_nao_ve_ficha_linha_sistemas(client, db, rbac, rota):
+    _u, h = _so(db, client, "ADMINISTRACAO", "admin")  # dono só de "sei" (a confirmar)
+    cid = _cidadao(db)
+    r = client.get(f"/api/gold/cidadaos/{cid}{rota}", headers=h)
+    assert r.status_code == 403 and "ZZTESTE" not in r.text
+
+
+def test_qa1_secretaria_sem_dominio_nao_lista_nada(client, db, rbac):
+    _cidadao(db)
+    _u, h = _so(db, client, "ASSISTENCIA_SOCIAL")  # não é dona de nenhum domínio
+    for rota in ("/api/silver/cidadaos", "/api/silver/cidadaos.csv"):
+        r = client.get(rota, headers=h)
+        assert r.status_code == 403 and "ZZTESTE" not in r.text
+
+
+def test_qa1_listas_filtram_pela_dona_e_menores(client, db, rbac):
+    adulto = _cidadao(db, dominios=["saude"])
+    menor = _cidadao(db, nasc=HOJE - timedelta(days=365 * 8), dominios=["saude", "educacao"])
+    so_trib = _cidadao(db, dominios=["tributario"])
+    _u, hs = _so(db, client, "SAUDE")
+    ids = {x["cidadao_id"] for x in client.get("/api/silver/cidadaos?limite=200&busca=ZZTESTE", headers=hs).json()}
+    assert adulto in ids and menor not in ids and so_trib not in ids
+    csv = client.get("/api/silver/cidadaos.csv", headers=hs).text
+    assert menor not in csv and so_trib not in csv
+    _u, he = _so(db, client, "EDUCACAO")
+    ids = {x["cidadao_id"] for x in client.get("/api/silver/cidadaos?limite=200&busca=ZZTESTE", headers=he).json()}
+    assert menor in ids and adulto not in ids
+    linha = next(x for x in client.get("/api/silver/cidadaos?limite=200&busca=ZZTESTE", headers=he).json() if x["cidadao_id"] == menor)
+    assert linha["dominios"] == ["educacao"]
+
+
+def test_qa1_ficha_e_linha_do_tempo_so_dominios_da_dona(client, db, rbac):
+    from app.models.camadas import Evento
+    cid = _cidadao(db)
+    db.add(Evento(cidadao_id=cid, data=HOJE, area="saude", tipo="consulta", titulo="ZZTESTE consulta", fonte="ZZ"))
+    db.add(Evento(cidadao_id=cid, data=HOJE, area="impostos", tipo="pagamento", titulo="ZZTESTE pagamento", fonte="ZZ"))
+    db.commit()
+    _u, h = _so(db, client, "FAZENDA")
+    f = client.get(f"/api/gold/cidadaos/{cid}", headers=h).json()
+    assert {d["dominio"] for d in f["dados"]} == {"tributario"} and f["dominios"] == ["tributario"] and f["sistemas"] == []
+    ev = client.get(f"/api/gold/cidadaos/{cid}/linha-do-tempo", headers=h).json()["eventos"]
+    assert [e["area"] for e in ev] == ["impostos"]
+    s2 = client.get(f"/api/gold/cidadaos/{cid}/sistemas", headers=h).json()
+    assert s2["dominios"] == ["tributario"] and s2["sistemas"] == []
+
+
+def test_qa2_rotas_de_qualidade_municipes_e_acessos(client, db, rbac, tokens):
+    _u, hf = _so(db, client, "FAZENDA", "admin")
+    assert client.get("/api/silver/municipes", headers=hf).status_code == 200
+    for rota in ("/api/silver/pendencias", "/api/silver/inconsistencias"):
+        assert client.get(rota, headers=hf).status_code == 403
+    _u, hs = _so(db, client, "SAUDE", "admin")
+    for rota in ("/api/silver/municipes", "/api/silver/municipes/pendencias"):
+        assert client.get(rota, headers=hs).status_code == 403
+    cid = _cidadao(db)
+    assert client.get(f"/api/gold/cidadaos/{cid}/acessos", headers=tokens["admin"]).status_code == 403  # admin sem vínculo
+    assert client.get(f"/api/gold/cidadaos/{cid}/acessos", headers=hs).status_code == 200
+
+
+# Classificação de TODAS as rotas do app. Rota nova sem classificação = teste falha (QA #50 item 2).
+PESSOAIS = {
+    ("GET", "/api/silver/cidadaos"), ("GET", "/api/silver/cidadaos.csv"), ("GET", "/api/silver/pendencias"),
+    ("GET", "/api/silver/municipes"), ("GET", "/api/silver/municipes/pendencias"), ("GET", "/api/silver/inconsistencias"),
+    ("GET", "/api/gold/cidadaos/{cid}"), ("GET", "/api/gold/cidadaos/{cid}/tributario"),
+    ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
+    ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
+    ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
+    ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
+    ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
+    ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),
+}
+# Revelação por FUNÇÃO (admin_lgpd), sem vínculo, com motivo obrigatório e auditoria (TL 29/10).
+POR_FUNCAO = {
+    ("POST", "/api/cidadaos/{cid}/revelar-cpf"), ("POST", "/api/gold/cidadaos/{cid}/educacao/revelar"),
+    ("POST", "/api/gold/cidadaos/{cid}/tributario/revelar-empresas"),
+}
+NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
+    ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
+    ("PUT", "/api/catalogo/sistemas/{sid}"), ("POST", "/api/catalogo/sistemas/{sid}/tabelas"), ("GET", "/api/conectores"),
+    ("POST", "/api/conectores/{conector}/testar"), ("POST", "/api/conectores/demo/executar"), ("POST", "/api/conectores/sil/amostra"),
+    ("GET", "/api/conectores/sil/amostra/{eid}"), ("POST", "/api/conectores/{conector}/amostra"),
+    ("GET", "/api/conectores/{conector}/amostra/{eid}"), ("GET", "/api/conectores/sil/status"),
+    ("GET", "/api/conectores/{conector}/bloqueio"), ("POST", "/api/conectores/{conector}/execucoes/{eid}/interromper"),
+    ("POST", "/api/conectores/{base_id:int}/executar"), ("POST", "/api/conectores/{conector}/diagnostico"),
+    ("POST", "/api/conectores/diagnostico"), ("GET", "/api/conectores/{conector}/completa"),
+    ("GET", "/api/conectores/{conector}/completa/estimativa"), ("POST", "/api/conectores/{conector}/completa"),
+    ("GET", "/api/conectores/{conector}/completa/quarentena"), ("POST", "/api/conectores/{conector}/completa/retomar-camadas"),
+    ("POST", "/api/conectores/{conector}/completa/cancelar"), ("GET", "/api/sistema/recursos"),
+    ("POST", "/api/conectores/iss/municipes/executar"), ("GET", "/api/execucoes/{eid}/logs"), ("GET", "/api/indicadores"),
+    ("GET", "/api/politicas"), ("POST", "/api/politicas/retencao/executar"), ("POST", "/api/usuarios"), ("GET", "/api/auditoria"),
+    ("GET", "/api/fontes/progresso"), ("GET", "/api/agenda"), ("PUT", "/api/agenda/{conector}"),
+    ("POST", "/api/agenda/{conector}/executar-agora"), ("GET", "/api/educacao/releitura-deploy"),
+    ("POST", "/api/educacao/conector/cancelar"), ("POST", "/api/educacao/conector/execucoes/{eid:int}/marcar-falha"),
+    ("POST", "/api/educacao/conector/{modo}"), ("GET", "/api/health"), ("POST", "/api/auth/login"),
+    ("GET", "/api/sei/status"), ("POST", "/api/sei/amostra"), ("POST", "/api/sei/incremental"),
+} | {("POST", "/api/ti/acesso-secretaria" + r) for r in (
+    "/secretarias", "/referencia/listar", "/referencia/secretaria", "/referencia/dominio", "/usuarios/buscar", "/vinculos/listar",
+    "/vinculos/adicionar", "/vinculos/editar", "/vinculos/remover", "/vinculos/historico", "/vinculos/remover-prefeito")}
+
+
+def _rotas_app():
+    from app.api.acesso_ti import ti
+    from app.api.rotas import api, publico
+    from app.connectors.sei.rotas import sei
+    from app.explorador.rotas import explorador
+    return {(m, "/api" + r.path) for R in (api, publico, explorador, sei, ti) for r in R.routes for m in r.methods - {"HEAD"}}
+
+
+def test_qa2_toda_rota_do_app_esta_classificada():
+    rotas = _rotas_app()
+    sem = rotas - PESSOAIS - POR_FUNCAO - NAO_PESSOAIS
+    assert not sem, f"Rota sem classificação PR-06 (dado pessoal precisa da regra): {sorted(sem)}"
+    assert not (PESSOAIS & NAO_PESSOAIS) and (PESSOAIS | POR_FUNCAO) <= rotas
+
+
+@pytest.mark.parametrize("perfil", ["admin", "admin_lgpd"])
+def test_qa2_toda_rota_pessoal_aplica_a_regra(client, db, rbac, perfil):
+    """Usuário com perfil alto mas vínculo só com secretaria que não é dona de nada: toda rota pessoal = 403."""
+    _u, h = _so(db, client, "ASSISTENCIA_SOCIAL", perfil)
+    cid = _cidadao(db)
+    for m, path in sorted(PESSOAIS):
+        url = path.replace("{cid}", cid).replace("{pid}", "1").replace("{no_id}", f"pf:{cid}")
+        url += "?motivo=ZZTESTE+motivo+longo" if "vinculos" in url else ""
+        r = client.request(m, url, headers=h, json={})
+        assert r.status_code == 403, (m, path, r.status_code)
+        assert "ZZTESTE" not in r.text
+
+
+def test_qa3_admin_lgpd_revela_cpf_sem_vinculo_com_motivo_e_auditoria(client, db, rbac, tokens):
+    cid = _cidadao(db)
+    _cpf(db, cid, "86288366757")
+    h = tokens["admin_lgpd"]
+    r = client.post(f"/api/cidadaos/{cid}/revelar-cpf", json={}, headers=h)
+    assert r.status_code == 400 and "86288366757" not in r.text
+    db.expire_all()
+    assert db.scalar(select(Auditoria).where(Auditoria.acao == "revelar_cpf_negado", Auditoria.alvo == f"cidadao:{cid}")) is not None
+    r = client.post(f"/api/cidadaos/{cid}/revelar-cpf", json={"motivo": "ZZTESTE ofício 123/2026"}, headers=h)
+    assert r.status_code == 200 and r.json()["cpf"] == "86288366757"
+    db.expire_all()
+    a = db.scalar(select(Auditoria).where(Auditoria.acao == "revelar_cpf", Auditoria.alvo == f"cidadao:{cid}"))
+    assert a.detalhe["motivo"] == "ZZTESTE ofício 123/2026" and a.usuario == "admin_lgpd@aion.local"
+    for perfil in ("admin", "operador", "leitura"):
+        assert client.post(f"/api/cidadaos/{cid}/revelar-cpf", json={"motivo": "ZZTESTE motivo longo"},
+                           headers=tokens[perfil]).status_code == 403
+
+
+def test_qa4_todas_nao_e_editado_nem_encerrado(client, db, tokens):
+    alvo, _ = _usuario(db, client)
+    v = client.post(B + "/vinculos/adicionar", json={"usuario_id": alvo.id, "secretaria": "TODAS"}, headers=tokens["admin"]).json()
+    ontem = (HOJE - timedelta(days=1)).isoformat()
+    for corpo in ({"vinculo_id": v["id"], "versao": 1, "inicio": "2026-01-01", "fim": ontem},
+                  {"vinculo_id": v["id"], "versao": 1, "inicio": (HOJE + timedelta(days=5)).isoformat()}):
+        assert client.post(B + "/vinculos/editar", json=corpo, headers=tokens["admin"]).status_code == 422
+        assert client.post(B + "/vinculos/editar", json=corpo, headers=tokens["admin_lgpd"]).status_code == 403
+    db.expire_all()
+    linha = db.get(UsuarioSecretaria, v["id"])
+    assert linha.vigencia_fim is None and linha.removido_em is None and linha.versao == 1

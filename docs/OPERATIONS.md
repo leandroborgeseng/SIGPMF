@@ -280,5 +280,12 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
 - Com vínculo vigente o dado nominal sai **sem máscara, inclusive o CPF completo** (TL 29/10), e a linha de
   `controle.auditoria_acesso` marca `revelou_cpf`. Admin sem vínculo recebe 403 (confirmado).
 - **Menores só para a Educação; dado clínico (rota da Saúde) só para a Saúde** (prefeito vê tudo, com auditoria).
+- A regra libera só pela secretaria **DONA** do domínio: vínculo com secretaria que não é dona de nenhum domínio do
+  cidadão = 403 (ficha, linha do tempo, /sistemas, acessos); listas e CSV mostram só cidadãos com domínio da dona e
+  escondem menores para quem não é Educação. Domínios do seed além dos da ficha: `qualidade_dados` (pendências,
+  inconsistências, confirmar óbito) e `explorador` → TODAS, `sei` → ADMINISTRACAO, todos `a_confirmar`.
+  O teste `test_qa2_toda_rota_do_app_esta_classificada` falha se surgir rota nova sem classificação.
+- `admin_lgpd` revela CPF, aluno e empresa **por função, sem vínculo**, sempre com motivo e auditoria (sem motivo =
+  400 + `revelar_cpf_negado`). O vínculo TODAS não é editado nem encerrado por `editar`/`remover` (422).
 - Vínculo do prefeito (TODAS): não sai pela tela de TI; só o perfil `admin_lgpd` remove, por
   `POST /api/ti/acesso-secretaria/vinculos/remover-prefeito`, com motivo (10+ caracteres), auditado.

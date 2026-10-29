@@ -433,3 +433,5 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
   .as-acoes .btn { flex: 1 1 auto; }
 }
 .btn.danger[disabled], .btn.danger[disabled]:hover { background: var(--muted-bg); color: var(--muted); border-color: var(--line); } /* B1 PR-06: desabilitado padrão (AA) */
+/* M2 PR-06: em telas com a barra inferior fixa (64px), o fim da tela de TI não fica escondido atrás dela */
+@media (max-width: 1023px) { .acesso-sec { padding-bottom: calc(64px + 16px + env(safe-area-inset-bottom)); } }

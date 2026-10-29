@@ -15,6 +15,7 @@ Com a variável desligada (padrão), nada muda no comportamento atual: a regra e
 cadastrar os vínculos (senão todo usuário perderia o acesso no deploy). Valor só "true" (qualquer caixa) liga.
 """
 import os
+from dataclasses import dataclass
 from datetime import date
 
 from fastapi import HTTPException, Request
@@ -80,29 +81,85 @@ def _negar(db: Session, u: Usuario, req: Request, recurso: str, alvo: str | None
     raise HTTPException(403, "Sem acesso a dados desta secretaria")
 
 
-def exige(db: Session, u: Usuario, req: Request, recurso: str, *, secretaria: str | None,
-          alvo: str | None = None, menor: bool = False, revelou_cpf: bool = False) -> set[str] | None:
-    """Confere o acesso antes de qualquer leitura. `secretaria=None` = qualquer vínculo vigente basta.
-    Devolve as secretarias vigentes (None se a regra estiver desligada) e grava a auditoria de acesso."""
-    if not rbac_ativo():
+@dataclass(frozen=True)
+class Acesso:
+    """Resultado da regra. `ativo=False`: regra desligada (comportamento antigo). `dominios=None`: todos (prefeito)."""
+    ativo: bool
+    dominios: frozenset[str] | None = None
+
+    def ve(self, dominio: str | None) -> bool:
+        return not self.ativo or self.dominios is None or (dominio or "") in self.dominios
+
+    @property
+    def sem_mascara(self) -> bool:
+        return self.ativo
+
+
+DESLIGADO = Acesso(False)
+
+
+def dominios_do_usuario(db: Session, sec: set[str]) -> frozenset[str] | None:
+    """Domínios cuja secretaria DONA está entre as vigentes do usuário. Domínio sem dono nunca entra (só prefeito)."""
+    from app.models.controle import DominioSecretaria
+    if TODAS in sec:
         return None
+    return frozenset(db.scalars(select(DominioSecretaria.dominio).where(DominioSecretaria.secretaria.in_(sec))))
+
+
+def exige(db: Session, u: Usuario, req: Request, recurso: str, *, dominios: list[str] | set[str] | tuple[str, ...],
+          alvo: str | None = None, menor: bool = False, revelou_cpf: bool = False) -> Acesso:
+    """Confere o acesso ANTES de qualquer leitura devolvida. Libera só se o usuário tem vínculo vigente com a secretaria
+    dona de pelo menos um dos `dominios` (prefeito: todos). Menor de idade: só a Educação (e prefeito).
+    Grava auditoria_acesso na liberação e `acesso_secretaria_negado` (sem PII) na recusa."""
+    if not rbac_ativo():
+        return DESLIGADO
     sec = secretarias_vigentes(db, u)
-    prefeito = TODAS in sec
     if not sec:
         _negar(db, u, req, recurso, alvo, "sem_vinculo_vigente")
-    if not prefeito and secretaria is not None and secretaria not in sec:
-        _negar(db, u, req, recurso, alvo, "outra_secretaria")
-    if menor and not prefeito and SEC_MENORES not in sec:
-        _negar(db, u, req, recurso, alvo, "menor_fora_educacao_saude")
-    registrada = TODAS if prefeito else (secretaria or sorted(sec)[0])
+    meus = dominios_do_usuario(db, sec)
+    if meus is not None:
+        liberados = [d for d in dominios if d in meus]
+        if not liberados:
+            _negar(db, u, req, recurso, alvo, "outra_secretaria")
+        if menor and SEC_MENORES not in sec:
+            _negar(db, u, req, recurso, alvo, "menor_so_educacao")
+        registrada = dono_dominio(db, liberados[0]) or "?"
+    else:
+        registrada = TODAS
     db.add(AuditoriaAcesso(usuario=u.email, secretaria=registrada, recurso=recurso, alvo=alvo, revelou_cpf=revelou_cpf,
                            ip=req.client.host if req.client else None))
     db.commit()
-    return sec
+    return Acesso(True, meus)
 
 
-def dominios_permitidos(sec: set[str] | None, dominio: str, db: Session | None = None) -> bool:
-    if sec is None or TODAS in sec:
-        return True
-    dono = dono_dominio(db, dominio) if db is not None else None
-    return dono is None or dono in sec
+def exige_lista(db: Session, u: Usuario, req: Request, recurso: str) -> Acesso:
+    """Listas nominais: precisa de vínculo vigente com secretaria dona de algum domínio; o filtro é feito na consulta."""
+    if not rbac_ativo():
+        return DESLIGADO
+    sec = secretarias_vigentes(db, u)
+    if not sec:
+        _negar(db, u, req, recurso, None, "sem_vinculo_vigente")
+    meus = dominios_do_usuario(db, sec)
+    if meus is not None and not meus:
+        _negar(db, u, req, recurso, None, "outra_secretaria")
+    db.add(AuditoriaAcesso(usuario=u.email, secretaria=TODAS if meus is None else (dono_dominio(db, sorted(meus)[0]) or "?"),
+                           recurso=recurso, ip=req.client.host if req.client else None))
+    db.commit()
+    return Acesso(True, meus)
+
+
+def ve_menores(db: Session, u: Usuario) -> bool:
+    sec = secretarias_vigentes(db, u)
+    return TODAS in sec or SEC_MENORES in sec
+
+
+def dom(*dominios: str):
+    """Dependência FastAPI: a rota inteira exige vínculo vigente com a secretaria dona de um destes domínios."""
+    from fastapi import Depends
+
+    from app.core.db import get_db
+    from app.core.security import usuario_atual
+
+    def dep(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> Acesso:
+        return exige(db, u, req, req.url.path.split("/api/", 1)[-1][:50], dominios=dominios)
+    return dep

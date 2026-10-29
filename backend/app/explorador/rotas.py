@@ -17,7 +17,10 @@ from app.models.controle import Usuario
 PERFIS_EXPLORADOR = ("admin", "admin_lgpd")
 PERFIL_REVELA = "admin_lgpd"  # decisão do TL: admin comum vê tudo mascarado
 
-explorador = APIRouter(prefix="/explorar", tags=["explorar"])
+from app.services.acesso_secretaria import dom as _dom_pr06  # noqa: E402
+
+# PR-06: com SIGPMF_RBAC_SECRETARIA=true, o explorador (dado bruto de todas as áreas) exige o dono de "explorador".
+explorador = APIRouter(prefix="/explorar", tags=["explorar"], dependencies=[Depends(_dom_pr06("explorador"))])
 
 
 def _ip(req: Request) -> str | None:

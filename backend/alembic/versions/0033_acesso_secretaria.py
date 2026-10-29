@@ -7,17 +7,17 @@
 - controle.dominio_secretaria: domínio do ouro -> secretaria dona, com `a_confirmar` (cemiterio -> SERVICOS_URBANOS a confirmar).
 - controle.auditoria_acesso: uma linha por consulta nominal liberada pelo vínculo (R1/R3), somente inserção.
 
-Numeração: 0033 reservada ao PR-06 pelo Tech Lead; down_revision provisório '0026' até os PRs 0027–0032 entrarem na main
+Numeração: 0033 reservada ao PR-06 pelo Tech Lead; down_revision '0027' (ponta da main em 29/10); se 0028–0032 entrarem antes, aponta para a nova ponta
 (no merge, o down_revision passa a apontar para a ponta da main).
 
 Revision ID: 0033
-Revises: 0026
+Revises: 0027
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = '0033'
-down_revision = '0026'
+down_revision = '0027'
 branch_labels = None
 depends_on = None
 
@@ -27,7 +27,10 @@ SECRETARIAS = [("EDUCACAO", "Secretaria de Educação"), ("SAUDE", "Secretaria d
                ("SERVICOS_URBANOS", "Secretaria de Serviços Urbanos"), ("TODAS", "Todas as secretarias (prefeito)")]
 DOMINIOS = [("educacao", "EDUCACAO", False, None), ("saude", "SAUDE", False, None), ("tributario", "FAZENDA", False, None),
             ("impostos", "FAZENDA", False, None),
-            ("cemiterio", "SERVICOS_URBANOS", True, "Valor inicial a confirmar pelo Tech Lead/Leandro")]
+            ("cemiterio", "SERVICOS_URBANOS", True, "Valor inicial a confirmar pelo Tech Lead/Leandro"),
+            ("qualidade_dados", "TODAS", True, "Pendências/inconsistências de correlação: só prefeito até decisão"),
+            ("explorador", "TODAS", True, "Explorador de dados brutos: só prefeito até decisão"),
+            ("sei", "ADMINISTRACAO", True, "Interessados do SEI: a confirmar")]
 
 
 def upgrade() -> None:
