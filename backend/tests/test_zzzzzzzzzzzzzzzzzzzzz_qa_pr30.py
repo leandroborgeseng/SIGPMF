@@ -1,7 +1,7 @@
 """QA PR30 (91b7969, repro do Tester, agora com asserts): só mock .invalid + ZZTESTE."""
 import httpx
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.bronze.ingestao import ingere
 from app.models.controle import Execucao
@@ -125,4 +125,43 @@ def test_0021_rotula_checkpoint_legado_como_sandbox_e_oficial_vazio(db, monkeypa
     assert len(aud) == 1 and aud[0].detalhe["checkpoints"][0]["posicao"] == 49
     _env_sil(monkeypatch)
     assert _checkpoint_sil(db) is None                              # produção sem checkpoint: começa do início
+    db.commit()
+
+
+@pytest.mark.usefixtures("sil_mock")
+def test_0021_rotula_checkpoint_gravado_pela_carga_real(db, monkeypatch):
+    """Checkpoint gravado por carga_completa.iniciar (grafia real de `sistema`), depois a 0021 sobre ele."""
+    from alembic import command
+    from sqlalchemy import text
+
+    from app.connectors.sil.conector import SilConnector
+    from app.connectors.sil.config import ConfigSil
+    from app.models.controle import CheckpointCarga
+    from tests.conftest import alembic_cfg
+    _limpa_sil(db)
+    db.execute(text("DELETE FROM controle.checkpoints_carga WHERE lower(sistema)='sil'"))  # só banco de teste
+    db.commit()
+    api = Api(ccms=range(1, 151))
+    monkeypatch.setattr(cc, "leitor_de", lambda conector, cfg: SilConnector(
+        ConfigSil.do_ambiente(), transporte=httpx.MockTransport(api), esperar=lambda s: None))
+    _env_sil(monkeypatch)
+    cc.executar_amostra(db, "admin@aion.local", "sil")
+    ccomp.iniciar(db, "admin@aion.local", "sil")                  # grava o checkpoint pelo caminho real
+    db.expire_all()
+    real = db.scalar(select(CheckpointCarga.sistema).where(func.lower(CheckpointCarga.sistema) == "sil"))
+    print("QA_GRAFIA_SISTEMA", real)
+    # volta o banco ao estado anterior à 0021 (coluna sem ambiente), mantendo a linha gravada pela carga
+    db.execute(text("ALTER TABLE controle.checkpoints_carga DROP CONSTRAINT uq_checkpoint_sistema_tabela_ambiente"))
+    db.execute(text("ALTER TABLE controle.checkpoints_carga DROP COLUMN ambiente"))
+    db.execute(text("ALTER TABLE controle.checkpoints_carga ADD CONSTRAINT uq_checkpoint_sistema_tabela "
+                    "UNIQUE (sistema, tabela)"))
+    db.commit()
+    db.close()
+    cfg = alembic_cfg()
+    command.stamp(cfg, "0020")
+    command.upgrade(cfg, "head")
+    db.expire_all()
+    cps = list(db.scalars(select(CheckpointCarga).where(func.lower(CheckpointCarga.sistema) == "sil")))
+    assert cps and {c.ambiente for c in cps} == {"sandbox"} and cps[0].ultima_chave == [50]
+    assert _checkpoint_sil(db) is None                              # produção sem checkpoint
     db.commit()

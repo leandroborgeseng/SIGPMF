@@ -21,9 +21,9 @@ def marcar(conn, execucoes: tuple[int, ...] = EXECUCOES, teto: int = TETO) -> di
     ids = list(execucoes)
     esperado = int(conn.execute(text(
         "SELECT COALESCE(SUM(COALESCE(novos,0) + COALESCE(atualizados,0)), 0) FROM controle.execucoes "
-        "WHERE id = ANY(:ids) AND sistema = 'SIL'"), {"ids": ids}).scalar() or 0)
+        "WHERE id = ANY(:ids) AND lower(sistema) = 'sil'"), {"ids": ids}).scalar() or 0)
     achado = int(conn.execute(text(
-        "SELECT COUNT(*) FROM bronze.registros WHERE sistema_origem = 'SIL' AND execucao_id = ANY(:ids)"),
+        "SELECT COUNT(*) FROM bronze.registros WHERE lower(sistema_origem) = 'sil' AND execucao_id = ANY(:ids)"),
         {"ids": ids}).scalar() or 0)
     if achado != esperado or achado > teto:
         raise ContagemDivergente(f"bronze SIL das execuções {ids}: {achado} linha(s), esperado {esperado} "
@@ -31,6 +31,6 @@ def marcar(conn, execucoes: tuple[int, ...] = EXECUCOES, teto: int = TETO) -> di
     marcadas = conn.execute(text(
         "UPDATE bronze.registros SET ambiente_origem = 'sandbox', "
         "hash = encode(sha256(convert_to('sandbox:' || hash, 'UTF8')), 'hex') "
-        "WHERE sistema_origem = 'SIL' AND execucao_id = ANY(:ids) AND ambiente_origem = 'producao'"),
+        "WHERE lower(sistema_origem) = 'sil' AND execucao_id = ANY(:ids) AND ambiente_origem = 'producao'"),
         {"ids": ids}).rowcount
     return {"esperado": esperado, "encontradas": achado, "marcadas": int(marcadas or 0)}

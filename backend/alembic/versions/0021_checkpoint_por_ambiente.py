@@ -27,7 +27,7 @@ def upgrade() -> None:
     op.add_column("checkpoints_carga", sa.Column("ambiente", sa.String(20), nullable=False,
                                                  server_default="producao"), schema="controle")
     linhas = bind.execute(sa.text(
-        "UPDATE controle.checkpoints_carga SET ambiente='sandbox' WHERE sistema='SIL' "
+        "UPDATE controle.checkpoints_carga SET ambiente='sandbox' WHERE lower(sistema)='sil' "
         "RETURNING id, tabela, posicao, ultima_chave")).all()
     if linhas:
         det = {"motivo": "checkpoint SIL legado sem ambiente; re-rotulado sandbox (QA #30 A1)",
