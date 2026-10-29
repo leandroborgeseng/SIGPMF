@@ -348,3 +348,31 @@ def test_0020_banco_sem_as_execucoes_nao_faz_nada(db):
     from app.services.marca_sandbox_sil import marcar
     assert marcar(db.connection(), (987654, 987655))["marcadas"] == 0
     db.rollback()
+
+
+def test_downgrade_0019_preserva_coluna_e_marcas_e_upgrade_e_idempotente(db):
+    from alembic import command
+    from sqlalchemy import text
+
+    from app.models.camadas import RegistroBronze
+    from tests.conftest import alembic_cfg
+    ids = _cenario(db)
+    db.execute(update(RegistroBronze).where(RegistroBronze.execucao_id == ids[0]).values(ambiente_origem="sandbox"))
+    db.commit()
+    db.close()
+    cfg = alembic_cfg()
+    command.downgrade(cfg, "0018")
+    try:
+        cols = db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_schema='bronze' "
+                               "AND table_name='registros' AND column_name='ambiente_origem'")).all()
+        db.commit()
+        assert len(cols) == 1                                      # coluna continua lá
+        assert _ambientes(db, ids) == ["producao", "sandbox"]       # marcas preservadas
+        db.commit()
+        db.close()
+    finally:
+        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "head")                               # 2ª vez: nada a fazer, sem erro
+    assert _ambientes(db, ids) == ["producao", "sandbox"]
+    db.commit()
+    _limpa_sil(db)
