@@ -38,7 +38,7 @@ def test_s2_contagem_vinculos_igual_antes_e_depois_e_sem_delete(db):
     for i in range(5):
         _vinculo(db, _cidadao(db), f"ZZTESTE-S2-{i}")
     db.commit()
-    command.downgrade(cfg, "0026")
+    command.downgrade(cfg, "0034")
     eng = create_engine(TEST_URL)
     with eng.connect() as c:
         antes = c.execute(text("SELECT count(*) FROM silver.vinculos")).scalar()

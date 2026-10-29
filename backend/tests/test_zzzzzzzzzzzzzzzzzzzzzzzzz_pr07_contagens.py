@@ -65,7 +65,11 @@ def _respostas(sql):
 
 
 def test_head_unica_0034(banco):
-    assert ScriptDirectory.from_config(alembic_cfg()).get_heads() == ["0034"]
+    """Uma ponta só, e a 0034 está na cadeia (migrações posteriores, como a 0030 do PR-03, podem ficar em cima)."""
+    sd = ScriptDirectory.from_config(alembic_cfg())
+    heads = sd.get_heads()
+    assert len(heads) == 1
+    assert "0034" in {r.revision for r in sd.walk_revisions("base", heads[0])}
 
 
 def test_j1_catalogo_inteiro_passa_no_guard_e_dml_ddl_recusados():
