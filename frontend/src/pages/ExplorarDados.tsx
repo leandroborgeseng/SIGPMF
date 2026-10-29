@@ -8,6 +8,7 @@ import {
   MOTIVOS_PENDENCIA, UUID, explorar, formata, plural,
 } from '../explorar'
 import '../explorar.css'
+import { MotivoAcesso, TrocarMotivo, useMotivo } from '../MotivoAcesso'
 
 const MOTIVO_MIN = 10
 const LGPD = 'admin_lgpd'
@@ -122,7 +123,20 @@ export default function ExplorarDados() {
       </section>
     )
   }
-  return <Explorador lgpd={sessao.perfil === LGPD} />
+  return <ExploradorComMotivo lgpd={sessao.perfil === LGPD} />
+}
+
+/** admin_lgpd entra por função: informa o motivo antes de qualquer consulta (cabeçalho X-SIGPMF-Motivo). */
+function ExploradorComMotivo({ lgpd }: { lgpd: boolean }) {
+  const motivo = useMotivo()
+  if (lgpd && !motivo) return <MotivoAcesso area="Explorar dados" />
+  if (!lgpd) return <Explorador lgpd={lgpd} />
+  return (
+    <>
+      <p className="motivo-ativo">Acesso por função com motivo registrado. <TrocarMotivo /></p>
+      <Explorador lgpd={lgpd} />
+    </>
+  )
 }
 
 function Explorador({ lgpd }: { lgpd: boolean }) {

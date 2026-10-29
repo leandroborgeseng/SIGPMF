@@ -140,7 +140,7 @@ function PainelUsuario({ usuario }: { usuario: UsuarioAchado }) {
   useEffect(() => { post<Secretaria[]>('/secretarias', {}).then(setSecretarias).catch(() => setSecretarias([])) }, [])
 
   const depois = async (msg: string) => { setAviso(msg); await carregar() }
-  const disponiveis = secretarias.filter((s) => !vinculos?.some((v) => v.secretaria === s.codigo))
+  const disponiveis = secretarias.filter((s) => s.codigo !== 'TODAS' && !vinculos?.some((v) => v.secretaria === s.codigo))
 
   return (
     <section className="cartao as-painel" aria-labelledby="t-painel">
@@ -197,9 +197,14 @@ function PainelUsuario({ usuario }: { usuario: UsuarioAchado }) {
   )
 }
 
+export const MSG_PROPRIO_ACESSO = 'Você não pode alterar o seu próprio acesso. Peça a outro administrador.'
+export const MSG_TODAS_LGPD = 'O acesso a todas as secretarias só pode ser concedido pelo responsável LGPD.'
+
 function msgErro(e: unknown): string {
   if (e instanceof ApiErro && e.status === 409) return CONFLITO
   if (e instanceof ApiErro && e.status === 422 && e.message.startsWith('A data de fim')) return e.message
+  if (e instanceof ApiErro && e.status === 403 && e.message.includes('a si mesmo')) return MSG_PROPRIO_ACESSO
+  if (e instanceof ApiErro && e.status === 422 && e.message.startsWith('O acesso de prefeito')) return MSG_TODAS_LGPD
   return ERRO_SALVAR
 }
 
@@ -220,7 +225,7 @@ function FormAdicionar({ usuarioId, opcoes, fechar, ok }: { usuarioId: number; o
     <form className="as-form" onSubmit={salvar} aria-labelledby="t-add">
       <h3 id="t-add">Adicionar secretaria</h3>
       <label htmlFor="as-sec">Secretaria</label>
-      <select id="as-sec" value={sec} onChange={(e) => setSec(e.target.value)}>
+      <select id="as-sec" className="campo-select" value={sec} onChange={(e) => setSec(e.target.value)}>
         <option value="">Escolha a secretaria</option>
         {opcoes.map((o) => <option key={o.codigo} value={o.codigo}>{o.nome}</option>)}
       </select>

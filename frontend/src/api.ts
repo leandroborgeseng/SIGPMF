@@ -1,3 +1,4 @@
+import { cabecalhoMotivo, limpaMotivo } from './motivo'
 export class ApiErro extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -16,13 +17,14 @@ export function sessaoAtual(): Sessao | null {
 }
 export function salvaSessao(s: Sessao | null) {
   if (s) sessionStorage.setItem(CHAVE, JSON.stringify(s))
-  else sessionStorage.removeItem(CHAVE)
+  else { sessionStorage.removeItem(CHAVE); limpaMotivo() }
 }
 
 export async function api<T>(caminho: string, opcoes: RequestInit = {}): Promise<T> {
   const s = sessaoAtual()
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (s) headers.Authorization = `Bearer ${s.token}`
+  Object.assign(headers, cabecalhoMotivo(caminho, s?.perfil))
   const r = await fetch(`/api${caminho}`, { ...opcoes, headers: { ...headers, ...(opcoes.headers as object) } })
   if (r.status === 401 && caminho !== '/auth/login') {
     salvaSessao(null)
