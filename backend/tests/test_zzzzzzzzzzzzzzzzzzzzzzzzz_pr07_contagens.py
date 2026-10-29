@@ -43,14 +43,14 @@ class Conn:
         pass
 
 
-def _q(id_, base="ZZBASE", sql="SELECT COUNT(*) total FROM dbo.zz", num=("total",), rot=()):
+def _q(id_, base="ZZBASE_test", sql="SELECT COUNT(*) total FROM dbo.zz", num=("total",), rot=()):
     return C.Consulta(id_, base, sql, num, rot)
 
 
 @pytest.fixture
 def cenario(monkeypatch):
     monkeypatch.delenv("CONTAGENS_ATIVAS", raising=False)
-    monkeypatch.setattr(C, "colunas_cpf", lambda: [("ZZBASE", "zz_pessoas", "Cpf")])
+    monkeypatch.setattr(C, "colunas_cpf", lambda: [("ZZBASE_test", "zz_pessoas", "Cpf")])
     get_settings.cache_clear()
     yield monkeypatch
     get_settings.cache_clear()
@@ -156,10 +156,10 @@ def test_j2_consultas_postgres_rodam_read_only(db, cenario):
 
 
 def test_j3_base_inacessivel_codigo_fixo_e_segue(db, cenario):
-    cenario.setattr(C, "CONSULTAS", (_q("ZZ-A", base="ZZ_FORA"), _q("ZZ-B", base="ZZBASE")))
+    cenario.setattr(C, "CONSULTAS", (_q("ZZ-A", base="ZZ_INACESSIVEL_test"), _q("ZZ-B", base="ZZBASE_test")))
 
     def conectar(base):
-        if base == "ZZ_FORA":
+        if base == "ZZ_INACESSIVEL_test":
             raise RuntimeError("login falhou para zz_usuario senha=zz-segredo host=10.0.0.1")
         return Conn(_respostas)
     ex = job.executar(db, None, conectar=conectar)

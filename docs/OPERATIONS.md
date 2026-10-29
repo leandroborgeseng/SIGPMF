@@ -295,3 +295,7 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
 - Todo leitor novo abre conexão por `app/connectors/sqlserver/guardas.conecta_guardado` (o LeitorGE já usa; o job de
   contagens do #51 vai usar). `garante_sem_escrita(conn)` usa `fn_my_permissions` (permissões efetivas, inclusive
   herdadas de papel, `public` e papel customizado) e recusa credencial com INSERT/UPDATE/DELETE/ALTER/CONTROL etc.
+- Contagens (#51): toda base passa por `autoriza_base` antes de conectar. Consulta com banco fora da lista fica
+  `desligada` (código `base_fora_da_lista`/`base_descartada`, log INFO, sem conexão, não conta como falha) até o banco
+  entrar na lista por PR. Depois do login mínimo, `fn_my_permissions` recusa a base com `login_com_escrita` se o
+  login tiver QUALQUER permissão efetiva de escrita.

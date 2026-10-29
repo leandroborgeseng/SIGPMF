@@ -194,3 +194,88 @@ def test_47_id_nulo_nao_vence_desempate():
     nulo, um, dez = {"id_logradouro": None}, {"id_logradouro": 1}, {"id_logradouro": 10}
     assert sorted([nulo, dez, um], key=dne._chave_desempate) == [um, dez, nulo]
     assert dne._chave_desempate(um) < dne._chave_desempate(nulo)
+
+
+# ---------- #51 ligado às guardas: contagens ----------
+def _contagens_cenario(monkeypatch, consultas, perms=()):
+    from app.contagens import consultas as C
+    from app.contagens import job
+    from app.core.config import get_settings
+    monkeypatch.delenv("CONTAGENS_ATIVAS", raising=False)
+    monkeypatch.setattr(C, "CONSULTAS", consultas)
+    monkeypatch.setattr(C, "colunas_cpf", lambda: [])
+    get_settings.cache_clear()
+    abertas, executados = [], []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            executados.append(sql)
+            if sql == job.SQL_CHECA_LOGIN:
+                self.rows = [{k: 0 for k in "abcde"}]
+            elif "fn_my_permissions" in sql:
+                self.rows = [{"permission_name": p} for p in ("CONNECT", "SELECT", *perms)]
+            else:
+                self.rows = [{"total": 5}]
+
+        def fetchmany(self, n):
+            return self.rows[:n]
+
+    class Conn:
+        def cursor(self, as_dict=True):
+            return Cur()
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    def conectar(base):
+        abertas.append(base)
+        return Conn()
+    return job, conectar, abertas, executados
+
+
+def _resultados(db, ex_id):
+    from sqlalchemy import text
+    return {c: (s, k) for c, s, k in db.execute(text(
+        "select consulta, status, codigo from controle.contagem_resultado where execucao_id=:e"), {"e": ex_id})}
+
+
+def test_51_consulta_em_banco_fora_da_lista_fica_desligada_sem_conexao(db, monkeypatch, caplog):
+    from app.contagens.consultas import Consulta
+    caplog.set_level(logging.INFO, logger="sigpmf.contagens")
+    qs = (Consulta("ZZ-FORA", "Central", "SELECT COUNT(*) total FROM dbo.zz", ("total",), ()),
+          Consulta("ZZ-DESC", "Senhas", "SELECT COUNT(*) total FROM dbo.zz", ("total",), ()),
+          Consulta("ZZ-OK", "zz_contagens_test", "SELECT COUNT(*) total FROM dbo.zz", ("total",), ()))
+    job, conectar, abertas, _ = _contagens_cenario(monkeypatch, qs)
+    ex = job.executar(db, None, conectar=conectar)
+    r = _resultados(db, ex.id)
+    assert r["ZZ-FORA"] == ("desligada", "base_fora_da_lista")
+    assert r["ZZ-DESC"] == ("desligada", "base_descartada")
+    assert r["ZZ-OK"] == ("ok", None)
+    assert abertas == ["zz_contagens_test"]  # nunca conectou em Central nem Senhas
+    assert ex.status == "concluida"  # desligada não é falha
+
+
+@pytest.mark.parametrize("perm", ["INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "CREATE TABLE"])
+def test_51_login_com_qualquer_escrita_recusa_a_base(db, monkeypatch, perm):
+    from app.contagens.consultas import Consulta
+    qs = (Consulta("ZZ-1", "zz_contagens_test", "SELECT COUNT(*) total FROM dbo.zz", ("total",), ()),)
+    job, conectar, abertas, executados = _contagens_cenario(monkeypatch, qs, perms=(perm,))
+    ex = job.executar(db, None, conectar=conectar)
+    assert _resultados(db, ex.id)["ZZ-1"] == ("falha", "login_com_escrita")
+    assert not any("dbo.zz" in s for s in executados)  # a contagem não rodou
+    assert any("fn_my_permissions" in s for s in executados)
+
+
+def test_51_conector_real_passa_por_conecta_guardado(monkeypatch):
+    from app.contagens import job
+    chamado = []
+    monkeypatch.setitem(sys.modules, "pymssql", types.SimpleNamespace(connect=lambda **k: chamado.append(k) or "c"))
+    with pytest.raises(BaseRecusada):
+        job._conector_sqlserver("Senhas")
+    with pytest.raises(BaseRecusada):
+        job._conector_sqlserver("Central")
+    assert chamado == []
+    assert job._conector_sqlserver("IPTU") == "c" and chamado[0]["database"] == "IPTU"
