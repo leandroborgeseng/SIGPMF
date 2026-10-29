@@ -105,7 +105,8 @@ def tabelas(db: Session, c: str, camada: str) -> dict:
     est = estado(db, c)
     if camada == "bronze":
         rows = db.execute(select(RegistroBronze.tabela, func.count(), func.max(RegistroBronze.extraido_em))
-                          .where(RegistroBronze.sistema_origem == c).group_by(RegistroBronze.tabela)
+                          .where(RegistroBronze.sistema_origem == c, _bronze_visivel())
+                          .group_by(RegistroBronze.tabela)
                           .order_by(RegistroBronze.tabela)).all()
         tabs = [{"tabela": t, "linhas": int(n), "ultima_carga": _json(u)} for t, n, u in rows]
     else:
@@ -120,21 +121,30 @@ def tabelas(db: Session, c: str, camada: str) -> dict:
 
 # ---------- bronze: chaves do JSON ----------
 def _bronze_base(c: str, tabela: str) -> dict:
-    return {"s": c, "t": tabela}
+    return {"s": c, "t": tabela, "oc": QUAR_OCULTA}
+
+
+# M1 (PR #34): linha SEI reclassificada para restrito (quarentena=QUAR_OCULTA) não aparece em nenhuma leitura da
+# bronze do explorador: nem existência, nem contagem, nem valor. Outras quarentenas continuam contando.
+_SQL_VISIVEL = "quarentena IS DISTINCT FROM :oc"
+
+
+def _bronze_visivel():
+    return RegistroBronze.quarentena.is_distinct_from(QUAR_OCULTA)
 
 
 def valida_tabela_bronze(db: Session, c: str, tabela: str) -> str:
     if not isinstance(tabela, str) or not _NOME_OK.match(tabela):
         raise HTTPException(404, "Tabela não encontrada")
     if db.scalar(select(func.count()).select_from(RegistroBronze)
-                 .where(RegistroBronze.sistema_origem == c, RegistroBronze.tabela == tabela)) == 0:
+                 .where(RegistroBronze.sistema_origem == c, RegistroBronze.tabela == tabela, _bronze_visivel())) == 0:
         raise HTTPException(404, "Tabela não encontrada")
     return tabela
 
 
 def chaves_bronze(db: Session, c: str, tabela: str) -> list[str]:
     ks = db.scalars(text("SELECT DISTINCT k FROM (SELECT dados FROM bronze.registros WHERE sistema_origem=:s AND "
-                         "tabela=:t ORDER BY id LIMIT :n) x, LATERAL jsonb_object_keys(x.dados::jsonb) k ORDER BY k"),
+                         f"tabela=:t AND {_SQL_VISIVEL} ORDER BY id LIMIT :n) x, LATERAL jsonb_object_keys(x.dados::jsonb) k ORDER BY k"),
                     {**_bronze_base(c, tabela), "n": cat.BRONZE_AMOSTRA_CHAVES})
     return [k for k in ks if _COL_OK.match(k)]
 
@@ -181,9 +191,10 @@ def perfil(db: Session, c: str, camada: str, tabela: str) -> dict:
     if camada == "bronze":
         valida_tabela_bronze(db, c, tabela)
         p = {**_bronze_base(c, tabela), "n": n}
-        total = int(db.scalar(text("SELECT count(*) FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t"), p))
+        total = int(db.scalar(text(f"SELECT count(*) FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t AND {_SQL_VISIVEL}"), p))
         base, aprox = min(total, n), total > n
-        amostra_sql = "(SELECT dados::jsonb AS d FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t ORDER BY id LIMIT :n) x"
+        amostra_sql = ("(SELECT dados::jsonb AS d FROM bronze.registros WHERE sistema_origem=:s AND tabela=:t "
+                       f"AND {_SQL_VISIVEL} ORDER BY id LIMIT :n) x")
         cols, livres = [], cat.bronze_livres(c, tabela)
         for k in chaves_bronze(db, c, tabela):
             q = {**p, "k": k}
