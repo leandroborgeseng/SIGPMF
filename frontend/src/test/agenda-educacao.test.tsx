@@ -30,7 +30,7 @@ describe('educação nas fontes prioritárias', () => {
   it('cartão com status real, 0 linhas, agenda desligada em cinza e "Sem agendamento"', async () => {
     mock(() => [200, resp()])
     render(<AgendaCargas ehAdmin />)
-    const card = (await screen.findByRole('heading', { name: 'Educação (GestaoEscolar + CoreSSO)' })).closest('article') as HTMLElement
+    const card = (await screen.findByText('Educação (GestaoEscolar + CoreSSO)')).closest('tr') as HTMLElement
     expect(within(card).getByText('Agenda desligada')).toHaveClass('neutro')
     expect(within(card).queryByText('Ativo')).toBeNull()
     expect(within(card).getByText(/Concluída · nenhuma linha nova/)).toBeVisible()  // texto, não só cor
@@ -40,8 +40,9 @@ describe('educação nas fontes prioritárias', () => {
     expect(within(card).getByRole('switch')).not.toBeChecked()
     expect(within(card).getByRole('button', { name: 'Executar agora' })).toBeDisabled()
     expect(within(card).getByText('Ligue a agenda para executar agora.')).toBeVisible()
-    expect(screen.queryByRole('row', { name: /Educação/ })).toBeNull()  // não duplica na tabela
-    const r = await axe.run(card)
+    expect(screen.getAllByRole('row').filter((r) => /Educação/.test(r.textContent ?? ''))).toHaveLength(1)  // uma linha da tabela, sem cartão
+    expect(document.querySelector('article')).toBeNull()
+    const r = await axe.run(card.closest('table') as HTMLElement)
     expect(r.violations).toEqual([])
   })
 
@@ -49,7 +50,8 @@ describe('educação nas fontes prioritárias', () => {
     const f = mock((_u, i) => [i?.method === 'POST' ? 202 : 200, resp({ ativo: true, proxima_em: '2026-10-29T07:00:00Z' })])
     render(<AgendaCargas ehAdmin />)
     expect(await screen.findByText(/Próxima execução: 29\/10 04:00/)).toBeVisible()
-    expect(screen.getByText('Agenda ligada')).toBeVisible()
+    expect(screen.getByRole('switch')).toBeChecked()
+    expect(screen.queryByText('Agenda desligada')).toBeNull()
     const sw = screen.getByRole('switch')
     sw.focus(); await userEvent.keyboard(' ')
     expect(f.mock.calls.some(([u, i]) => u.endsWith('/agenda/educacao') && i?.method === 'PUT' && i.body === '{"ativo":false}')).toBe(true)

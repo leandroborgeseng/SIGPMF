@@ -110,7 +110,9 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
         <caption className="sr-only">Agenda das cargas completas</caption>
         <thead><tr><th scope="col">Conector</th><th scope="col">Horário</th><th scope="col">Próxima</th><th scope="col">Última carga</th>{ehAdmin && <th scope="col"><span className="sr-only">Ações</span></th>}</tr></thead>
         <tbody>
-          {d.itens.filter((i) => i.conector !== EDUCACAO).map((i) => {
+          {d.itens.map((i) => {
+            if (i.conector === EDUCACAO) return <LinhaEducacao key={i.conector} i={i} d={d} ehAdmin={ehAdmin} ocupado={salvando === i.conector}
+              alterar={(dados) => alterar(i, dados)} executar={() => agora(i)} />
             const rodando = i.em_andamento
             const ocupado = salvando === i.conector
             return (
@@ -169,10 +171,6 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
       </table>
       </div>
       <div aria-live="polite">{aviso && <p className="aviso">{aviso}</p>}</div>
-      {d.itens.filter((i) => i.conector === EDUCACAO).map((i) => (
-        <CartaoEducacao key={i.conector} i={i} d={d} ehAdmin={ehAdmin} ocupado={salvando === i.conector}
-          alterar={(dados) => alterar(i, dados)} executar={() => agora(i)} />
-      ))}
       <LinhaDoTempo d={d} />
     </section>
   )
@@ -184,8 +182,8 @@ export function foraDaJanela(janela: string): string {
   return `Fora da janela noturna (${ini}–${fim}). Disponível a partir das ${ini}.`
 }
 
-/** Educação (GestaoEscolar + CoreSSO) entre as fontes prioritárias: mesma agenda (PUT/POST) das outras fontes. */
-export function CartaoEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
+/** Educação (GestaoEscolar + CoreSSO): mais uma linha da tabela, com a mesma agenda (PUT/POST) das outras fontes. */
+export function LinhaEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
   i: ItemAgenda; d: RespAgenda; ehAdmin: boolean; ocupado: boolean
   alterar: (dados: { horario?: string; ativo?: boolean }) => void; executar: () => void
 }) {
@@ -201,50 +199,54 @@ export function CartaoEducacao({ i, d, ehAdmin, ocupado, alterar, executar }: {
   const proxima = i.ativo && d.habilitada && (i.forcar || i.proxima_em)
     ? `Próxima execução: ${i.forcar ? 'em até 1 minuto' : curta(i.proxima_em as string)}` : 'Sem agendamento'
   return (
-    <article className="cartao educacao-cartao" aria-labelledby="t-edu">
-      <div className="agenda-cab">
-        <h3 id="t-edu">{i.nome}</h3>
-        <span className={`selo ${i.ativo ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />{i.ativo ? 'Agenda ligada' : 'Agenda desligada'}</span>
-      </div>
-      <dl className="educacao-dados">
-        <div><dt>Última execução</dt><dd>
-          {rodando
-            ? <span className="selo em_andamento"><i aria-hidden="true" />Em andamento · desde {curta(rodando.iniciado_em ?? d.agora)}</span>
-            : ult
-              ? <span className="agenda-ultima">
-                  <span className={`selo ${classeStatus(ult.status)}`}><i aria-hidden="true" />{STATUS_EXEC[ult.status] ?? ult.status}
-                    {ult.status === 'sucesso' && !ult.lidos ? ' · nenhuma linha nova' : ''}</span>
-                  <span className="sutil">{curta(ult.finalizado_em ?? ult.iniciado_em ?? d.agora)}
-                    {ult.lidos ? ` · ${n(ult.lidos)} ${ult.lidos === 1 ? 'linha lida' : 'linhas lidas'}` : ''}</span>
-                </span>
-              : <span className="sutil">Ainda não rodou</span>}
-        </dd></div>
-        <div><dt>Frequência</dt><dd>Diária</dd></div>
-        <div><dt>Horário</dt><dd>
+    <tr>
+      <th scope="row" data-rotulo="Conector">
+        <div className="agenda-ultima">
+          <span>{i.nome}</span>
+          {!i.ativo && <span className="selo neutro"><i aria-hidden="true" />Agenda desligada</span>}
+        </div>
+      </th>
+      <td data-rotulo="Horário">
+        <div className="agenda-horario">
           {ehAdmin
             ? <input type="time" className="agenda-hora" aria-label={`Horário da carga de ${i.nome}`} defaultValue={i.horario}
                 key={`edu-${i.horario}`} disabled={ocupado}
                 onBlur={(e) => { if (e.target.value && e.target.value !== i.horario) alterar({ horario: e.target.value }) }} />
             : <span className="num">{i.horario}</span>}
-        </dd></div>
-        <div><dt>Agenda</dt><dd>
           {ehAdmin
             ? <label className="agenda-chave">
                 <input type="checkbox" role="switch" checked={i.ativo} disabled={ocupado} onChange={(e) => alterar({ ativo: e.target.checked })} />
                 <span>{i.ativo ? 'Ligada' : 'Desligada'}</span><span className="sr-only"> para {i.nome}</span>
               </label>
-            : <span>{i.ativo ? 'Ligada' : 'Desligada'}</span>}
-        </dd></div>
-      </dl>
-      <p className="sutil">{proxima}</p>
-      {ehAdmin && (
-        <div className="acoes">
-          <button className="btn secundario" onClick={executar} disabled={!!motivo || ocupado}
-            aria-describedby={motivo ? 'edu-motivo' : undefined}>Executar agora</button>
-          {motivo && <span id="edu-motivo" className="sutil">{motivo}</span>}
+            : <span className="sutil">{i.ativo ? 'Ligada' : 'Desligada'}</span>}
+          <span className="agenda-modo">Diária</span>
         </div>
+      </td>
+      <td data-rotulo="Próxima"><span>{proxima}</span></td>
+      <td data-rotulo="Última carga">
+        {rodando
+          ? <div className="agenda-ultima"><span className="selo em_andamento"><i aria-hidden="true" />Em andamento · desde {curta(rodando.iniciado_em ?? d.agora)}</span></div>
+          : ult
+            ? <div className="agenda-ultima">
+                <span className={`selo ${classeStatus(ult.status)}`}><i aria-hidden="true" />{STATUS_EXEC[ult.status] ?? ult.status}
+                  {ult.status === 'sucesso' && !ult.lidos ? ' · nenhuma linha nova' : ''}</span>
+                <span className="agenda-modo">{MODO[ult.modo ?? ''] ?? (ult.modo === 'amostra' ? 'Amostra' : ult.modo)}</span>
+                <span className="sutil">{curta(ult.finalizado_em ?? ult.iniciado_em ?? d.agora)}
+                  {ult.lidos ? ` · ${n(ult.lidos)} ${ult.lidos === 1 ? 'linha lida' : 'linhas lidas'}` : ''}</span>
+                {i.ultima_mensagem && <span className="agenda-msg">{i.ultima_mensagem}</span>}
+              </div>
+            : <span className="sutil">Ainda não rodou</span>}
+      </td>
+      {ehAdmin && (
+        <td data-rotulo="Ações">
+          <div className="agenda-ultima">
+            <button className="btn secundario" onClick={executar} disabled={!!motivo || ocupado}
+              aria-describedby={motivo ? 'edu-motivo' : undefined}>Executar agora</button>
+            {motivo && <span id="edu-motivo" className="agenda-msg">{motivo}</span>}
+          </div>
+        </td>
       )}
-    </article>
+    </tr>
   )
 }
 

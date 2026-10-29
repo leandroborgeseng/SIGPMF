@@ -381,10 +381,4 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .tabela.pol-tabela td, .tabela.pol-matriz td { font-family: var(--font-sans); vertical-align: top; }
 .pol-matriz td { text-align: center; }
 
-.educacao-cartao { margin-top: 1rem; }
-.educacao-cartao h3 { margin: 0; }
-.educacao-dados { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem 1.25rem; margin: .75rem 0 .25rem; }
-.educacao-dados dt { font-size: 12px; color: var(--ink-3); font-weight: 600; }
-.educacao-dados dd { margin: 4px 0 0; }
-.educacao-dados > div { min-width: 0; }
-.educacao-dados .selo { white-space: normal; max-width: 100%; }
+.agenda-tabela .selo { white-space: normal; max-width: 100%; }
