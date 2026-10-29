@@ -25,7 +25,7 @@
 | AGENDA_INTERVALO_S | de quanto em quanto tempo a agenda confere se há carga a iniciar (padrão 60 s) |
 | AGENDA_PULAR_SEM_MUDANCA | `true` (padrão): antes de ler, compara `COUNT(*)` e `MAX(campo incremental)` de cada tabela com a última carga bem-sucedida; igual = "Sem mudança na origem", nada é lido nem reconstruído |
 | AGENDA_TENTATIVAS / AGENDA_REESPERA_MIN | falha tenta de novo depois de `REESPERA_MIN` (30) até `TENTATIVAS` (3) vezes no dia |
-| AGENDA_COMPLETA_DIAS | padrão **0**: a agenda faz **só incremental** (inclusive a educação) e nunca uma completa; a completa só roda manualmente por ADMIN (auditada). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
+| AGENDA_COMPLETA_DIAS | padrão **0**: a **primeira** execução agendada de cada conector (sem `ultima_completa_em`) é **completa**; depois a agenda faz **só incremental** e nunca outra completa (outras completas só manualmente por ADMIN, auditadas). Com N > 0 volta o modo antigo: completa a cada N dias e na primeira vez (máx. 90), **exceto a educação, que na agenda roda sempre incremental, mesmo com N > 0** (a completa da educação é só manual, por ADMIN) |
 | CARGA_INCREMENTAL_MARGEM_H | a incremental lê desde a maior data de alteração já gravada na bronze menos esta margem (padrão 24 h) |
 | AGENDA_ESPERA_MAX_H | quanto a agenda espera uma carga terminar antes de seguir (padrão 20 h) |
 | SMTP_HOST / SMTP_PORT / SMTP_USUARIO / SMTP_SENHA / SMTP_STARTTLS / ALERTA_DE / ALERTA_PARA | e-mail de alerta quando uma carga da agenda falha (opcional; sem `SMTP_HOST` só fica na tela e na auditoria) |
@@ -52,6 +52,26 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 - Só repete cargas já liberadas: o conector precisa de uma amostra com sucesso (senão fica "Não liberada").
 - Homologação: `AGENDA_HABILITADA=true` e `AGENDA_JANELA=00:00-24:00`. Produção: `AGENDA_JANELA=00:00-06:00`.
 - Só um processo agenda (trava `agenda:lider`); com mais de um worker, os outros ficam de reserva.
+
+## Contagens automáticas (PR-07, J1–J4)
+- Agenda: item `contagens`, **05:45** no fuso da agenda (`AGENDA_FUSO`, padrão America/Sao_Paulo), depois das cargas
+  da noite e dentro da `AGENDA_JANELA` de produção (`00:00-06:00`). Nasce **desligado** (migração 0034), como os
+  demais; ligar pela tela da agenda (admin, auditado). Também roda por `POST /api/contagens/executar` (admin).
+- Login: só `SQLSERVER_CONTAGENS_USER` / `SQLSERVER_CONTAGENS_PASSWORD` (permissão mínima, só SELECT). Sem eles a
+  execução fica `recusada` (`login_contagens_ausente`); nunca usa o `SQLSERVER_USER`. Login com escrita/DDL/admin é
+  recusado por banco (`login_nao_minimo`).
+- Grava só agregados (`controle.contagem_resultado`, com hash do SQL). Falhas com código fixo (`base_inacessivel`,
+  `consulta_falhou`, `sql_recusado`, `resultado_nao_agregado`); um banco com falha não para os outros.
+- Consultas com nome de tabela a confirmar (Q1, Q5, Q6, Q8, Q11) ficam desligadas até o DBA confirmar:
+  `CONTAGENS_ATIVAS=Q1,Q11,...` liga só as listadas. Q2–Q4 foram removidas (leem o Geral, catalogado "não ler").
+- J4: CPFs repetidos só com `CONTAGENS_CPF_REPETIDO_LIMIAR` (padrão 50) ou mais ocorrências, no máximo
+  `CONTAGENS_CPF_REPETIDO_TOP` (padrão 100) por tabela. Leitura só `admin_lgpd`
+  (`GET /api/contagens/{id}/cpfs-repetidos`), auditada.
+
+## Variáveis numéricas no Coolify (nota do Tester, #45)
+- **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o
+  padrão: a validação falha e o backend **não sobe** (ex.: `SIGPMF_RELEITURA_SAUDE_PORTA` vazia impediu a subida).
+  Dê um valor ou não crie a variável.
 
 ## Carga incremental e camadas (IN1–IN4)
 - **Incremental**: por tabela, lê só as linhas com `campo incremental >= marca d'água` (maior data já gravada na bronze

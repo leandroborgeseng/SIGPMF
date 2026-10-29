@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
 from app.connectors.sei.rotas import sei
+from app.contagens.rotas import contagens
 from app.core.config import VERSION, get_settings
 from app.core.db import SessionLocal
 from app.core.security import hash_senha
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(explorador, prefix="/api")  # EX1–EX7
     app.include_router(sei, prefix="/api")  # SEI1–SEI8
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
+    app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
 
     return app
 
