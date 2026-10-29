@@ -3,17 +3,16 @@
 Aditiva: só ADD COLUMN com default (as linhas atuais de `silver.vinculos` continuam as mesmas, sem UPDATE em massa
 explícito nem DELETE) e CREATE TABLE. Idempotente (reaplicável a partir de um stamp anterior).
 
-down_revision = '0026' por enquanto: a 0027 (#44) ainda não está na main. Quando o #44 entrar, este PR passa a
-apontar para a ponta da main (rebase de cadeia só no arquivo de migração, via merge — sem reescrever histórico).
+down_revision = '0027' (ponta da main em 4ce8262): o #48 entra antes do #47, com uma ponta só.
 
 Revision ID: 0030
-Revises: 0026
+Revises: 0027
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = '0030'
-down_revision = '0026'
+down_revision = '0027'
 branch_labels = None
 depends_on = None
 
