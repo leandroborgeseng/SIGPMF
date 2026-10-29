@@ -7,7 +7,9 @@ GE6 v2: aluno → pessoa do CoreSSO pela junção direta `ACA_Aluno.pes_id = PES
 - GE6c: nada casou → quarentena, com motivo (no aluno e na linha da bronze).
 - GE6d: NIS = classificações 3/4 (guardado, não vincula sozinho); certidão (tipo 1) e endereço principal do CoreSSO.
 - Mãe: `pes_idFiliacaoMae` da pessoa; sem ela, o responsável com `tra_id = 1` (Filiação 1).
-GE9: situação 3 = exclusão lógica (`excluido`/`excluida`); a ficha mostra como atual só a matrícula com situação 1.
+GE9: situação 1 = ativo; situação 3 = exclusão lógica (`excluido`/`excluida`, status `excluido`, some da ficha);
+qualquer outra situação (4, 5, 8, 12, 13...) = inativo: continua vinculado e aparece na ficha como histórico.
+Unidade (ESC_UnidadeEscola): `uni_descricao` é o nome da unidade; `uni_situacao` 3 marca a unidade como excluída.
 Os logs só têm contagens (nenhum nome, CPF ou id de aluno).
 """
 from datetime import UTC, date, datetime
@@ -125,7 +127,7 @@ def processa(db: Session, agora: datetime | None = None) -> dict[str, int]:
     def nome_de(pid):
         return (pessoas.get(pid) or {}).get("pes_nome")
 
-    c = {"alunos": 0, "vinculados": 0, "revisao": 0, "quarentena": 0, "inativos": 0, "matriculas": 0,
+    c = {"alunos": 0, "vinculados": 0, "revisao": 0, "quarentena": 0, "excluidos": 0, "inativos": 0, "matriculas": 0,
          "matriculas_atuais": 0, "matriculas_excluidas": 0, "responsaveis": 0}
     for bronze_id, d in _ultimas(db, ESCOLAR, "ACA_Aluno"):
         alu_id, pid = _int(d.get("alu_id")), _pid(d.get("pes_id"))
@@ -143,8 +145,9 @@ def processa(db: Session, agora: datetime | None = None) -> dict[str, int]:
         atual = db.get(EscolaAluno, alu_id)
         status, motivo, cid, conf, attrs = "quarentena", MOTIVO_SEM_CASAMENTO, None, None, []
         if excluido:
-            # pessoa/aluno excluído: não vira vínculo novo; se já existia, fica inativo (mantém o cidadao_id)
-            status, motivo = "inativo", "situacao_excluida"
+            # situação 3 (exclusão lógica): não vira vínculo novo; se já existia, mantém o cidadao_id, mas sai da ficha.
+            # Não confundir com inativo (outras situações), que segue vinculado e visível como histórico.
+            status, motivo = "excluido", "situacao_excluida"
             cid, conf = (atual.cidadao_id, atual.confianca) if atual else (None, None)
         elif pes is None:
             motivo = MOTIVO_SEM_PESSOA
@@ -185,12 +188,13 @@ def processa(db: Session, agora: datetime | None = None) -> dict[str, int]:
         ins = insert(EscolaAluno).values(alu_id=alu_id, **valores)
         db.execute(ins.on_conflict_do_update(index_elements=["alu_id"], set_=valores))
         c["alunos"] += 1
-        c[{"vinculado": "vinculados", "revisao": "revisao", "quarentena": "quarentena", "inativo": "inativos"}[status]] += 1
+        c[{"vinculado": "vinculados", "revisao": "revisao", "quarentena": "quarentena", "excluido": "excluidos"}[status]] += 1
+        c["inativos"] += int(not excluido and situacao != SITUACAO_ATIVA)
 
     # ---- matrículas: AlunoCurriculo -> MatriculaTurma -> TurmaCurriculo -> Turma -> UnidadeEscola -> Escola ----
     curr = {(_int(d.get("alu_id")), _int(d.get("alc_id"))): d for _i, d in _ultimas(db, ESCOLAR, "ACA_AlunoCurriculo")}
     turmas = {_int(d.get("tur_id")): d for _i, d in _ultimas(db, ESCOLAR, "TUR_Turma")}
-    unidades = {(_int(d.get("esc_id")), _int(d.get("uni_id"))) for _i, d in _ultimas(db, ESCOLAR, "ESC_UnidadeEscola")}
+    unidades = {(_int(d.get("esc_id")), _int(d.get("uni_id"))): d for _i, d in _ultimas(db, ESCOLAR, "ESC_UnidadeEscola")}
     escolas = {_int(d.get("esc_id")): d for _i, d in _ultimas(db, ESCOLAR, "ESC_Escola")}
     for _i, d in _ultimas(db, ESCOLAR, "MTR_MatriculaTurma"):
         alu_id, mtu_id = _int(d.get("alu_id")), _int(d.get("mtu_id"))
@@ -203,12 +207,17 @@ def processa(db: Session, agora: datetime | None = None) -> dict[str, int]:
         if unidades and (esc_id, uni_id) not in unidades:
             esc_id = _int(tur.get("esc_id"))
         esc = escolas.get(esc_id) or {}
+        uni = unidades.get((esc_id, uni_id)) or {}
+        uni_sit = _int(uni.get("uni_situacao"))
+        uni_nome = (str(uni.get("uni_descricao")).strip() or None) if uni.get("uni_descricao") is not None else None
         sit = _int(d.get("mtu_situacao"))
         alc_sit = _int(alc.get("alc_situacao")) if alc else None
         excluida = sit == SITUACAO_EXCLUIDA or alc_sit == SITUACAO_EXCLUIDA
         atual = sit == SITUACAO_ATIVA and not excluida
         valores = {"alc_id": _int(d.get("alc_id")), "matricula": alc.get("alc_matricula"), "tur_id": _int(d.get("tur_id")),
                    "turma": tur.get("tur_codigo"), "esc_id": esc_id, "escola": esc.get("esc_nome"),
+                   "uni_id": uni_id, "unidade": uni_nome[:200] if uni_nome else None,
+                   "unidade_situacao": uni_sit, "unidade_excluida": uni_sit == SITUACAO_EXCLUIDA,
                    "escola_inep": None if esc.get("esc_codigoInep") is None else str(esc.get("esc_codigoInep")),
                    "situacao": sit, "atual": atual, "excluida": excluida, "data_alteracao": _dt(d.get("mtu_dataAlteracao"))}
         ins = insert(EscolaMatricula).values(alu_id=alu_id, mtu_id=mtu_id, **valores)

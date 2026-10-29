@@ -80,7 +80,8 @@ def origem() -> dict[str, list[dict]]:
                                 "tcr_dataAlteracao": "2026-01-01T00:00:00"} for t in (70, 71)],
         "TUR_Turma": [{"tur_id": t, "esc_id": 900, "uni_id": 1, "tur_codigo": f"ZZ-{t}", "tur_situacao": 1,
                        "tur_dataAlteracao": "2026-01-01T00:00:00"} for t in (70, 71)],
-        "ESC_UnidadeEscola": [{"esc_id": 900, "uni_id": 1}],
+        "ESC_UnidadeEscola": [{"esc_id": 900, "uni_id": 1, "uni_descricao": "ZZTESTE UNIDADE SEDE", "uni_situacao": 1,
+                               "uni_dataAlteracao": "2026-01-01T00:00:00"}],
         "ESC_Escola": [{"esc_id": 900, "esc_nome": "ZZTESTE ESCOLA MUNICIPAL", "esc_codigo": "ZZ900",
                         "esc_codigoInep": "99999999", "esc_situacao": 1, "esc_dataAlteracao": "2026-01-01T00:00:00"}],
         "ACA_AlunoResponsavel": [
@@ -220,7 +221,8 @@ def test_ge11_select_nolock_top_keyset_e_guard():
 
 def test_ge11_credencial_so_do_ambiente_e_nunca_sistema(monkeypatch):
     from app.core.config import get_settings
-    for nome in ("sistema", "SISTEMA", "DOMINIO\\sistema", " Sistema "):
+    for nome in ("sistema", "SISTEMA", "DOMINIO\\sistema", " Sistema ", "sistema@dominio", "SISTEMA@Prefeitura.local",
+                 " sistema@x ", "DOMINIO\\sistema@dominio"):
         c = cfg()
         c.user = nome
         with pytest.raises(PermissionError):
@@ -328,7 +330,7 @@ def test_ge6_ge9_casamento_quarentena_e_exclusao_logica(limpo):
         RegistroBronze.quarentena.is_not(None))).all())
     assert q == {"3": "sem_cpf_sem_casamento", "5": "pessoa_ausente_no_coresso"}
     # situação 3 no aluno: exclusão lógica (inativo), linha mantida
-    assert al[4].excluido and al[4].status_vinculo == "inativo"
+    assert al[4].excluido and al[4].status_vinculo == "excluido"
     # GE9: todas as situações no histórico; só a situação 1 é atual; situação 3 = excluída (sem DELETE)
     mats = {m.mtu_id: m for m in db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == 1))}
     assert set(mats) == {1, 2, 3}
@@ -365,7 +367,9 @@ def test_ge4_menor_mascarado_e_revelar_so_admin_lgpd_com_motivo(limpo, client, t
         assert a["menor"] and a["mascarado"] and a["nome"] != "ZZTESTE ALUNO UM" and a["data_nascimento"] is None
         assert a["cpf"].startswith("***") and a["endereco"]["logradouro"] == "***"
         assert a["responsaveis"][0]["nome"] != "ZZTESTE MAE UM"
-        assert a["matricula_atual"]["turma"] == "ZZ-71" and len(a["historico"]) == 3
+        assert a["matricula_atual"]["turma"] == "ZZ-71" and a["matricula_atual"]["unidade"] == "ZZTESTE UNIDADE SEDE"
+        # situação 3 (mtu 1) some; situação 5 (mtu 3) fica no histórico como inativa
+        assert [(h["situacao"], h["inativa"]) for h in a["historico"]] == [(5, True), (1, False)]
     r = client.post(f"/api/gold/cidadaos/{cid}/educacao/revelar", json={"motivo": "atendimento zzteste"},
                     headers=tokens["operador"])
     assert r.status_code == 403
@@ -384,3 +388,136 @@ def test_ge11_rota_recusa_sem_credencial(client, tokens):
     r = client.post("/api/educacao/conector/amostra", headers=tokens["admin"])
     assert r.status_code == 409 and "não configurada" in r.json()["detail"]
     assert client.post("/api/educacao/conector/amostra", headers=tokens["operador"]).status_code == 403
+
+
+# ---------------------------------------------------------------- sequência do #28
+def test_b1_usuario_base_remove_dominio_e_sufixo():
+    assert cq.usuario_base(" DOMINIO\\Sistema@dominio ") == "sistema"
+    assert cq.usuario_base("zz_leitor_teste@dominio") == "zz_leitor_teste"
+    c = cfg()
+    c.user = "sistema2@dominio"
+    c.valida()  # só o login `sistema` exato é recusado
+
+
+def test_b2_revelar_sem_motivo_e_auditado(limpo, client, tokens):
+    from app.models.camadas import Cidadao
+    from app.models.controle import Auditoria
+    db = limpo
+    cid = corr.cidadao_id_por_cpf(cpf_sintetico(1))
+    if db.get(Cidadao, cid) is None:
+        db.add(Cidadao(cidadao_id=cid, nome="ZZTESTE ALUNO UM", data_nascimento=date(2015, 3, 1)))
+        db.commit()
+    antes = db.scalar(select(func.max(Auditoria.id))) or 0
+    for corpo in ({"motivo": "x"}, {"motivo": "   "}, {}):
+        r = client.post(f"/api/gold/cidadaos/{cid}/educacao/revelar", json=corpo, headers=tokens["admin_lgpd"])
+        assert r.status_code == 400
+    auds = list(db.scalars(select(Auditoria).where(Auditoria.id > antes, Auditoria.acao == "revelar_educacao_negado")))
+    assert len(auds) == 3 and all(a.detalhe == {"perfil": "admin_lgpd", "razao": "motivo_invalido"} for a in auds)
+    assert all(a.alvo == f"cidadao:{cid}" for a in auds)
+
+
+def test_unidade_nome_situacao_e_hash_por_tabela(limpo):
+    from app.models.camadas import EscolaMatricula, RegistroBronze
+    db = limpo
+    dados = origem()
+    lei = LeitorMock(dados)
+    sql = cq.ConsultasGE().pagina("ESC_UnidadeEscola", 5)[0]
+    for col in ("uni_descricao", "uni_situacao", "uni_dataAlteracao"):
+        assert f"[u].[{col}]" in sql
+    assert "WITH (NOLOCK)" in sql
+    assert _ciclo(db, lei, cfg(max_lotes=100)).status == "sucesso"
+    m = db.scalar(select(EscolaMatricula).where(EscolaMatricula.alu_id == 1, EscolaMatricula.mtu_id == 2))
+    assert (m.uni_id, m.unidade, m.unidade_situacao, m.unidade_excluida) == (1, "ZZTESTE UNIDADE SEDE", 1, False)
+    assert m.escola == "ZZTESTE ESCOLA MUNICIPAL"
+
+    def contagem():
+        return dict(db.execute(select(RegistroBronze.tabela, func.count()).where(
+            RegistroBronze.sistema_origem.in_(("GESTAOESCOLAR", "CORESSO"))).group_by(RegistroBronze.tabela)).all())
+    antes = contagem()
+    # unidade passa à situação 3: nova versão só na ESC_UnidadeEscola; matrícula marcada, nada apagado
+    dados["ESC_UnidadeEscola"][0].update(uni_situacao=3, uni_dataAlteracao="2026-10-20T00:00:00")
+    assert _ciclo(db, lei, cfg(max_lotes=100)).status == "sucesso"
+    depois = contagem()
+    assert {t for t in depois if depois[t] != antes.get(t)} == {"ESC_UnidadeEscola"}
+    assert depois["ESC_UnidadeEscola"] == antes["ESC_UnidadeEscola"] + 1
+    db.expire_all()
+    mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == 1)))
+    assert len(mats) == 3 and all(x.unidade_excluida and x.unidade_situacao == 3 for x in mats)
+    # sem descrição: unidade sem nome (a escola continua pelo esc_nome)
+    dados["ESC_UnidadeEscola"][0].update(uni_descricao=None, uni_situacao=1, uni_dataAlteracao="2026-10-21T00:00:00")
+    assert _ciclo(db, lei, cfg(max_lotes=100)).status == "sucesso"
+    db.expire_all()
+    m = db.scalar(select(EscolaMatricula).where(EscolaMatricula.alu_id == 1, EscolaMatricula.mtu_id == 2))
+    assert m.unidade is None and not m.unidade_excluida and m.escola == "ZZTESTE ESCOLA MUNICIPAL"
+
+
+def test_turma_sem_codigo_flui_ate_a_ficha(limpo, client, tokens):
+    from app.models.camadas import Cidadao, EscolaMatricula
+    db = limpo
+    dados = origem()
+    for t in dados["TUR_Turma"]:
+        t["tur_codigo"] = None
+    assert _ciclo(db, LeitorMock(dados), cfg(max_lotes=100)).status == "sucesso"
+    mats = {m.mtu_id: m for m in db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == 1))}
+    assert set(mats) == {1, 2, 3} and all(m.turma is None for m in mats.values()) and mats[2].atual
+    cid = corr.cidadao_id_por_cpf(cpf_sintetico(1))
+    if db.get(Cidadao, cid) is None:
+        db.add(Cidadao(cidadao_id=cid, nome="ZZTESTE ALUNO UM", data_nascimento=date(2015, 3, 1)))
+        db.commit()
+    r = client.get(f"/api/gold/cidadaos/{cid}/educacao", headers=tokens["operador"])
+    assert r.status_code == 200
+    a = r.json()["alunos"][0]
+    assert a["matricula_atual"]["turma"] is None and a["matricula_atual"]["escola"] == "ZZTESTE ESCOLA MUNICIPAL"
+
+
+def test_ficha_ativo_inativo_e_excluido(limpo, client, tokens):
+    """Situação 1 = ativo (atual); 5 = inativo, visível como histórico; 3 = exclusão lógica, fora da ficha."""
+    from app.models.camadas import Cidadao, EscolaAluno
+    db = limpo
+    dados = origem()
+    cpf = cpf_sintetico(1)
+    # três alunos ZZTESTE do mesmo cidadão (mesmo CPF no CoreSSO); começam todos ativos e já vinculados
+    for n, nome in ((21, "ZZTESTE FICHA ATIVO"), (22, "ZZTESTE FICHA INATIVO"), (23, "ZZTESTE FICHA EXCLUIDO")):
+        dados["PES_Pessoa"].append({"pes_id": pid(n), "pes_nome": nome, "pes_nomeSocial": None,
+                                    "pes_dataNascimento": "2000-01-01", "pes_sexo": 1, "pes_idFiliacaoMae": None,
+                                    "pes_idFiliacaoPai": None, "pes_situacao": 1, "pes_dataAlteracao": "2026-10-01T10:00:00"})
+        dados["PES_PessoaDocumento"].append({"pes_id": pid(n), "tdo_id": 1, "psd_numero": cpf, "psd_situacao": 1,
+                                             "psd_dataAlteracao": "2026-10-01T10:00:00", "tdo_classificacao": 1})
+        dados["ACA_Aluno"].append({"alu_id": n, "pes_id": pid(n), "end_id": None, "alu_situacao": 1,
+                                   "alu_dataAlteracao": "2026-10-01T10:00:00"})
+    lei = LeitorMock(dados)
+    assert _ciclo(db, lei, cfg(max_lotes=100)).status == "sucesso"
+    for a in dados["ACA_Aluno"]:
+        if a["alu_id"] in (22, 23):
+            a.update(alu_situacao=5 if a["alu_id"] == 22 else 3, alu_dataAlteracao="2026-10-20T10:00:00")
+    assert _ciclo(db, lei, cfg(max_lotes=100)).status == "sucesso"
+    db.expire_all()
+    al = {a.alu_id: a for a in db.scalars(select(EscolaAluno).where(EscolaAluno.alu_id.in_((21, 22, 23))))}
+    assert al[21].status_vinculo == "vinculado" and not al[21].excluido
+    assert al[22].status_vinculo == "vinculado" and not al[22].excluido and al[22].situacao == 5
+    assert al[23].status_vinculo == "excluido" and al[23].excluido  # linha mantida (sem DELETE)
+    cid = corr.cidadao_id_por_cpf(cpf)
+    if db.get(Cidadao, cid) is None:
+        db.add(Cidadao(cidadao_id=cid, nome="ZZTESTE FICHA ATIVO", data_nascimento=date(2000, 1, 1)))
+        db.commit()
+    for perfil in ("operador", "admin_lgpd"):
+        r = client.get(f"/api/gold/cidadaos/{cid}/educacao", headers=tokens[perfil])
+        assert r.status_code == 200
+        por_nome = {a["nome"]: a for a in r.json()["alunos"]}
+        assert "ZZTESTE FICHA EXCLUIDO" not in por_nome and "ZZTESTE FICHA EXCLUIDO" not in r.text
+        assert por_nome["ZZTESTE FICHA ATIVO"]["inativo"] is False and por_nome["ZZTESTE FICHA ATIVO"]["situacao"] == 1
+        assert por_nome["ZZTESTE FICHA INATIVO"]["inativo"] is True and por_nome["ZZTESTE FICHA INATIVO"]["situacao"] == 5
+        assert all(not a["excluido"] for a in por_nome.values())
+
+
+def test_amostra_pode_rodar_de_dia(limpo):
+    """Amostra (<= 50 linhas, NOLOCK, teto 1) não depende da janela; só a carga completa é recusada de dia."""
+    import inspect
+
+    from app.services import carga_gestaoescolar as cge
+    assert "dentro_da_janela" not in inspect.getsource(cge.amostra)
+    lei = LeitorMock(origem())
+    assert cge.amostra(limpo, lei, cfg()).status == "sucesso"
+    assert all(s.startswith("SELECT TOP (50) ") and "WITH (NOLOCK)" in s for s in lei.sqls)
+    with pytest.raises(cge.CargaRecusada, match="janela"):
+        cge.completa(limpo, lei, cfg(), agora=DIA)
