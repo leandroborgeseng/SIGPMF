@@ -19,6 +19,9 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },
     { to: '/politicas', rotulo: 'Políticas de dados', curto: 'Políticas' },
   ] },
+  { titulo: 'TI', itens: [
+    { to: '/ti/acesso-secretaria', rotulo: 'Acesso por secretaria', curto: 'Acesso', perfis: ['admin'] },
+  ] },
 ]
 // Barra inferior do celular: só os atalhos principais (o menu lateral tem todos)
 const ATALHOS = ['/painel', '/painel/saude', '/painel/fazenda', '/simulador']
@@ -39,7 +42,7 @@ export default function Layout() {
   const [aberto, setAberto] = useState(false)
   const botao = useRef<HTMLButtonElement>(null)
   const local = useLocation()
-  const grupos = GRUPOS.map((g) => ({ ...g, itens: g.itens.filter((i) => visivel(i, sessao?.perfil)) }))
+  const grupos = GRUPOS.map((g) => ({ ...g, itens: g.itens.filter((i) => visivel(i, sessao?.perfil)) })).filter((g) => g.itens.length > 0)
   const ITENS = grupos.flatMap((g) => g.itens)
 
   const fechar = (devolveFoco = true) => {

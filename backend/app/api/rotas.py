@@ -43,6 +43,7 @@ from app.models.camadas import (
     Vinculo,
 )
 from app.models.controle import Auditoria, BaseCatalogo, ConfirmacaoObito, Execucao, Log, Sistema, TabelaCatalogo, Usuario
+from app.services import acesso_secretaria as acs
 from app.services import agenda as ag
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
@@ -57,6 +58,19 @@ api = APIRouter(dependencies=[Depends(usuario_atual)])
 
 def _ip(req: Request) -> str | None:
     return req.client.host if req.client else None
+
+
+def _rbac_lista(req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)) -> None:
+    """PR-06 R2: listas nominais exigem vínculo vigente com alguma secretaria (com SIGPMF_RBAC_SECRETARIA=true)."""
+    acs.exige(db, u, req, "lista_cidadaos", secretaria=None)
+
+
+def _menor_cid(db: Session, cid: str) -> bool:
+    """R4: o cidadão é menor (ou sem nascimento: trata como menor). Só lê quando a regra está ligada."""
+    if not acs.rbac_ativo():
+        return False
+    c = db.get(Cidadao, cid)
+    return _menor(c.data_nascimento if c else None)
 
 
 @publico.get("/health")
@@ -589,7 +603,7 @@ def _cpfs(db: Session, cids: list[str]) -> dict[str, str]:
         Identificador.cidadao_id.in_(cids), Identificador.tipo == "cpf"))}
 
 
-@api.get("/silver/cidadaos")
+@api.get("/silver/cidadaos", dependencies=[Depends(_rbac_lista)])
 def silver_cidadaos(busca: str | None = None, limite: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     q = select(CidadaoSistemas).order_by(CidadaoSistemas.nome)
     digitos = normaliza(busca)
@@ -603,7 +617,7 @@ def silver_cidadaos(busca: str | None = None, limite: int = 50, offset: int = 0,
              "dominios": r.dominios, "atualizado_em": r.atualizado_em} for r in rows]
 
 
-@api.get("/silver/cidadaos.csv", response_class=PlainTextResponse)
+@api.get("/silver/cidadaos.csv", response_class=PlainTextResponse, dependencies=[Depends(_rbac_lista)])
 def exporta_csv(db: Session = Depends(get_db)):
     rows = silver_cidadaos(None, 200, 0, db)
     linhas = ["cidadao_id;nome;cpf;sistemas"] + [
@@ -653,9 +667,11 @@ def inconsistencias(db: Session = Depends(get_db)):
 
 @api.get("/gold/cidadaos/{cid}")
 def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    sec = acs.exige(db, u, req, "ficha", secretaria=None, alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     c = db.get(CidadaoSistemas, cid) or _404()
     audita(db, u.email, "consulta_ficha", f"cidadao:{cid}", ip=_ip(req))  # FC4: toda abertura de ficha fica registrada
-    dados = list(db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo)))
+    dados = [d for d in db.scalars(select(DadoGold).where(DadoGold.cidadao_id == cid).order_by(DadoGold.dominio, DadoGold.campo))
+             if acs.dominios_permitidos(sec, d.dominio)]
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
     return {"cidadao_id": cid, "nome": c.nome or "", "cpf": mascara(_cpfs(db, [cid]).get(cid)), "sistemas": c.sistemas or [],
             "dominios": c.dominios or [],
@@ -683,6 +699,7 @@ def tributario_revelar_empresas(cid: str, req: Request, dados: RevelarIn | None 
     if u.perfil != PERFIL_REVELA_EMPRESA:
         audita(db, u.email, "revelar_empresa_sil_negado", f"cidadao:{cid}", {"perfil": u.perfil}, _ip(req))
         raise HTTPException(403, "Só o perfil admin_lgpd revela dados de empresa")
+    acs.exige(db, u, req, "revelar_empresa", secretaria="FAZENDA", alvo=f"cidadao:{cid}")
     motivo = (dados.motivo or "").strip() if dados else ""
     if len(motivo) < get_settings().revelar_motivo_min:
         raise HTTPException(400, "Informe o motivo para revelar os dados da empresa.")
@@ -701,6 +718,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from datetime import date as _date
 
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    acs.exige(db, u, req, "tributario", secretaria="FAZENDA", alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
@@ -751,6 +769,7 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
     from datetime import date as _date
 
     from app.models.camadas import Evento
+    sec = acs.exige(db, u, req, "linha_do_tempo", secretaria=None, alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     q = select(Evento).where(Evento.cidadao_id == cid)
     if antes:
@@ -758,7 +777,8 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
             q = q.where(Evento.data < _date.fromisoformat(antes))
         except ValueError:
             raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
-    evs = list(db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200)))))
+    evs = [e for e in db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200))))
+           if acs.dominios_permitidos(sec, (e.area or "").lower())]
     audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
     return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
                                             "fonte": e.fonte} for e in evs]}
@@ -771,6 +791,7 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
 
     from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
     from app.silver.fatos import nomes
+    acs.exige(db, u, req, "saude", secretaria="SAUDE", alvo=f"cidadao:{cid}")
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
     esp = nomes(db)["especialidades"]
@@ -865,7 +886,8 @@ def politicas_retencao_executar(req: Request, u: Usuario = Depends(admin_auditad
 
 
 @api.get("/gold/cidadaos/{cid}/sistemas")
-def sistemas_do_cidadao(cid: str, db: Session = Depends(get_db)):
+def sistemas_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    acs.exige(db, u, req, "sistemas", secretaria=None, alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     c = db.get(CidadaoSistemas, cid) or _404()
     return {"cidadao_id": cid, "sistemas": c.sistemas, "dominios": c.dominios}
 
@@ -1020,7 +1042,7 @@ def _menor(nasc, hoje=None) -> bool:
     return (h.year - nasc.year - ((h.month, h.day) < (nasc.month, nasc.day))) < 18
 
 
-def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
+def _educacao(db: Session, cid: str, *, revela: bool, claro_secretaria: bool = False) -> list[dict]:
     """GE4: aluno menor sai com nome, CPF, endereço e responsáveis mascarados, salvo `revela` (admin_lgpd + motivo).
     GE9: situação 1 = ativo; situação 3 = exclusão lógica, fora da ficha (aluno e matrícula); qualquer outra
     situação = inativo, visível como histórico e marcado `inativo`. Só a matrícula com situação 1 é a atual."""
@@ -1030,7 +1052,7 @@ def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
     for a in db.scalars(select(EscolaAluno).where(EscolaAluno.cidadao_id == cid, EscolaAluno.status_vinculo == "vinculado",
                                                   EscolaAluno.excluido.is_(False))
                         .order_by(EscolaAluno.alu_id)):
-        claro = revela or not _menor(a.data_nascimento)
+        claro = revela or claro_secretaria or not _menor(a.data_nascimento)
         mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == a.alu_id,
                                                              EscolaMatricula.excluida.is_(False))
                                .order_by(EscolaMatricula.mtu_id.desc())))
@@ -1059,8 +1081,10 @@ def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
 
 @api.get("/gold/cidadaos/{cid}/educacao")
 def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    sec = acs.exige(db, u, req, "educacao", secretaria="EDUCACAO", alvo=f"cidadao:{cid}")
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    alunos = _educacao(db, cid, revela=False)
+    # R1: com vínculo vigente à Educação, nome/endereço/responsáveis saem sem máscara; o CPF segue mascarado (só admin_lgpd).
+    alunos = _educacao(db, cid, revela=False, claro_secretaria=sec is not None)
     audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
     return {"cidadao_id": cid, "alunos": alunos}
 
@@ -1072,6 +1096,7 @@ def educacao_revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: 
     if u.perfil != PERFIL_REVELA_EDUCACAO:
         audita(db, u.email, "revelar_educacao_negado", f"cidadao:{cid}", {"perfil": u.perfil}, _ip(req))
         raise HTTPException(403, "Só o perfil admin_lgpd revela dados de aluno")
+    acs.exige(db, u, req, "revelar_educacao", secretaria="EDUCACAO", alvo=f"cidadao:{cid}")
     motivo = (dados.motivo or "").strip() if dados else ""
     if len(motivo) < get_settings().revelar_motivo_min:
         # B2: tentativa sem motivo também fica na auditoria (sem PII: nem o motivo digitado)

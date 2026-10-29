@@ -240,3 +240,17 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
    variável ainda definida relê de novo — por isso remova a variável logo depois.
 7. **Depois de `concluida`, remova `SIGPMF_RELEITURA_FONTE` do Coolify** e religue a agenda
    da educação, se for o caso. Sem a variável, o boot não faz nada.
+
+## Acesso por secretaria (PR-06, `SIGPMF_RBAC_SECRETARIA`)
+
+- Tela de TI: menu **TI → Acesso por secretaria** (`/ti/acesso-secretaria`), só perfil `admin`. Busca por nome ou e-mail
+  (o termo e o id do usuário vão só no corpo de POST, nunca na URL nem no log), vigência, quem cadastrou, remoção com
+  motivo (lógica, nunca DELETE) e histórico vindo de `controle.auditoria`. Prefeito = vínculo "Todas as secretarias".
+- Regra nas consultas nominais (ficha, saúde, impostos, educação, linha do tempo, listas de cidadãos): só com
+  `SIGPMF_RBAC_SECRETARIA=true`. Desligada (padrão) = comportamento de antes. **Ordem para ligar em produção:**
+  1) deploy com a variável ausente; 2) TI cadastra os vínculos de todos os usuários (inclusive o do prefeito);
+  3) só então `SIGPMF_RBAC_SECRETARIA=true` e redeploy. Ligar antes corta o acesso de quem ainda não tem vínculo (403).
+- Com a regra ligada, toda consulta liberada grava `controle.auditoria_acesso` (somente inserção) e toda recusa grava
+  `acesso_secretaria_negado` em `controle.auditoria` (sem PII). Vínculo vencido, futuro ou removido = 403 na hora.
+- Domínios → secretaria: saúde → SAUDE; tributário/impostos → FAZENDA; educação → EDUCACAO; cemitério → SERVICOS_URBANOS;
+  identificação → qualquer vínculo vigente. Menor de idade só para EDUCACAO e SAUDE (e prefeito).
