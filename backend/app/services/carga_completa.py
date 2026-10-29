@@ -182,13 +182,19 @@ def bronze_do_sistema(db: Session, sistema: str) -> int:
                          .where(RegistroBronze.sistema_origem == sistema)) or 0)
 
 
+# A amostra da SIL disparada pela tela (amostra_sil -> sil/carga.py) grava o tipo "enriquecimento_sil".
+# Ela vale como amostra SÓ para o conector "sil" (o filtro por sistema="SIL" também garante isso).
+TIPOS_AMOSTRA_EXTRA = {"sil": ("enriquecimento_sil",)}
+
+
 def motivo_bloqueio(db: Session, conector: str) -> str | None:
     """CC1: None = liberada. Senão, o motivo exibido no botão desabilitado."""
     if conector not in CONECTORES_COMPLETA:
         return "Carga completa ainda não disponível para este conector"
     sistema = _sistema(conector)
+    tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
     # CC12: amostra órfã (em andamento/interrompida) não apaga a última amostra concluída
-    a = db.scalar(select(Execucao).where(Execucao.tipo.in_(cc.TIPOS_AMOSTRA), Execucao.sistema == sistema,
+    a = db.scalar(select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
                                          Execucao.status.not_in(("em_andamento", "interrompida")))
                   .order_by(Execucao.id.desc()).limit(1))
     if a is None:
