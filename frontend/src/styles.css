@@ -382,3 +382,24 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .pol-matriz td { text-align: center; }
 
 .agenda-tabela .selo { white-space: normal; max-width: 100%; }
+
+/* Painel de progresso por fonte (PP1–PP11 / UXP1–UXP8) */
+.pp-topo { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1rem; }
+.pp-grade { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+@media (max-width: 720px) { .pp-grade { grid-template-columns: minmax(0, 1fr); } }
+.pp-card { border: 1px solid var(--line); border-radius: var(--r-md); padding: .8rem 1rem; min-width: 0; overflow-wrap: anywhere; }
+.pp-card.travada { border-color: var(--warn-line); }
+.pp-cab { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .4rem; }
+.pp-cab h3 { margin: 0; }
+.pp-cab .selo { white-space: normal; }
+.pp-barra { height: 10px; border-radius: var(--r-pill); background: var(--muted-bg); overflow: hidden; margin-top: .5rem; }
+.pp-barra > div { height: 100%; background: var(--brand); }
+.pp-barra > .pp-indeterminada { width: 30%; animation: pp-ind 1.4s ease-in-out infinite; }
+@keyframes pp-ind { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .pp-barra > .pp-indeterminada { animation: none; width: 100%; opacity: .35; } }
+.pp-lote { font-weight: 600; margin: .3rem 0 0; }
+.pp-motivo { color: var(--warn-ink); }
+.pp-tabelas { list-style: none; padding: 0; margin: .4rem 0 0; }
+.pp-tabelas li { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto; gap: .5rem; padding: .2rem 0; border-top: 1px solid var(--line); }
+@media (max-width: 480px) { .pp-tabelas li { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+.pp-nome { font-family: 'IBM Plex Mono', monospace; }

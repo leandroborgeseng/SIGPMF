@@ -939,6 +939,15 @@ def auditoria(limite: int = 100, u: Usuario = Depends(ADMIN), db: Session = Depe
 
 
 
+# ---------- Painel de progresso por fonte (PP1–PP11) ----------
+@api.get("/fontes/progresso")
+def fontes_progresso(db: Session = Depends(get_db)):
+    """PP1–PP11: status, lote X de ~Y, tabelas, tempo, último sinal e motivo por fonte. Só lê o controle (nunca a
+    origem); qualquer perfil que vê a tela de fontes (PP9); só números agregados e reason codes traduzidos."""
+    from app.services import progresso
+    return progresso.painel(db)
+
+
 # ---------- Agenda das cargas (AG1–AG6) ----------
 @api.get("/agenda")
 def agenda_estado(db: Session = Depends(get_db)):

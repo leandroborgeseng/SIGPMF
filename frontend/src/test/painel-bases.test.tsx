@@ -20,9 +20,12 @@ const BASES = [
 ]
 const RESP = { conectores: [], execucoes: [], bases: BASES, totais: {}, carga_habilitada: true }
 
+// painel de progresso (PP1–PP11) também está na tela de conectores: resposta vazia, fora do foco destes testes
+const PROGRESSO = '/api/fontes/progresso'
+const PROGRESSO_VAZIO = { agora: '2026-10-29T18:00:00Z', rodando: false, atualizar_a_cada_s: 30, fontes: [] }
 function mock(rota: (url: string, init?: RequestInit) => [number, unknown]) {
   const f = vi.fn(async (url: string, init?: RequestInit) => {
-    const [s, c] = rota(url, init)
+    const [s, c] = url === PROGRESSO ? [200, PROGRESSO_VAZIO] : rota(url, init)
     return new Response(JSON.stringify(c), { status: s, headers: { 'Content-Type': 'application/json' } })
   })
   vi.stubGlobal('fetch', f)
@@ -193,7 +196,8 @@ describe('painel de bases', () => {
       let i = 0
       const f = vi.fn(async (url: string, init?: RequestInit) => {
         let rs: [number, unknown] | 'rede' = [200, RESP]
-        if (init?.method === 'POST') rs = [202, EM]
+        if (url === PROGRESSO) rs = [200, PROGRESSO_VAZIO]
+        else if (init?.method === 'POST') rs = [202, EM]
         else if (url === '/api/conectores/saude/amostra/41') rs = respostas[Math.min(i++, respostas.length - 1)]
         if (rs === 'rede') throw new TypeError('Failed to fetch')
         return new Response(JSON.stringify(rs[1]), { status: rs[0], headers: { 'Content-Type': 'application/json' } })
