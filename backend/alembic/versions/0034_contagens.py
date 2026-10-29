@@ -62,7 +62,16 @@ def upgrade() -> None:
         )
 
 
+    # Agenda: 05:45 (fuso AGENDA_FUSO), depois das cargas da noite; nasce DESLIGADO, como os demais. Nunca altera linha existente.
+    op.execute("""
+        INSERT INTO controle.agendamentos (conector, horario, ativo, ordem)
+        VALUES ('contagens', '05:45', false, 90)
+        ON CONFLICT (conector) DO NOTHING
+    """)
+
+
 def downgrade() -> None:
+    # sem exclusão física: o agendamento desligado `contagens` fica na tabela (mesma regra da 0024)
     op.execute("DROP TABLE IF EXISTS controle.contagem_cpf_repetido")
     op.execute("DROP TABLE IF EXISTS controle.contagem_resultado")
     op.execute("DROP TABLE IF EXISTS controle.contagem_execucao")

@@ -225,3 +225,42 @@ def test_marcadas_ajustar_so_rodam_liberadas(monkeypatch):
     assert "Q1" not in padrao and "Q-A2" in padrao
     monkeypatch.setenv("CONTAGENS_ATIVAS", "Q1")
     assert [q.id for q in job.selecionadas()] == ["Q1"]
+
+
+def test_q2_q3_q4_removidas_geral_nunca_lido():
+    ids = {q.id for q in C.CONSULTAS}
+    assert not ids & {"Q2", "Q3", "Q4"}
+    assert not any("Geral." in q.sql or q.base == "Geral" for q in C.CONSULTAS)
+
+
+def test_agenda_contagens_0545_nasce_desligada(db):
+    r = db.execute(text("select horario, ativo from controle.agendamentos where conector='contagens'")).one()
+    assert r == ("05:45", False)
+
+
+def test_agenda_roda_contagens_as_0545_quando_ligada(db, cenario):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services import agenda
+    cenario.setattr(C, "CONSULTAS", (_q("ZZ-AG"),))
+    cenario.setattr(job, "_conector_sqlserver", lambda base: Conn(_respostas))
+    cenario.setenv("SQLSERVER_HOST", "zz-host")
+    cenario.setenv("SQLSERVER_CONTAGENS_USER", "zz_contagens")
+    get_settings.cache_clear()
+    antes = db.execute(text("select conector, ativo from controle.agendamentos")).all()
+    db.execute(text("update controle.agendamentos set ativo = (conector='contagens')"))
+    db.execute(text("update controle.agendamentos set ultima_data=null, tentativas=0, proxima_tentativa_em=null "
+                    "where conector='contagens'"))
+    db.commit()
+    try:
+        cedo = datetime(2026, 10, 30, 5, 30, tzinfo=ZoneInfo("America/Sao_Paulo"))
+        assert ("contagens", "sucesso") not in agenda.ciclo(db, agora=cedo)
+        hora = datetime(2026, 10, 30, 5, 46, tzinfo=ZoneInfo("America/Sao_Paulo"))
+        feitos = agenda.ciclo(db, agora=hora)
+        assert ("contagens", "sucesso") in feitos
+        assert agenda._nome("contagens") == agenda.NOME_CONTAGENS
+    finally:
+        for conector, ativo in antes:
+            db.execute(text("update controle.agendamentos set ativo=:a where conector=:c"), {"a": ativo, "c": conector})
+        db.commit()

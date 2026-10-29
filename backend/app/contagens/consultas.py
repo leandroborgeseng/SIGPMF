@@ -1,4 +1,4 @@
-"""Catálogo das contagens do J1 (Q1–Q11, Q-A1–Q-A9, % de CPF inválido) — só agregados.
+"""Catálogo das contagens do J1 (Q1, Q5–Q11, Q-A1–Q-A9, % de CPF inválido; Q2–Q4 removidas: leem o Geral, catalogado "não ler") — só agregados.
 
 Cada consulta declara as colunas que pode devolver. Colunas `rotulo` só aceitam rótulos curtos do próprio SQL
 (ex.: 'Insc_Imob', 'PF'); o resto tem de ser número. Qualquer outra coisa invalida o resultado (`resultado_nao_agregado`).
@@ -29,13 +29,6 @@ CONSULTAS: tuple[Consulta, ...] = (
         SUM(CASE WHEN Cadastro IS NULL OR LTRIM(RTRIM(Cadastro))='' THEN 1 ELSE 0 END) AS nulos,
         SUM(CASE WHEN LEN(LTRIM(RTRIM(Cadastro)))=14 AND Cadastro NOT LIKE '%[^0-9]%' THEN 1 ELSE 0 END) AS ok_14dig
         FROM dbo.Cadastro WITH (NOLOCK)"""), ("total", "nulos", "ok_14dig"), ajustar=True),
-    Consulta("Q2", "Geral", _sql("""SELECT COUNT(*) total, SUM(CASE WHEN CPF IS NULL OR CPF='' THEN 1 ELSE 0 END) nulos,
-        SUM(CASE WHEN LEN(CPF)=11 AND CPF NOT LIKE '%[^0-9]%' THEN 1 ELSE 0 END) onze_digitos,
-        SUM(CASE WHEN CPF LIKE REPLICATE(LEFT(CPF,1),11) THEN 1 ELSE 0 END) repetidos_dummy
-        FROM dbo.Municipes WITH (NOLOCK)"""), ("total", "nulos", "onze_digitos", "repetidos_dummy"), ajustar=True),
-    Consulta("Q3", "Geral", _sql("""WITH d AS (SELECT CPF FROM dbo.Municipes WITH (NOLOCK) WHERE LEN(CPF)=11
-        GROUP BY CPF HAVING COUNT(*)>1) SELECT COUNT(*) AS cpfs_duplicados FROM d"""), ("cpfs_duplicados",),
-             ajustar=True),
     Consulta("Q5", "Central", _sql("""SELECT COUNT(*) total, SUM(CASE WHEN cpf IS NULL THEN 1 ELSE 0 END) nulos,
         SUM(CASE WHEN cpf < 10000000000 THEN 1 ELSE 0 END) menos_de_11_digitos FROM dbo.Municipes WITH (NOLOCK)"""),
              ("total", "nulos", "menos_de_11_digitos"), ajustar=True),
@@ -78,12 +71,6 @@ CONSULTAS: tuple[Consulta, ...] = (
         count(im) FILTER (WHERE im IN (SELECT ccm FROM c)) casa_direto,
         count(im) FILTER (WHERE im IN (SELECT ccm / 10 FROM c)) casa_ccm_div10 FROM a"""),
              ("alvaras_com_inscricao", "casa_direto", "casa_ccm_div10")),
-    Consulta("Q4", "FRA_CoreSSO", _sql("""WITH g AS (SELECT DISTINCT CPF c FROM Geral.dbo.Municipes WITH (NOLOCK) WHERE LEN(CPF)=11),
-        s AS (SELECT DISTINCT RIGHT('00000000000'+REPLACE(REPLACE(d.psd_numero,'.',''),'-',''),11) c
-        FROM dbo.PES_PessoaDocumento d WITH (NOLOCK) JOIN dbo.SYS_TipoDocumentacao t WITH (NOLOCK) ON t.tdo_id=d.tdo_id
-        WHERE t.tdo_classificacao=1)
-        SELECT (SELECT COUNT(*) FROM s) cpfs_coresso, (SELECT COUNT(*) FROM s WHERE c IN (SELECT c FROM g)) em_ambos"""),
-             ("cpfs_coresso", "em_ambos"), ajustar=True),
     Consulta("Q6", "ISS", _sql("""WITH i AS (SELECT DISTINCT Inscricao_Municipal im FROM dbo.Contribuintes WITH (NOLOCK)),
         s AS (SELECT DISTINCT Inscricao_Municipal im FROM Simples_Nacional.dbo.Empresas WITH (NOLOCK)
         WHERE Inscricao_Municipal IS NOT NULL)
