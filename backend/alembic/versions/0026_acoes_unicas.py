@@ -16,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("acoes_unicas", schema="controle"):
+        return  # idempotente (testes reaplicam a partir de um stamp anterior)
     op.create_table(
         "acoes_unicas",
         sa.Column("id", sa.Integer, primary_key=True),
@@ -35,4 +37,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("acoes_unicas", schema="controle")
+    op.execute("DROP TABLE IF EXISTS controle.acoes_unicas")
