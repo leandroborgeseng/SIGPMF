@@ -39,6 +39,29 @@ SQL_CHECA_LOGIN = ("SELECT IS_SRVROLEMEMBER('sysadmin') a, IS_ROLEMEMBER('db_own
                    "AND p.type IN ('IN','UP','DL','AL','CRTB','CL','EX')) e")
 
 
+LIMIAR_PISO = 50  # J4a: decisão do TL (29/10); não é configurável para baixo
+RETENCAO_CPF_DIAS = 30  # J4b
+
+
+def limiar_efetivo(valor: int) -> int:
+    if int(valor) < LIMIAR_PISO:
+        log.error("contagens: CONTAGENS_CPF_REPETIDO_LIMIAR abaixo do piso; usando %s", LIMIAR_PISO)
+        return LIMIAR_PISO
+    return int(valor)
+
+
+def expurga_cpfs(db: Session, manter_execucao_id: int | None, agora: datetime) -> int:
+    """J4b: só a última execução guarda CPFs; linhas anteriores ou com mais de 30 dias ficam só com os totais.
+    UPDATE (cpf = NULL), sem exclusão física."""
+    from datetime import timedelta
+    r = db.execute(text(
+        "UPDATE controle.contagem_cpf_repetido SET cpf = NULL, expurgado_em = :agora "
+        "WHERE cpf IS NOT NULL AND (execucao_id IS DISTINCT FROM :manter OR registrado_em < :corte)"),
+        {"agora": agora, "manter": manter_execucao_id, "corte": agora - timedelta(days=RETENCAO_CPF_DIAS)})
+    db.commit()
+    return r.rowcount or 0
+
+
 class ResultadoNaoAgregado(ValueError):
     pass
 
@@ -108,7 +131,7 @@ def _pg(db: Session, sql: str) -> list[dict]:
 def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any] | None = None,
              agora: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> ContagemExecucao:
     s = get_settings()
-    limiar, top = int(s.contagens_cpf_repetido_limiar), int(s.contagens_cpf_repetido_top)
+    limiar, top = limiar_efetivo(s.contagens_cpf_repetido_limiar), int(s.contagens_cpf_repetido_top)
     ex = ContagemExecucao(usuario=usuario, status="em_andamento", limiar_cpf=limiar)
     db.add(ex)
     db.commit()
@@ -199,6 +222,7 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
                 pass
     ex.status = "concluida" if not falhas else "parcial"
     ex.terminado_em = agora()
+    expurga_cpfs(db, ex.id, ex.terminado_em)
     audita(db, usuario, "contagens_execucao", f"contagem:{ex.id}",
            {"status": ex.status, "consultas": len(hashes), "falhas": falhas, "limiar_cpf": limiar, "sql": hashes},
            commit=False)

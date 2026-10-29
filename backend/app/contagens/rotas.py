@@ -27,6 +27,10 @@ def _execucao(db: Session, ex: ContagemExecucao) -> dict:
                             "sql_hash": r.sql_hash, "resultado": r.resultado} for r in res]}
 
 
+def _ultima_id(db: Session) -> int | None:
+    return db.scalar(select(ContagemExecucao.id).order_by(ContagemExecucao.id.desc()).limit(1))
+
+
 @contagens.post("/contagens/executar")
 def executar(req: Request, u: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
     ex = job.executar(db, u.email)
@@ -46,7 +50,10 @@ def cpfs_repetidos(eid: int, req: Request, u: Usuario = Depends(REVELA_CPF), db:
     ex = db.get(ContagemExecucao, eid)
     if ex is None:
         raise HTTPException(404, "Contagem não encontrada")
-    linhas = list(db.scalars(select(ContagemCpfRepetido).where(ContagemCpfRepetido.execucao_id == eid)
+    from datetime import UTC, datetime
+    job.expurga_cpfs(db, _ultima_id(db), datetime.now(UTC))  # J4b também na leitura (nada com mais de 30 dias)
+    linhas = list(db.scalars(select(ContagemCpfRepetido).where(ContagemCpfRepetido.execucao_id == eid,
+                                                               ContagemCpfRepetido.cpf.is_not(None))
                              .order_by(ContagemCpfRepetido.ocorrencias.desc())))
     audita(db, u.email, "contagens_cpf_repetido_leitura", f"contagem:{eid}", {"linhas": len(linhas)}, _ip(req))
     return {"execucao_id": eid, "limiar": ex.limiar_cpf,

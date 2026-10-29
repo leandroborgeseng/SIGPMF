@@ -264,3 +264,40 @@ def test_agenda_roda_contagens_as_0545_quando_ligada(db, cenario):
         for conector, ativo in antes:
             db.execute(text("update controle.agendamentos set ativo=:a where conector=:c"), {"a": ativo, "c": conector})
         db.commit()
+
+
+def test_j4a_piso_50_travado(db, cenario, caplog):
+    cenario.setattr(C, "CONSULTAS", ())
+    cenario.setenv("CONTAGENS_CPF_REPETIDO_LIMIAR", "10")
+    get_settings.cache_clear()
+    sqls = []
+
+    def resp(sql):
+        sqls.append(sql)
+        return [{"cpf": CPF_REP, "ocorrencias": 20}] if "HAVING" in sql else _respostas(sql)
+    with caplog.at_level("ERROR", logger="sigpmf.contagens"):
+        ex = job.executar(db, None, conectar=lambda b: Conn(resp))
+    assert ex.limiar_cpf == 50 and any("HAVING COUNT(*) >= 50" in s for s in sqls)
+    assert any("piso" in r.getMessage() for r in caplog.records)
+    assert db.execute(text("select count(*) from controle.contagem_cpf_repetido where execucao_id=:e"),
+                      {"e": ex.id}).scalar() == 0
+
+
+def test_j4b_so_ultima_execucao_guarda_cpf_e_30_dias(db, cenario):
+    from datetime import datetime, timedelta, timezone
+    cenario.setattr(C, "CONSULTAS", ())
+    ex1 = job.executar(db, None, conectar=lambda b: Conn(_respostas))
+    ex2 = job.executar(db, None, conectar=lambda b: Conn(_respostas))
+    r1 = db.execute(text("select cpf, ocorrencias, expurgado_em from controle.contagem_cpf_repetido where execucao_id=:e"),
+                    {"e": ex1.id}).all()
+    assert r1 and all(c is None and o == 60 and x is not None for c, o, x in r1)  # histórico: só totais
+    assert db.execute(text("select count(*) from controle.contagem_cpf_repetido where cpf is not null "
+                           "and execucao_id <> :e"), {"e": ex2.id}).scalar() == 0
+    db.execute(text("update controle.contagem_cpf_repetido set registrado_em = now() - interval '31 days' "
+                    "where execucao_id=:e"), {"e": ex2.id})
+    db.commit()
+    job.expurga_cpfs(db, ex2.id, datetime.now(timezone.utc))
+    assert db.execute(text("select count(*) from controle.contagem_cpf_repetido where cpf is not null")).scalar() == 0
+    assert db.execute(text("select count(*) from controle.contagem_cpf_repetido where execucao_id=:e"),
+                      {"e": ex2.id}).scalar() == 1  # sem exclusão física
+    assert timedelta(days=job.RETENCAO_CPF_DIAS) == timedelta(days=30)

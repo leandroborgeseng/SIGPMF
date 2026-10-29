@@ -1,9 +1,11 @@
 """PR-07 contagens automáticas (J1–J4). Aditiva: só cria tabelas novas em `controle`.
 
 - contagem_execucao / contagem_resultado: só agregados (números e rótulos curtos), com hash do SQL e código fixo de falha.
-- contagem_cpf_repetido (J4): só CPFs com ocorrências >= limiar (CHECK no banco); leitura só por admin_lgpd, auditada.
+- contagem_cpf_repetido (J4): só CPFs com ocorrências >= limiar (piso 50, CHECK no banco); leitura só por admin_lgpd,
+  auditada. J4b: só a última execução guarda o CPF; as anteriores e as com mais de 30 dias ficam só com os totais
+  (cpf = NULL por UPDATE, sem exclusão física).
 
-down_revision = '0026' por enquanto (a 0027 do #44 e as 0028–0033 ainda não estão na main).
+down_revision = '0026' AINDA (a 0027 já está na main): por decisão do TL, ajustar para a ponta da main só na fila (depois do #47 e #48).
 
 Revision ID: 0034
 Revises: 0026
@@ -54,10 +56,13 @@ def upgrade() -> None:
             sa.Column("execucao_id", sa.Integer, sa.ForeignKey("controle.contagem_execucao.id"), nullable=False),
             sa.Column("base", sa.String(100), nullable=False),
             sa.Column("tabela", sa.String(200), nullable=False),
-            sa.Column("cpf", sa.String(11), nullable=False),
+            sa.Column("cpf", sa.String(11)),  # J4b: NULL depois de expurgado (só a última execução guarda CPFs)
             sa.Column("ocorrencias", sa.Integer, nullable=False),
             sa.Column("limiar", sa.Integer, nullable=False),
-            sa.CheckConstraint("limiar >= 2 AND ocorrencias >= limiar", name="ck_contagem_cpf_repetido_limiar"),
+            sa.Column("registrado_em", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+            sa.Column("expurgado_em", sa.DateTime(timezone=True)),
+            sa.CheckConstraint("cpf IS NULL OR expurgado_em IS NULL", name="ck_contagem_cpf_repetido_expurgo"),
+            sa.CheckConstraint("limiar >= 50 AND ocorrencias >= limiar", name="ck_contagem_cpf_repetido_limiar"),
             schema="controle",
         )
 
