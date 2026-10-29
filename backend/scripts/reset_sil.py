@@ -67,7 +67,12 @@ ALVOS_OURO: tuple[Alvo, ...] = (
 # Sempre: tira "SIL" da lista de sistemas dos cidadãos que ficam no ouro (o só-SIL, sem a flag, fica como está).
 SISTEMAS_COM_SIL = Alvo("gold.cidadao_sistemas", f"sistemas ? 'SIL' AND cidadao_id NOT IN ({OURO_SO_SIL})", "atualiza")
 ATUALIZA = {
-    "gold.cidadao_sistemas": "sistemas = sistemas - 'SIL'",
+    # Recalcula a lista: o que já havia menos "SIL", mais as fontes dos dados que ficam no ouro (ninguém com dado de
+    # outra fonte termina com []). A linha anterior fica no backup (gold__cidadao_sistemas__tira_sil).
+    "gold.cidadao_sistemas": ("sistemas = (SELECT COALESCE(jsonb_agg(u.s ORDER BY u.s COLLATE \"C\"), '[]'::jsonb) FROM ("
+                              "SELECT x AS s FROM jsonb_array_elements_text(gold.cidadao_sistemas.sistemas) x "
+                              "WHERE upper(x) <> 'SIL' UNION SELECT d.sistema FROM gold.cidadao_dados d "
+                              "WHERE d.cidadao_id = gold.cidadao_sistemas.cidadao_id AND upper(d.sistema) <> 'SIL') u)"),
     "controle.camadas_estado": "execucao_id = NULL",
     "controle.agendamentos": ("ativo = false, forcar = false, ultima_data = NULL, tentativas = 0, "
                               "proxima_tentativa_em = NULL, ultimo_status = NULL, ultima_mensagem = NULL, "
@@ -86,7 +91,6 @@ CONTROLES = {
     "gold.cidadao_dados (outras fontes)": "SELECT count(*) FROM gold.cidadao_dados WHERE upper(sistema) <> 'SIL'",
     "gold.cidadao_sistemas (com outra fonte)": f"SELECT count(*) FROM gold.cidadao_sistemas WHERE cidadao_id NOT IN ({OURO_SO_SIL})",
     "controle.agendamentos (outros)": "SELECT count(*) FROM controle.agendamentos WHERE conector <> 'sil'",
-    "controle.auditoria": "SELECT count(*) FROM controle.auditoria",
 }
 
 
@@ -215,7 +219,12 @@ def executar(engine: Engine, usuario: str, confirmar: bool = False, remover_ouro
                     raise Recusa("há uma carga da SIL segurando a trava (amostra:SIL): espere terminar")
             _pre_condicoes(c)
             _verifica_schema(c, schema_backup)
-            rel.controles_antes = {k: _conta(c, q) for k, q in CONTROLES.items()}
+            # Auditoria: as linhas que já existiam continuam todas lá. Outras sessões podem auditar em paralelo
+            # (login, leitura, uma recusa 409), então não vale comparar o total.
+            aud_max = int(c.execute(text("SELECT coalesce(max(id), 0) FROM controle.auditoria")).scalar())
+            controles = {**CONTROLES, "controle.auditoria (linhas anteriores)":
+                         f"SELECT count(*) FROM controle.auditoria WHERE id <= {aud_max}"}
+            rel.controles_antes = {k: _conta(c, q) for k, q in controles.items()}
             rel.antes = _contagens(c, lista)
             _imprime(saida, "ANTES", rel.antes)
             rel.backup = _backup(c, schema_backup, lista, rel.antes)
@@ -237,8 +246,8 @@ def executar(engine: Engine, usuario: str, confirmar: bool = False, remover_ouro
             sobrou = {k: v for k, v in rel.depois.items() if v}
             if sobrou:
                 raise Divergencia(f"sobraram linhas da SIL: {sobrou}")
-            rel.controles_depois = {k: _conta(c, q) for k, q in CONTROLES.items()}
-            mudou = {k for k in CONTROLES if rel.controles_antes[k] != rel.controles_depois[k]}
+            rel.controles_depois = {k: _conta(c, q) for k, q in controles.items()}
+            mudou = {k for k in controles if rel.controles_antes[k] != rel.controles_depois[k]}
             if mudou:
                 raise Divergencia(f"contagens fora do escopo mudaram: {sorted(mudou)}")
             c.execute(text("INSERT INTO controle.auditoria (usuario, acao, alvo, detalhe) "
