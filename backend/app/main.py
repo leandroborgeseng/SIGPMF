@@ -76,6 +76,8 @@ def iniciar_agenda():
 
 def create_app() -> FastAPI:
     s = get_settings()
+    if s.app_env != "test" and s.segredo_chave_hash_ok() is None:  # PR-03: sem o segredo do HMAC não sobe
+        raise RuntimeError("SIGPMF_CHAVE_HASH_SEGREDO obrigatório fora de testes (mínimo 32 caracteres)")
     docs = s.app_env == "dev" and s.docs_habilitado
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
