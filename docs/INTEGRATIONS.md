@@ -18,3 +18,20 @@ Nesta entrega **não há conexão com origem real**. As origens usadas são sint
 5. Validar com amostra (`AMOSTRA_LIMITE`) antes de qualquer carga completa (só admin, auditada).
 
 Próximos: Saúde (critérios S1–S8) e Cemitério (CM1–CM11).
+
+## SEI: valores oficiais (não secretos)
+
+Preencher nas variáveis do servidor (Railway/Coolify). O `.env.example` traz só os nomes.
+Segredos (`SIGPMF_SRC_SEI_IDP_CLIENT_SECRET`, `SIGPMF_SRC_SEI_IDENTIFICACAO_SERVICO`) nunca entram no repositório.
+
+| Variável | Valor (produção PRODESP/ROTA, Franca) |
+|---|---|
+| `SIGPMF_SRC_SEI_BASE_PROCESSOS` | `https://sei-processos.api.rota.sp.gov.br` |
+| `SIGPMF_SRC_SEI_BASE_DOCUMENTOS` | `https://sei-documentos.api.rota.sp.gov.br` |
+| `SIGPMF_SRC_SEI_BASE_PARAMETROS` | `https://sei-parametros.api.rota.sp.gov.br` |
+| `SIGPMF_SRC_SEI_IDP_URL` | `https://rhsso.idp.sp.gov.br` |
+| `SIGPMF_SRC_SEI_IDP_TOKEN_PATH` | a confirmar (vazio = conector inerte) |
+| `SIGPMF_SRC_SEI_IDP_CLIENT_ID` | `prefm.centralonlinefranca` |
+| `SIGPMF_SRC_SEI_SIGLA_SISTEMA` | `SEI-API-FRANCA` |
+| `SIGPMF_SRC_SEI_ID_UNIDADE` | `110001339` |
+| `SIGPMF_SRC_SEI_REGIONAL` | `franca` |

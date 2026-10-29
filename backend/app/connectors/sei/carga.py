@@ -5,6 +5,8 @@
 - Incremental (andamentos/completo com dataInicio/dataFim): só com SIGPMF_SRC_SEI_CARGA_LIBERADA=true (validação do
   Leandro), depois de uma amostra com sucesso e dentro da janela noturna. Checkpoint = dataFim; só avança quando a
   execução termina completa (página repetida, teto de páginas ou erro = parcial, checkpoint parado).
+- Andamento cujo processo não está na bronze como público (restrito, sigiloso ou desconhecido) é descartado; se
+  houver descarte, a execução fecha como parcial com alerta e o checkpoint não avança (o dia é relido depois).
 """
 from datetime import UTC, date, datetime, timedelta
 
@@ -18,6 +20,7 @@ from app.connectors.sei.cliente import ClienteSei, ErroSei, SeiDesabilitado
 from app.connectors.sei.config import ConfigSei
 from app.connectors.sei.paginacao import lista, paginar
 from app.core.audit import audita
+from app.models.camadas import RegistroBronze
 from app.models.controle import CheckpointCarga, Execucao, Log
 
 SISTEMA = "SEI"
@@ -137,6 +140,21 @@ def dentro_da_janela(agora: datetime) -> tuple[bool, str]:
     return cge.dentro_da_janela(agora)
 
 
+def processos_publicos(db: Session, ambiente: str) -> pj.Publicos:
+    """Processos do SEI gravados na bronze como públicos (nivel_acesso "0") no mesmo ambiente de origem."""
+    ids, prots = set(), set()
+    for d in db.scalars(select(RegistroBronze.dados).where(RegistroBronze.sistema_origem == SISTEMA,
+                                                           RegistroBronze.tabela == TAB_PROCESSOS,
+                                                           RegistroBronze.quarentena.is_(None))):
+        if not isinstance(d, dict) or d.get("nivel_acesso") != pj.PUBLICO or d.get("ambiente_origem") != ambiente:
+            continue
+        if pj._t(d.get("id_procedimento")):
+            ids.add(pj._t(d.get("id_procedimento")))
+        if pj._t(d.get("protocolo")):
+            prots.add(pj._t(d.get("protocolo")))
+    return pj.Publicos(ids=frozenset(ids), protocolos=frozenset(prots))
+
+
 def _checkpoint(db: Session) -> CheckpointCarga | None:
     return db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == SISTEMA,
                                                    CheckpointCarga.tabela == TAB_ANDAMENTOS))
@@ -172,12 +190,15 @@ def executar_incremental(db: Session, usuario: str, agora: datetime | None = Non
         with ClienteSei(cfg, transport=transport, **kw) as cli:
             r = paginar(cli, "andamentos", "Andamentos", lambda a: pj._t(a.get("idAndamento")), LIMITE_PAGINA,
                         cfg.max_paginas, params={"dataInicio": _br(ini), "dataFim": _br(fim)})
-        proj = [pj.projeta_andamento(a, cfg.ambiente) for a in r["itens"]]
+        publicos = processos_publicos(db, cfg.ambiente)
+        proj = [pj.projeta_andamento(a, cfg.ambiente, publicos) for a in r["itens"]]
         regs = [x for x in proj if x is not None]
+        descartados = len(proj) - len(regs)
         b = _grava(db, TAB_ANDAMENTOS, "id_andamento", regs, ex)
         ex.lidos, ex.lotes = len(r["itens"]), r["paginas"]
         ex.novos, ex.atualizados, ex.ignorados = b["novos"], b["atualizados"], b["ignorados"]
-        avancou = not r["parcial"]
+        parcial = r["parcial"] or descartados > 0
+        avancou = not parcial
         if avancou:
             if ck is None:
                 ck = CheckpointCarga(sistema=SISTEMA, tabela=TAB_ANDAMENTOS, posicao=0)
@@ -187,9 +208,15 @@ def executar_incremental(db: Session, usuario: str, agora: datetime | None = Non
             ck.atualizado_em = datetime.now(UTC)
         cont = {"andamentos_lidos": len(regs), "paginas": r["paginas"], "fim": r["fim"], "parcial": r["parcial"],
                 "checkpoint_avancou": avancou,
-                "andamentos_nao_gravados_sigilo": len(proj) - len(regs)}
+                "andamentos_nao_gravados_sigilo": descartados}
         if r["alerta"]:
             cont["alerta"] = r["alerta"]["motivo"]
-        return _fecha(db, ex, "parcial" if r["parcial"] else "sucesso", cont, usuario, "sei_incremental")
+        if descartados:
+            # só contagem (sem id, protocolo ou nome): processo restrito/sigiloso/desconhecido na bronze
+            db.add(Log(execucao_id=ex.id, nivel="WARNING",
+                       mensagem=f"ambiente_origem={cfg.ambiente} andamentos_descartados={descartados} "
+                                "motivo=processo_nao_publico_ou_desconhecido checkpoint_avancou=False"))
+            cont.setdefault("alerta", "andamentos_descartados")
+        return _fecha(db, ex, "parcial" if parcial else "sucesso", cont, usuario, "sei_incremental")
     except Exception as exc:  # noqa: BLE001
         return _falha(db, ex.id, exc, usuario, "sei_incremental")

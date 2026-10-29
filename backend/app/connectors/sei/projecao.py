@@ -4,12 +4,14 @@
   nível ausente: não gravado (só contado). Observações, link de acesso e usuários não entram.
 - Documento: só metadados (id, tipo, série, protocolo do processo, unidade, nível de acesso). Nome do arquivo, título,
   "informacao", conteúdo e anexos não entram. Documento com nível 1/2 não é gravado.
-- Andamento: id, processo, tarefa, data/hora e unidade. Descrição (texto livre) e usuário não entram.
+- Andamento: id, processo, tarefa, data/hora e unidade. Descrição (texto livre) e usuário não entram. O
+  andamentosCompletoResponse (OpenAPI) não traz nível de acesso: o sigilo vem do processo pai já gravado como
+  público na bronze (mesmo ambiente). Processo restrito, sigiloso ou desconhecido: andamento descartado.
 - Interessado: CPF válido (campo cpf ou sigla com 11 dígitos) -> cidadao_id (uuid5 do CPF, peso 1.0). Sem CPF
   válido: o nome vai para revisão (pendencia=revisao_nome), sem vínculo automático.
 - Visão: CPF e nome em claro só para admin_lgpd via revelar (motivo + auditoria); os demais veem mascarado.
 """
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.identity.correlacao import cidadao_id_por_cpf
 from app.identity.cpf import mascara, normaliza, valido
@@ -76,9 +78,21 @@ def projeta_documento(d: dict, protocolo: str | None, ambiente: str) -> dict | N
             "unidade": _unidade(d.get("Unidade")), "nivel_acesso": nv, "ambiente_origem": ambiente}
 
 
-def projeta_andamento(a: dict, ambiente: str) -> dict | None:
-    """Andamento de processo sigiloso, restrito ou sem nível de acesso não é gravado (revela existência)."""
-    if nivel(a, "nivelAcesso", "nivelAcessoLocal", "nivelAcessoGlobal") != PUBLICO:
+class Publicos(NamedTuple):
+    """Processos públicos já na bronze: por idProcedimento e por protocolo formatado."""
+    ids: frozenset[str]
+    protocolos: frozenset[str]
+
+
+def processo_do_andamento_publico(a: dict, publicos: Publicos) -> bool:
+    idp, prot = _t(a.get("idProcesso")), _t(a.get("protocoloProcedimento"))
+    return bool((idp and idp in publicos.ids) or (prot and prot in publicos.protocolos))
+
+
+def projeta_andamento(a: dict, ambiente: str, publicos: Publicos) -> dict | None:
+    """Só grava andamento cujo processo pai está na bronze como público; o resto não é gravado (revela existência).
+    Campos de nível no próprio andamento são ignorados (não existem no OpenAPI)."""
+    if not processo_do_andamento_publico(a, publicos):
         return None
     return {"id_andamento": _t(a.get("idAndamento")), "id_processo": _t(a.get("idProcesso")),
             "protocolo": _t(a.get("protocoloProcedimento")), "id_tarefa": _t(a.get("idTarefa")),

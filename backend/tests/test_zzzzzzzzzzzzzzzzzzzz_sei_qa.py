@@ -11,7 +11,7 @@ from app.connectors.sei import projecao as pj
 from app.connectors.sei.cliente import ClienteSei, OperacaoProibida, checa_operacao
 from app.connectors.sei.config import ConfigSei
 from app.models.camadas import RegistroBronze
-from app.models.controle import Execucao
+from app.models.controle import CheckpointCarga, Execucao, Log
 from tests import sei_mock as sm
 
 NOITE = datetime(2026, 10, 29, 5, 0, tzinfo=UTC)
@@ -92,7 +92,8 @@ def test_qa_amostra_hml_libera_incremental_oficial(monkeypatch, db):
 
 def test_qa_andamento_de_processo_sigiloso_gravado(monkeypatch, db):
     a = pj.projeta_andamento({"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026",
-                              "descricao": "ZZTESTE livre", "usuarios": {"nome": "ZZ"}, "nivelAcesso": "2"}, "oficial")
+                              "descricao": "ZZTESTE livre", "usuarios": {"nome": "ZZ"}}, "oficial",
+                             pj.Publicos(ids=frozenset(), protocolos=frozenset()))
     print("QA_ANDAMENTO_SIGILOSO", a)
     assert a is None  # esperado: não gravar andamento de processo sigiloso
 
@@ -146,13 +147,18 @@ def test_b1_cpf_recusado_antes_da_rede(monkeypatch):
     assert not api.gets()
 
 
-@pytest.mark.parametrize("nv", [None, "1", "2", ""])
-def test_b2_andamento_nao_publico_ou_sem_nivel_descartado(nv):
-    a = {"idAndamento": "A1", "idProcesso": "9"}
+@pytest.mark.parametrize("nv", [None, "0", "1", "2", ""])
+def test_b2_m3_sigilo_vem_do_processo_e_nao_do_andamento(nv):
+    """M3: o campo do andamento (ausente no OpenAPI) não decide; vale o processo público na bronze."""
+    a = {"idAndamento": "A1", "idProcesso": "9", "protocoloProcedimento": "1.1/2026"}
     if nv is not None:
         a["nivelAcesso"] = nv
-    assert pj.projeta_andamento(a, "oficial") is None
-    assert pj.projeta_andamento({**a, "nivelAcesso": "0"}, "oficial")["id_andamento"] == "A1"
+    vazio = pj.Publicos(ids=frozenset(), protocolos=frozenset())
+    assert pj.projeta_andamento(a, "oficial", vazio) is None
+    pub = pj.Publicos(ids=frozenset({"9"}), protocolos=frozenset())
+    assert pj.projeta_andamento(a, "oficial", pub)["id_andamento"] == "A1"
+    pub_prot = pj.Publicos(ids=frozenset(), protocolos=frozenset({"1.1/2026"}))
+    assert pj.projeta_andamento(a, "oficial", pub_prot)["id_andamento"] == "A1"
 
 
 def test_m1_amostra_oficial_libera_incremental(monkeypatch, db):
@@ -228,10 +234,57 @@ def test_env_example_producao_sem_segredos():
     raiz = pathlib.Path(__file__).parents[2]
     env = dict(linha.split("=", 1) for linha in (raiz / ".env.example").read_text().splitlines()
                if linha.startswith("SIGPMF_SRC_SEI_"))
-    assert env["SIGPMF_SRC_SEI_BASE_PROCESSOS"] == "https://sei-processos.api.rota.sp.gov.br"
-    assert env["SIGPMF_SRC_SEI_IDP_URL"] == "https://rhsso.idp.sp.gov.br"
-    assert env["SIGPMF_SRC_SEI_ID_UNIDADE"] == "110001339" and env["SIGPMF_SRC_SEI_REGIONAL"] == "franca"
+    for k in ("BASE_PROCESSOS", "BASE_DOCUMENTOS", "BASE_PARAMETROS", "IDP_URL", "IDP_CLIENT_ID", "SIGLA_SISTEMA",
+              "ID_UNIDADE", "REGIONAL"):
+        assert env[f"SIGPMF_SRC_SEI_{k}"] == "", k  # B4: só nomes; valores oficiais em docs/INTEGRATIONS.md
+    doc = (raiz / "docs" / "INTEGRATIONS.md").read_text()
+    assert "https://sei-processos.api.rota.sp.gov.br" in doc and "110001339" in doc
     assert env["SIGPMF_SRC_SEI_IDP_CLIENT_SECRET"] == "" and env["SIGPMF_SRC_SEI_IDENTIFICACAO_SERVICO"] == ""
     assert env["SIGPMF_SRC_SEI_IDP_TOKEN_PATH"] == "" and env["SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO"] == "1"
     comp = (raiz / "docker-compose.yml").read_text()
     assert "SIGPMF_SRC_SEI_IDP_CLIENT_SECRET: ${SIGPMF_SRC_SEI_IDP_CLIENT_SECRET:-}" in comp
+
+
+# ------------------------------------------------------------------ M3 (ciclo 3): sigilo pelo processo na bronze
+def _prep_m3(monkeypatch, db, **api_kw):
+    sm.env_oficial(monkeypatch, CARGA_LIBERADA="true", MAX_PAGINAS_POR_EXECUCAO="5")
+    from app.connectors.sei import config as cfg_sei
+    monkeypatch.setattr(cfg_sei, "TETO_PAGINAS", 5)
+    # amostra: processo 1 público; processo 2 restrito (não vai para a bronze)
+    am = carga.executar_amostra(db, "zz@aion.local", transport=sm.Sei(niveis={2: "1"}).transport(),
+                                dormir=lambda s: None)
+    assert am.status == "sucesso"
+    monkeypatch.setattr(carga, "dentro_da_janela", lambda agora: (True, "00:00-06:00"))
+    for ck in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == "SEI")):
+        db.delete(ck)
+    db.commit()
+    return sm.Sei(**api_kw)
+
+
+def _ck(db):
+    return db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SEI"))
+
+
+def test_m3_payload_real_sem_nivel_grava_andamentos_de_processo_publico(monkeypatch, db):
+    api = _prep_m3(monkeypatch, db, andamentos=7)
+    corpo = api(httpx.Request("GET", "https://x.invalid/andamentos/completo?start=0&limit=50")).json()
+    assert all("nivelAcesso" not in a for a in corpo["Andamentos"])  # mock alinhado ao OpenAPI
+    ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
+    assert ex.status == "sucesso" and "andamentos_nao_gravados_sigilo=0" in ex.mensagem
+    assert ex.novos + ex.atualizados + ex.ignorados == 7 and ex.lidos == 7
+    assert _ck(db).ultima_chave == ["2026-10-29"]
+
+
+@pytest.mark.parametrize("proc", [2, 77])  # 2 = restrito na amostra; 77 = desconhecido na bronze
+def test_m3_processo_restrito_ou_desconhecido_descarta_e_nao_avanca(monkeypatch, db, proc):
+    api = _prep_m3(monkeypatch, db, andamentos=6, processo_andamento=lambda i: 1 if i % 2 else proc)
+    ex = carga.executar_incremental(db, "zz@aion.local", NOITE, transport=api.transport(), dormir=lambda s: None)
+    assert ex.status == "parcial" and "andamentos_nao_gravados_sigilo=3" in ex.mensagem
+    assert "checkpoint_avancou=False" in ex.mensagem and "andamentos_descartados" in ex.mensagem
+    assert _ck(db) is None
+    logs = [lg.mensagem for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id, Log.nivel == "WARNING"))]
+    assert logs and "andamentos_descartados=3" in logs[0]
+    assert all(f"{proc:06d}" not in m and "ZZTESTE" not in m for m in logs)  # só contagem, sem identificação
+    prots = {r.dados.get("protocolo") for r in db.scalars(select(RegistroBronze).where(
+        RegistroBronze.sistema_origem == "SEI", RegistroBronze.tabela == "andamentos"))}
+    assert f"99990.{proc:06d}/2026-01" not in prots

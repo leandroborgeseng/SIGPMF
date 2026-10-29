@@ -50,8 +50,10 @@ class Sei:
     """Responde as rotas da allowlist; registra todas as chamadas."""
 
     def __init__(self, n_processos=3, niveis=None, andamentos=0, repetir_andamentos=False, token_401=0,
-                 total_docs=2):
+                 total_docs=2, processo_andamento=None):
         self.n, self.niveis = n_processos, niveis or {}
+        # andamento i -> número do processo (padrão: processo 1, público e gravado pela amostra)
+        self.proc_and = processo_andamento or (lambda i: 1)
         self.n_and, self.repetir = andamentos, repetir_andamentos
         self.token_401, self.total_docs = token_401, total_docs
         self.chamadas: list[httpx.Request] = []
@@ -86,10 +88,12 @@ class Sei:
             if self.repetir:
                 st = 0
             ids = list(range(1, self.n_and + 1))[st:st + lim]
+            # formato do andamentosCompletoResponse (OpenAPI): sem campo de nível de acesso
             return httpx.Response(200, json={"Andamentos": [
-                {"idAndamento": f"A{i}", "idProcesso": "1", "protocoloProcedimento": "99990.000001/2026-01",
+                {"idAndamento": f"A{i}", "idProcesso": f"9{self.proc_and(i):06d}",
+                 "protocoloProcedimento": f"99990.{self.proc_and(i):06d}/2026-01",
                  "idTarefa": "1", "descricao": "ZZTESTE texto livre", "dataHora": "01/10/2026 10:00",
-                 "usuarios": {"nome": "ZZTESTE USUARIO"}, "nivelAcesso": "0", "unidade": {"idUnidade": "1", "sigla": "ZZ"}}
+                 "usuarios": {"nome": "ZZTESTE USUARIO"}, "unidade": {"idUnidade": "1", "sigla": "ZZ"}}
                 for i in ids]})
         return httpx.Response(404, json={})
 
