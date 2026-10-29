@@ -111,11 +111,10 @@ class SqlServerConnector:
 
         from app.connectors.sqlserver.politicas import autoriza_base
         c = self.config
-        if c.database:
-            autoriza_base(c.database)  # PR-04 A2: nunca abre conexão em banco de descarte nem no Internet
+        banco = autoriza_base(c.database) if c.database else c.database  # A2/R1: canônico da lista
         # Coolify entrega variáveis como texto: porta e timeout sempre int
         return pymssql.connect(server=c.host, port=int(c.port), user=c.user, password=c.password,
-                               database=c.database, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
+                               database=banco, login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
                                autocommit=False)  # transação explícita: sempre ROLLBACK (sql_guard)
 
     def testar_conexao(self) -> dict[str, Any]:

@@ -377,10 +377,10 @@ class LeitorGE:
         # R2 do #49: os dois bancos (escolar e pessoas, este via cross-database) passam pela lista permitida ANTES
         # de importar o driver ou abrir conexão.
         from app.connectors.sqlserver.politicas import autoriza_base
-        autoriza_base(c.banco_escolar)
-        autoriza_base(c.banco_pessoas)
+        escolar, pessoas = autoriza_base(c.banco_escolar), autoriza_base(c.banco_pessoas)
+        self.consultas = ConsultasGE(escolar, pessoas)  # SQL cross-database só com os nomes canônicos da lista
         import pymssql  # import tardio: só com origem real
-        self._conn = conecta_guardado(pymssql.connect, c.banco_escolar, c.banco_pessoas, server=c.host,
+        self._conn = conecta_guardado(pymssql.connect, escolar, pessoas, server=c.host,
                                       port=int(c.port), user=c.user, password=c.password,
                                       login_timeout=int(c.timeout), timeout=int(c.consulta_timeout),
                                       autocommit=False)

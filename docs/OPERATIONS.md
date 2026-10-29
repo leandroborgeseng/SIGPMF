@@ -304,3 +304,9 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
   `desligada` (código `base_fora_da_lista`/`base_descartada`, log INFO, sem conexão, não conta como falha) até o banco
   entrar na lista por PR. Depois do login mínimo, `fn_my_permissions` recusa a base com `login_com_escrita` se o
   login tiver QUALQUER permissão efetiva de escrita.
+- Correção do TL (R1/R2): o nome do banco é comparado depois do NFKC (ligadura/largura total casam: `ﬁnanceiro` =
+  Financeiro) e a conexão usa SEMPRE o nome canônico da lista, nunca o valor bruto da configuração. Nas contagens,
+  bancos citados no SQL (`X.dbo.`, `[X].[dbo].`, `"X".dbo.`, `X..T`, `X.outro_schema.T`) também passam pela lista:
+  fora dela a consulta fica `desligada` sem conectar. OPENQUERY/OPENROWSET/OPENDATASOURCE e nomes de 4 partes:
+  sempre `falha` com `acesso_remoto_recusado`. Hoje ficam desligadas: Q5/Q-A5 (Central), Q9 (CadastroUnico),
+  Q10 (DBSENIOR) e Q6 (cita Simples_Nacional).

@@ -56,7 +56,8 @@ def normaliza_base(base) -> str:
 
 
 _BASES_NUNCA_NORM = frozenset(normaliza_base(b) for b in BASES_NUNCA)
-_BASES_PERMITIDAS_NORM = frozenset(normaliza_base(b) for b in BASES_PERMITIDAS)
+_CANONICO = {normaliza_base(b): b for b in BASES_PERMITIDAS}
+_BASES_PERMITIDAS_NORM = frozenset(_CANONICO)
 
 
 def _ambiente_teste() -> bool:
@@ -67,22 +68,24 @@ def _ambiente_teste() -> bool:
         return False
 
 
-def autoriza_base(base: str) -> None:
-    """A2 + R1 (#49): recusa banco de descarte/Internet (base_descartada), nome com decoração, caractere invisível
-    ou largura total (base_nome_invalido) e qualquer banco fora de BASES_PERMITIDAS (base_fora_da_lista).
-    Aceita só o nome limpo (sem diferença de caixa), opcionalmente entre um par de colchetes."""
+def autoriza_base(base: str) -> str:
+    """A2 + R1 (#49): recusa banco de descarte/Internet (base_descartada), nome com decoração ou caractere invisível
+    (base_nome_invalido) e qualquer banco fora de BASES_PERMITIDAS (base_fora_da_lista). A comparação é feita depois
+    do NFKC (ligadura e largura total viram a letra comum: "ﬁnanceiro" casa com Financeiro). Devolve SEMPRE o nome
+    canônico da lista: é ele que vai para a conexão/SQL, nunca o valor bruto da configuração."""
+    import unicodedata
     norm = normaliza_base(base)
     if norm in _BASES_NUNCA_NORM:
         raise BaseRecusada(f"Banco {base!r} fora do plano (descarte/sensível).", "base_descartada")
-    cru = str(base)
+    cru = unicodedata.normalize("NFKC", str(base))
     if cru.startswith("[") and cru.endswith("]"):
         cru = cru[1:-1]
     if not norm or cru.casefold() != norm:
         raise BaseRecusada(f"Nome de banco inválido: {base!r}.", "base_nome_invalido")
-    if norm in _BASES_PERMITIDAS_NORM:
-        return
+    if norm in _CANONICO:
+        return _CANONICO[norm]
     if norm.endswith(SUFIXO_BASE_TESTE) and _ambiente_teste():
-        return
+        return cru
     raise BaseRecusada(f"Banco {base!r} fora da lista permitida.", "base_fora_da_lista")
 
 

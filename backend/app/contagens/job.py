@@ -24,6 +24,7 @@ from app.connectors.sqlserver.politicas import BaseRecusada, autoriza_base
 from app.contagens import consultas as C
 from app.contagens.modelos import ContagemCpfRepetido, ContagemExecucao, ContagemResultado
 from app.core.audit import audita
+from app.core.bancos_citados import AcessoRemotoRecusado, bancos_citados
 from app.core.config import get_settings
 from app.core.permissoes_origem import permissoes_de_escrita
 from app.core.sql_guard import ComandoProibido, executa_somente_leitura, garante_somente_leitura
@@ -191,6 +192,13 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
         db.commit()
 
     def roda(consulta: str, base: str, sql: str, numericas, rotulos=()) -> list[dict] | None:
+        if base != "postgres":
+            try:
+                bancos_citados(sql)
+            except AcessoRemotoRecusado as exc:
+                log.warning("contagens: %s recusada (%s)", consulta, exc.codigo)
+                grava(consulta, base, sql, "falha", exc.codigo, None)
+                return None
         try:
             garante_somente_leitura(sql)
         except ComandoProibido:
@@ -205,8 +213,14 @@ def executar(db: Session, usuario: str | None, *, conectar: Callable[[str], Any]
                 grava(consulta, base, sql, "falha", "consulta_falhou", None)
                 return None
         else:
-            try:  # TL: consulta cujo banco está fora da lista fica DESLIGADA (pulada, sem conexão) até o banco entrar
-                autoriza_base(base)
+            try:  # TL: consulta cujo banco (ou banco citado no SQL, R2) está fora da lista fica DESLIGADA
+                autoriza_base(base)  # (pulada, sem conexão) até o banco entrar na lista
+                for citado in bancos_citados(sql):
+                    autoriza_base(citado)
+            except AcessoRemotoRecusado as exc:  # OPENQUERY/OPENROWSET/OPENDATASOURCE/4 partes: sempre recusa
+                log.warning("contagens: %s recusada (%s)", consulta, exc.codigo)
+                grava(consulta, base, sql, "falha", exc.codigo, None)
+                return None
             except BaseRecusada as exc:
                 log.info("contagens: %s desligada (%s)", consulta, exc.codigo)
                 hashes.append({"consulta": consulta, "base": base, "sql_hash": sql_hash(sql)})

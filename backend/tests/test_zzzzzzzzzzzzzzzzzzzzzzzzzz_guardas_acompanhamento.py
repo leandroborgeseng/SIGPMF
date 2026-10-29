@@ -32,7 +32,7 @@ def test_r1_permitidas_aceitas(nome):
     P.autoriza_base(nome)
 
 
-@pytest.mark.parametrize("nome", ["[ISS ]", '"ISS"', "ISS;", f"ISS{ZW}", "ＩＳＳ", "[[ISS]]", "ISS\u2060"])
+@pytest.mark.parametrize("nome", ["[ISS ]", '"ISS"', "ISS;", f"ISS{ZW}", "[[ISS]]", "ISS\u2060"])
 def test_r1_permitida_com_decoracao_recusada(nome):
     with pytest.raises(BaseRecusada) as e:
         P.autoriza_base(nome)
@@ -279,3 +279,92 @@ def test_51_conector_real_passa_por_conecta_guardado(monkeypatch):
         job._conector_sqlserver("Central")
     assert chamado == []
     assert job._conector_sqlserver("IPTU") == "c" and chamado[0]["database"] == "IPTU"
+
+
+# ---------- correção do TL: NFKC antes de comparar e nome canônico na conexão ----------
+@pytest.mark.parametrize("nome,canonico", [("\ufb01nanceiro", "Financeiro"), ("ＩＳＳ", "ISS"), ("iptu", "IPTU"),
+                                           ("[fra_coresso]", "FRA_CoreSSO"), ("api sil", "API SIL")])
+def test_tl_nfkc_aceita_e_devolve_canonico(nome, canonico):
+    assert P.autoriza_base(nome) == canonico
+
+
+def test_tl_conexao_usa_nome_canonico_nunca_o_bruto(monkeypatch):
+    from app.connectors.sqlserver.connector import ConfigSqlServer, SqlServerConnector
+    chamado = []
+    monkeypatch.setitem(sys.modules, "pymssql", types.SimpleNamespace(connect=lambda **k: chamado.append(k) or "c"))
+    SqlServerConnector(ConfigSqlServer("h", 1433, "\ufb01nanceiro", "u", "p", 5, 10))._conectar()
+    assert G.conecta_guardado(lambda **k: k, "ｉｓｓ")["database"] == "ISS"
+    assert chamado[0]["database"] == "Financeiro"
+
+
+def test_tl_leitor_ge_usa_canonico_na_conexao_e_no_sql(monkeypatch):
+    from app.connectors.gestaoescolar import consultas as cq
+    chamado = []
+    conn = types.SimpleNamespace(close=lambda: None)
+    monkeypatch.setitem(sys.modules, "pymssql", types.SimpleNamespace(connect=lambda **k: chamado.append(k) or conn))
+    with cq.LeitorGE(_cfg_ge("fra_gestaoescolar", "fra_coresso")) as lt:
+        assert lt.consultas.bancos == {"escolar": "[FRA_GestaoEscolar]", "pessoas": "[FRA_CoreSSO]"}
+    assert chamado[0]["database"] == "FRA_GestaoEscolar"
+
+
+# ---------- R2: bancos citados no SQL ----------
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) total FROM Central.dbo.zz",
+    "SELECT COUNT(*) total FROM [Central].[dbo].[zz]",
+    'SELECT COUNT(*) total FROM "Central".dbo.zz',
+    "SELECT COUNT(*) total FROM Central..zz",
+    "SELECT COUNT(*) total FROM Central.outro_schema.zz",
+    "SELECT COUNT(*) total FROM dbo.zz a JOIN Central . dbo . yy b ON a.id = b.id",
+])
+def test_r2_formas_de_citar_outro_banco(sql):
+    from app.core.bancos_citados import bancos_citados
+    assert bancos_citados(sql) == ["Central"]
+
+
+def test_r2_sem_falso_positivo():
+    from app.core.bancos_citados import bancos_citados
+    assert bancos_citados("SELECT a.b, 1.5 x FROM dbo.zz a WHERE a.c = 'Senhas.dbo.T'") == []
+
+
+@pytest.mark.parametrize("sql", ["SELECT * FROM OPENQUERY(srv, 'SELECT 1')",
+                                 "SELECT * FROM openrowset('SQLNCLI', 'x', 'SELECT 1')",
+                                 "SELECT * FROM OPENDATASOURCE('SQLNCLI', 'x').IPTU.dbo.T",
+                                 "SELECT COUNT(*) total FROM srv.IPTU.dbo.zz"])
+def test_r2_acesso_remoto_sempre_recusado(sql):
+    from app.core.bancos_citados import AcessoRemotoRecusado, bancos_citados
+    with pytest.raises(AcessoRemotoRecusado):
+        bancos_citados(sql)
+
+
+@pytest.mark.parametrize("sql", ["SELECT COUNT(*) total FROM Central.dbo.zz",
+                                 "SELECT COUNT(*) total FROM [Senhas].[dbo].[zz]",
+                                 'SELECT COUNT(*) total FROM "Central".dbo.zz',
+                                 "SELECT COUNT(*) total FROM Central..zz",
+                                 "SELECT COUNT(*) total FROM Central.outro_schema.zz"])
+def test_r2_contagem_com_banco_citado_fora_fica_desligada_sem_conectar(db, monkeypatch, sql):
+    from app.contagens.consultas import Consulta
+    qs = (Consulta("ZZ-CIT", "zz_contagens_test", sql, ("total",), ()),)
+    job, conectar, abertas, _ = _contagens_cenario(monkeypatch, qs)
+    ex = job.executar(db, None, conectar=conectar)
+    st, cod = _resultados(db, ex.id)["ZZ-CIT"]
+    assert st == "desligada" and cod in ("base_fora_da_lista", "base_descartada")
+    assert abertas == []
+
+
+@pytest.mark.parametrize("sql", ["SELECT * FROM OPENQUERY(srv, 'SELECT 1')",
+                                 "SELECT COUNT(*) total FROM srv.IPTU.dbo.zz"])
+def test_r2_contagem_com_acesso_remoto_recusada_sem_conectar(db, monkeypatch, sql):
+    from app.contagens.consultas import Consulta
+    qs = (Consulta("ZZ-REM", "zz_contagens_test", sql, ("total",), ()),)
+    job, conectar, abertas, _ = _contagens_cenario(monkeypatch, qs)
+    ex = job.executar(db, None, conectar=conectar)
+    assert _resultados(db, ex.id)["ZZ-REM"] == ("falha", "acesso_remoto_recusado")
+    assert abertas == []
+
+
+def test_r2_contagem_com_banco_citado_permitido_roda(db, monkeypatch):
+    from app.contagens.consultas import Consulta
+    qs = (Consulta("ZZ-OK", "zz_contagens_test", "SELECT COUNT(*) total FROM Correios.dbo.zz", ("total",), ()),)
+    job, conectar, abertas, _ = _contagens_cenario(monkeypatch, qs)
+    ex = job.executar(db, None, conectar=conectar)
+    assert _resultados(db, ex.id)["ZZ-OK"] == ("ok", None) and abertas == ["zz_contagens_test"]

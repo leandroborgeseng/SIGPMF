@@ -12,7 +12,8 @@ from app.connectors.sqlserver.politicas import autoriza_base
 
 
 def conecta_guardado(conectar: Callable[..., Any], base: str, *outras_bases: str, **kwargs) -> Any:
-    """Autoriza `base` (e bancos citados em consultas cross-database) e só então chama `conectar(database=base, ...)`."""
-    for b in (base, *outras_bases):
+    """Autoriza `base` (e bancos citados em consultas cross-database) e só então chama `conectar(database=<canônico>)`."""
+    canonico = autoriza_base(base)
+    for b in outras_bases:
         autoriza_base(b)
-    return conectar(database=base, **kwargs)
+    return conectar(database=canonico, **kwargs)  # sempre o nome canônico da lista, nunca o valor bruto
