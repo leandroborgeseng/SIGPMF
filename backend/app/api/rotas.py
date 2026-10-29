@@ -988,20 +988,24 @@ def _menor(nasc, hoje=None) -> bool:
 
 def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
     """GE4: aluno menor sai com nome, CPF, endereço e responsáveis mascarados, salvo `revela` (admin_lgpd + motivo).
-    GE9: só a matrícula com situação 1 aparece como atual; as demais (inclusive situação 3) ficam no histórico."""
+    GE9: situação 1 = ativo; situação 3 = exclusão lógica, fora da ficha (aluno e matrícula); qualquer outra
+    situação = inativo, visível como histórico e marcado `inativo`. Só a matrícula com situação 1 é a atual."""
     from app.identity.nome import mascara_nome, mascara_texto
     from app.models.camadas import EscolaAluno, EscolaMatricula, EscolaResponsavel
     out = []
-    for a in db.scalars(select(EscolaAluno).where(EscolaAluno.cidadao_id == cid, EscolaAluno.status_vinculo == "vinculado")
+    for a in db.scalars(select(EscolaAluno).where(EscolaAluno.cidadao_id == cid, EscolaAluno.status_vinculo == "vinculado",
+                                                  EscolaAluno.excluido.is_(False))
                         .order_by(EscolaAluno.alu_id)):
         claro = revela or not _menor(a.data_nascimento)
-        mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == a.alu_id)
+        mats = list(db.scalars(select(EscolaMatricula).where(EscolaMatricula.alu_id == a.alu_id,
+                                                             EscolaMatricula.excluida.is_(False))
                                .order_by(EscolaMatricula.mtu_id.desc())))
         resps = list(db.scalars(select(EscolaResponsavel).where(EscolaResponsavel.alu_id == a.alu_id,
                                                                 EscolaResponsavel.excluido.is_(False))
                                 .order_by(EscolaResponsavel.alr_id)))
-        m = lambda x: {"escola": x.escola, "escola_inep": x.escola_inep, "turma": x.turma, "situacao": x.situacao,  # noqa: E731
-                       "excluida": x.excluida, "data_alteracao": x.data_alteracao}
+        m = lambda x: {"escola": x.escola, "escola_inep": x.escola_inep, "unidade": x.unidade,  # noqa: E731
+                       "unidade_excluida": bool(x.unidade_excluida), "turma": x.turma, "situacao": x.situacao,
+                       "inativa": not x.atual, "excluida": x.excluida, "data_alteracao": x.data_alteracao}
         out.append({
             "menor": _menor(a.data_nascimento), "mascarado": not claro,
             "nome": a.nome if claro else mascara_nome(a.nome),
@@ -1011,7 +1015,8 @@ def _educacao(db: Session, cid: str, *, revela: bool) -> list[dict]:
                          "bairro": mascara_texto(a.bairro, claro), "cep": mascara_texto(a.cep, claro)},
             "responsaveis": [{"tipo": r.tipo, "nome": r.nome if claro else mascara_nome(r.nome),
                               "cpf": r.cpf if revela else mascara(r.cpf), "principal": r.principal} for r in resps],
-            "excluido": a.excluido,
+            "excluido": a.excluido, "situacao": a.situacao,
+            "inativo": a.situacao != 1,
             "matricula_atual": next((m(x) for x in mats if x.atual), None),
             "historico": [m(x) for x in mats],
         })
@@ -1035,6 +1040,9 @@ def educacao_revelar(cid: str, req: Request, dados: RevelarIn | None = None, u: 
         raise HTTPException(403, "Só o perfil admin_lgpd revela dados de aluno")
     motivo = (dados.motivo or "").strip() if dados else ""
     if len(motivo) < get_settings().revelar_motivo_min:
+        # B2: tentativa sem motivo também fica na auditoria (sem PII: nem o motivo digitado)
+        audita(db, u.email, "revelar_educacao_negado", f"cidadao:{cid}",
+               {"perfil": u.perfil, "razao": "motivo_invalido"}, _ip(req))
         raise HTTPException(400, "Informe o motivo para revelar os dados do aluno.")
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     alunos = _educacao(db, cid, revela=True)

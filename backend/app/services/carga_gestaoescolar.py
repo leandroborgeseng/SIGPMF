@@ -128,7 +128,7 @@ def completa(db: Session, leitor, cfg: ConfigGE, usuario: str | None = None, ago
                 c.concluida, c.ultima_chave, c.posicao = False, None, 0
             ex.status = "sucesso"
             ex.mensagem = (f"Ciclo completo: {r['alunos']} alunos ({r['vinculados']} vinculados, {r['revisao']} em revisão, "
-                           f"{r['quarentena']} em quarentena, {r['inativos']} inativos), {r['matriculas']} matrículas.")
+                           f"{r['quarentena']} em quarentena, {r['excluidos']} excluídos, {r['inativos']} inativos), {r['matriculas']} matrículas.")
             ex.pendentes = r["revisao"] + r["quarentena"]
         else:
             ex.status = "parcial"

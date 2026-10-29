@@ -104,7 +104,8 @@ FONTES: tuple[Fonte, ...] = (
           _c("t", "tur_id", "esc_id", "uni_id", "tur_codigo", "tur_situacao", "tur_dataAlteracao"), ("tur_id",),
           campo_data="tur_dataAlteracao"),
     Fonte("ESC_UnidadeEscola", ESCOLAR, "escolar", "ESC_UnidadeEscola", "u",
-          _c("u", "esc_id", "uni_id"), ("esc_id", "uni_id")),
+          _c("u", "esc_id", "uni_id", "uni_descricao", "uni_situacao", "uni_dataAlteracao"), ("esc_id", "uni_id"),
+          campo_data="uni_dataAlteracao"),
     Fonte("ESC_Escola", ESCOLAR, "escolar", "ESC_Escola", "e",
           _c("e", "esc_id", "esc_nome", "esc_codigo", "esc_codigoInep", "esc_situacao", "esc_dataAlteracao"), ("esc_id",),
           campo_data="esc_dataAlteracao"),
@@ -167,6 +168,12 @@ def _col(expr: str) -> str:
     return f"{_ident(alias)}.{_ident(col)}"
 
 
+def usuario_base(user) -> str:
+    """Login sem domínio (B1): `DOMINIO\\sistema`, `sistema@dominio` e ` Sistema ` viram `sistema`."""
+    u = str(user or "").strip().lower().split("\\")[-1].strip()
+    return u.split("@")[0].strip()
+
+
 @dataclass(repr=False)
 class ConfigGE:
     host: str | None
@@ -200,7 +207,7 @@ class ConfigGE:
         """GE11: só a credencial própria do conector; o login `sistema` (da aplicação) é recusado."""
         if not self.configurado():
             raise PermissionError("Origem de educação não configurada (SIGPMF_SRC_GESTAOESCOLAR_USER/_PASSWORD).")
-        if str(self.user).strip().lower().split("\\")[-1] == "sistema":
+        if usuario_base(self.user) == "sistema":
             raise PermissionError("O usuário `sistema` não pode ser usado pelo conector de educação.")
         _ident(self.banco_escolar)
         _ident(self.banco_pessoas)
