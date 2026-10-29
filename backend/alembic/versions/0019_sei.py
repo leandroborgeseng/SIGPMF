@@ -16,4 +16,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE controle.execucoes DROP COLUMN IF EXISTS ambiente_origem")
+    """Sem efeito: a coluna ambiente_origem é mantida (não apagar dados de procedência)."""
+    pass

@@ -40,6 +40,17 @@ def _num(nome: str, padrao: float, minimo: float, maximo: float) -> float:
     return min(max(x, minimo), maximo)
 
 
+TETO_PAGINAS = 1  # decisão do TL: travado em 1 até o Leandro validar a amostra oficial
+_log_cfg = __import__("logging").getLogger(__name__)
+
+
+def _teto_paginas(v: int) -> int:
+    if v > TETO_PAGINAS:
+        _log_cfg.warning("SIGPMF_SRC_SEI_MAX_PAGINAS_POR_EXECUCAO=%s acima do teto; usando %s", v, TETO_PAGINAS)
+        return TETO_PAGINAS
+    return v
+
+
 @dataclass(repr=False)
 class ConfigSei:
     ambiente: str                         # "oficial" ou "homologacao" (ambiente_origem)
@@ -71,7 +82,7 @@ class ConfigSei:
                    id_unidade=_env("ID_UNIDADE"), regional=_env("REGIONAL"),
                    timeout_s=_num("TIMEOUT_S", 15, 1, 120), tentativas=int(_num("TENTATIVAS", 2, 0, 5)),
                    limite_amostra=int(_num("LIMITE_AMOSTRA", 50, 1, 50)),
-                   max_paginas=int(_num("MAX_PAGINAS_POR_EXECUCAO", 1, 1, 10000)),
+                   max_paginas=_teto_paginas(int(_num("MAX_PAGINAS_POR_EXECUCAO", 1, 1, 10000))),
                    carga_liberada=_verdade("CARGA_LIBERADA"))
 
     def pendencias(self) -> list[str]:

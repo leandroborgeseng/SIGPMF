@@ -179,6 +179,8 @@ def test_sei4_pagina_repetida_para_parcial(monkeypatch):
 
 def _prepara_incremental(monkeypatch, db, **api_kw):
     sm.env_oficial(monkeypatch, CARGA_LIBERADA="true", MAX_PAGINAS_POR_EXECUCAO="5")
+    from app.connectors.sei import config as cfg_sei
+    monkeypatch.setattr(cfg_sei, "TETO_PAGINAS", 5)  # mecânica da paginação; o teto real (1) tem teste próprio
     assert carga.executar_amostra(db, "zz@aion.local", transport=sm.Sei().transport()).status == "sucesso"
     monkeypatch.setattr(carga, "dentro_da_janela", lambda agora: (True, "00:00-06:00"))
     for ck in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == "SEI")):

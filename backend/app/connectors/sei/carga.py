@@ -126,7 +126,9 @@ def executar_amostra(db: Session, usuario: str, config: ConfigSei | None = None,
 
 
 def amostra_ok(db: Session) -> bool:
-    ult = db.scalar(select(Execucao).where(Execucao.tipo == TIPO_AMOSTRA).order_by(Execucao.id.desc()).limit(1))
+    """Só conta amostra feita no ambiente oficial (homologação não libera carga oficial)."""
+    ult = db.scalar(select(Execucao).where(Execucao.tipo == TIPO_AMOSTRA, Execucao.ambiente_origem == "oficial")
+                    .order_by(Execucao.id.desc()).limit(1))
     return bool(ult and ult.status == "sucesso" and (ult.lidos or 0) > 0)
 
 
@@ -170,7 +172,8 @@ def executar_incremental(db: Session, usuario: str, agora: datetime | None = Non
         with ClienteSei(cfg, transport=transport, **kw) as cli:
             r = paginar(cli, "andamentos", "Andamentos", lambda a: pj._t(a.get("idAndamento")), LIMITE_PAGINA,
                         cfg.max_paginas, params={"dataInicio": _br(ini), "dataFim": _br(fim)})
-        regs = [pj.projeta_andamento(a, cfg.ambiente) for a in r["itens"]]
+        proj = [pj.projeta_andamento(a, cfg.ambiente) for a in r["itens"]]
+        regs = [x for x in proj if x is not None]
         b = _grava(db, TAB_ANDAMENTOS, "id_andamento", regs, ex)
         ex.lidos, ex.lotes = len(r["itens"]), r["paginas"]
         ex.novos, ex.atualizados, ex.ignorados = b["novos"], b["atualizados"], b["ignorados"]
@@ -183,7 +186,8 @@ def executar_incremental(db: Session, usuario: str, agora: datetime | None = Non
             ck.posicao = (ck.posicao or 0) + len(regs)
             ck.atualizado_em = datetime.now(UTC)
         cont = {"andamentos_lidos": len(regs), "paginas": r["paginas"], "fim": r["fim"], "parcial": r["parcial"],
-                "checkpoint_avancou": avancou}
+                "checkpoint_avancou": avancou,
+                "andamentos_nao_gravados_sigilo": len(proj) - len(regs)}
         if r["alerta"]:
             cont["alerta"] = r["alerta"]["motivo"]
         return _fecha(db, ex, "parcial" if r["parcial"] else "sucesso", cont, usuario, "sei_incremental")

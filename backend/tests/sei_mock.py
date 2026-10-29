@@ -88,7 +88,7 @@ class Sei:
             return httpx.Response(200, json={"Andamentos": [
                 {"idAndamento": f"A{i}", "idProcesso": "1", "protocoloProcedimento": "99990.000001/2026-01",
                  "idTarefa": "1", "descricao": "ZZTESTE texto livre", "dataHora": "01/10/2026 10:00",
-                 "usuarios": {"nome": "ZZTESTE USUARIO"}, "unidade": {"idUnidade": "1", "sigla": "ZZ"}}
+                 "usuarios": {"nome": "ZZTESTE USUARIO"}, "nivelAcesso": "0", "unidade": {"idUnidade": "1", "sigla": "ZZ"}}
                 for i in ids]})
         return httpx.Response(404, json={})
 

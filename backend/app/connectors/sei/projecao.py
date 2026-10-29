@@ -68,7 +68,7 @@ def projeta_processo(det: dict, ambiente: str) -> dict:
 
 def projeta_documento(d: dict, protocolo: str | None, ambiente: str) -> dict | None:
     nv = nivel(d, "nivelAcesso", "nivelAcessoLocal", "nivelAcessoGlobal")
-    if nv is not None and nv != PUBLICO:
+    if nv != PUBLICO:  # sem nível = sigiloso: não grava
         return None
     return {"id_documento": _t(d.get("idDocumento")), "tipo": _t(d.get("tipo")), "id_serie": _t(d.get("idSerie")),
             "id_procedimento": _t(d.get("idProcedimento")),
@@ -76,7 +76,10 @@ def projeta_documento(d: dict, protocolo: str | None, ambiente: str) -> dict | N
             "unidade": _unidade(d.get("Unidade")), "nivel_acesso": nv, "ambiente_origem": ambiente}
 
 
-def projeta_andamento(a: dict, ambiente: str) -> dict:
+def projeta_andamento(a: dict, ambiente: str) -> dict | None:
+    """Andamento de processo sigiloso, restrito ou sem nível de acesso não é gravado (revela existência)."""
+    if nivel(a, "nivelAcesso", "nivelAcessoLocal", "nivelAcessoGlobal") != PUBLICO:
+        return None
     return {"id_andamento": _t(a.get("idAndamento")), "id_processo": _t(a.get("idProcesso")),
             "protocolo": _t(a.get("protocoloProcedimento")), "id_tarefa": _t(a.get("idTarefa")),
             "data_hora": _t(a.get("dataHora")), "unidade": _unidade(a.get("unidade")), "ambiente_origem": ambiente}

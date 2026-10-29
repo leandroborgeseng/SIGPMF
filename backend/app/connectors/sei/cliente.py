@@ -33,6 +33,13 @@ _PROTOCOLO = re.compile(r"^[0-9][0-9./\-]{3,40}$")
 _SO_DIGITOS_11 = re.compile(r"^\d{11}$")
 
 
+def _vira_cpf(v: str) -> bool:
+    """Recusa protocolo que, só com dígitos, forma um CPF válido (ex.: 123.456.789-09)."""
+    from app.identity.cpf import valido
+    dig = re.sub(r"\D", "", v)
+    return len(dig) == 11 and valido(dig)
+
+
 @dataclass(frozen=True)
 class Rota:
     nome: str
@@ -113,7 +120,7 @@ def checa_operacao(metodo: str, servico: str, caminho: str) -> Rota:
         ok = True
         for m, s, d in zip(modelo, segs, dec, strict=True):
             if m == "{protocolo}":
-                if "/" in s or d.lower() in _NAO_PROTOCOLO or not _PROTOCOLO.match(d) or _SO_DIGITOS_11.match(d):
+                if "/" in s or d.lower() in _NAO_PROTOCOLO or not _PROTOCOLO.match(d) or _SO_DIGITOS_11.match(d) or _vira_cpf(d):
                     ok = False
             elif m != s:
                 ok = False
