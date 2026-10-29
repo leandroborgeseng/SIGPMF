@@ -148,7 +148,10 @@ def test_in2_marca_dagua_aplica_a_margem(db, origem, monkeypatch):  # noqa: F811
 
 # ---------------------------------------------------------------- IN3: agenda escolhe o modo
 
-def test_in3_modo_da_vez():
+def test_in3_modo_da_vez(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setenv("AGENDA_COMPLETA_DIAS", "7")  # comportamento antigo, ainda configurável
+    get_settings.cache_clear()
     a = Agendamento(conector="saude", horario="01:00", ativo=True, ultima_completa_em=None)
     agora = datetime(2026, 10, 28, 5, tzinfo=UTC)
     assert ag.modo_da_vez(a, agora) == "completa"
@@ -156,9 +159,34 @@ def test_in3_modo_da_vez():
     assert ag.modo_da_vez(a, agora) == "incremental"
     a.ultima_completa_em = agora - timedelta(days=7)
     assert ag.modo_da_vez(a, agora) == "completa"
+    get_settings.cache_clear()
 
 
-def test_in3_agenda_faz_completa_e_depois_incremental(db, origem):  # noqa: F811
+def test_in6_agenda_padrao_primeira_vez_ja_e_incremental(db, origem, monkeypatch):  # noqa: F811
+    """AGENDA_COMPLETA_DIAS=0 (padrão): nem a primeira execução agendada é completa. Sem marca d'água, as tabelas são
+    lidas inteiras uma vez."""
+    from app.core.config import get_settings
+    monkeypatch.delenv("AGENDA_COMPLETA_DIAS", raising=False)
+    get_settings.cache_clear()
+    _amostras(db)
+    _zera_agenda(db)
+    db.execute(update(Agendamento).values(ultima_completa_em=None))
+    db.execute(update(Agendamento).where(Agendamento.conector == "cemiterio").values(ativo=False))
+    db.commit()
+    ag.ciclo(db, agora=_local(2026, 10, 28, 5, 0), leitores=_leitores(origem), esperar=_esperar)
+    s = db.scalar(select(Agendamento).where(Agendamento.conector == "saude"))
+    db.refresh(s)
+    ex1 = db.get(Execucao, s.ultima_execucao_id)
+    assert ex1.modo == "incremental" and s.ultima_completa_em is None, s.ultima_mensagem
+    assert (ex1.lidos or 0) > 0
+    _zera_agenda(db, ativo=False)
+    get_settings.cache_clear()
+
+
+def test_in3_agenda_faz_completa_e_depois_incremental(db, origem, monkeypatch):  # noqa: F811
+    from app.core.config import get_settings
+    monkeypatch.setenv("AGENDA_COMPLETA_DIAS", "7")  # modo antigo (completa periódica), ainda configurável
+    get_settings.cache_clear()
     _amostras(db)
     _zera_agenda(db)
     db.execute(update(Agendamento).values(ultima_completa_em=None))
@@ -179,4 +207,5 @@ def test_in3_agenda_faz_completa_e_depois_incremental(db, origem):  # noqa: F811
     item = next(i for i in ag.estado(db, agora=_local(2026, 10, 29, 6, 0))["itens"] if i["conector"] == "saude")
     assert item["proximo_modo"] == "incremental" and item["ultima_execucao"]["modo"] == "incremental"
     _zera_agenda(db, ativo=False)
+    get_settings.cache_clear()
     _ = cc  # conector importado para a fixture

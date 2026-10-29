@@ -150,8 +150,9 @@ def cria_tabela(sid: int, dados: TabelaIn, req: Request, u: Usuario = Depends(AD
         try:
             pol.autoriza(dados.nome)
         except TabelaRecusada as exc:
-            audita(db, u.email, "tabela_recusada", f"{s.codigo}.{dados.nome}", {"motivo": str(exc)}, _ip(req))
-            raise HTTPException(422, str(exc)) from None
+            audita(db, u.email, "tabela_recusada", f"{s.codigo}.{dados.nome}", {"codigo": exc.codigo, "motivo": str(exc)},
+                   _ip(req))
+            raise HTTPException(422, {"codigo": exc.codigo, "mensagem": "Tabela recusada pela política de dados."}) from None
     t = TabelaCatalogo(sistema_id=sid, **dados.model_dump())
     db.add(t)
     try:
@@ -1128,16 +1129,17 @@ def gestaoescolar_marcar_falha(eid: int, req: Request, u: Usuario = Depends(usua
 
 @api.post("/educacao/conector/{modo}", dependencies=[Depends(ADMIN)])
 def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    """GE3/GE11: amostra (até 50 linhas por tabela) ou carga completa (janela noturna, teto de lotes, checkpoint)."""
+    """GE3/GE11: amostra (até 50 linhas por tabela), carga completa ou incremental (janela noturna, teto de lotes,
+    checkpoint). IN6: a completa só roda por aqui (ADMIN, auditada); a agenda roda a incremental."""
     from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
     from app.services import carga_gestaoescolar as cge
-    if modo not in ("amostra", "completa"):
+    if modo not in ("amostra", "completa", "incremental"):
         _404()
     cfg = ConfigGE.do_ambiente(get_settings())
     janela_ignorada = fora_da_janela = False
     try:
         cfg.valida()
-        if modo == "completa":
+        if modo in ("completa", "incremental"):
             if not cge.amostra_ok(db):
                 raise cge.CargaRecusada(cge.SEM_AMOSTRA, "sem_amostra")
             if cge.completa_em_andamento(db):
@@ -1150,13 +1152,18 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
         raise HTTPException(409, motivo) from None
     try:
         with LeitorGE(cfg) as leitor:
-            ex = cge.amostra(db, leitor, cfg, u.email) if modo == "amostra" else cge.completa(db, leitor, cfg, u.email)
+            if modo == "amostra":
+                ex = cge.amostra(db, leitor, cfg, u.email)
+            elif modo == "incremental":
+                ex = cge.incremental(db, leitor, cfg, u.email)
+            else:
+                ex = cge.completa(db, leitor, cfg, u.email)
     except cge.CargaRecusada as exc:  # corrida: trava/índice único (0025) recusou a segunda carga
         motivo = cge.mensagem_segura(exc)  # nunca str(exc): pode trazer usuário/senha
         audita(db, u.email, "gestaoescolar_negado", f"conector:gestaoescolar:{modo}", {"motivo": motivo}, _ip(req))
         raise HTTPException(409, motivo) from None
     detalhe = {"status": ex.status, "lidos": ex.lidos}
-    if modo == "completa":
+    if modo != "amostra":
         detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela
     audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", detalhe, _ip(req))
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}

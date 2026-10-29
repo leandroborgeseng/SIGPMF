@@ -95,7 +95,7 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
           <h2 id="t-agenda">Agenda das cargas</h2>
           <p className="sutil">Uma carga por vez, {d.dia_todo ? 'a qualquer hora' : `só entre ${janela}`}
             {d.pular_sem_mudanca ? ' · pula o conector quando a origem não mudou' : ''}
-            {d.completa_a_cada_dias ? ` · lê só o que mudou e faz uma carga completa a cada ${d.completa_a_cada_dias} dias` : ''}.</p>
+            {d.completa_a_cada_dias ? ` · lê só o que mudou e faz uma carga completa a cada ${d.completa_a_cada_dias} dias` : ' · lê só o que mudou; carga completa só manual, por administrador'}.</p>
         </div>
         <span className={`selo ${d.habilitada ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />
           {d.habilitada ? `Ligada · ${d.dia_todo ? 'dia todo' : janela}` : 'Desligada neste ambiente'}</span>

@@ -5,6 +5,7 @@ Fluxo (thread em segundo plano, só DEPOIS do /health da própria app responder 
 2. sem SHA do deploy -> `sem_sha_deploy`; marcador `concluida` para (fonte, SHA) -> pula (INFO, nada muda);
 3. agenda da educação ligada -> `agenda_ligada`; sem amostra com sucesso -> `sem_amostra`; fora da janela -> `fora_janela`;
 4. pega a MESMA trava da carga (advisory lock do sistema, carga_gestaoescolar._trava) -> ocupada = `trava_ocupada`;
+   já com a trava, relê o marcador: `concluida` por outra instância no mesmo SHA -> pula (`ja_executada`);
    carga completa em_andamento -> `em_andamento`;
 5. segurando a trava: prepara_releitura (auditoria `educacao_releitura_fonte`, usuário `sistema-deploy`) e lê só essa
    fonte; ao fechar o ciclo a carga reprocessa a prata da educação e o vínculo com o cidadão (ouro) — educacao.processa;
@@ -137,6 +138,13 @@ def executar(db: Session, fonte: str, sha: str, leitor_factory: Callable | None 
     if trava is None:
         return _recusa(db, "trava_ocupada", fonte, m)
     try:
+        # R2: confere o marcador DE NOVO já segurando a trava. Outra instância com o mesmo SHA pode ter concluído
+        # entre a 1ª conferência e a trava; sem isto a releitura rodaria duas vezes.
+        db.refresh(m)
+        if m.status == "concluida":
+            db.commit()
+            _log.info("[releitura_deploy:ja_executada] fonte %s concluída por outra instância neste SHA; nada a fazer", fonte)
+            return {"resultado": "ja_executada", "codigo": "ja_executada", "execucao_id": m.execucao_id}
         if cge.completa_em_andamento(db):
             return _recusa(db, "em_andamento", fonte, m)
         try:
@@ -175,11 +183,17 @@ def executar(db: Session, fonte: str, sha: str, leitor_factory: Callable | None 
     return {"resultado": "falha", "codigo": st, "execucao_id": ex.id if ex else None}
 
 
-def aguarda_saude(url: str = "http://127.0.0.1:8000/health", max_s: int | None = None, passo: float = 2.0) -> bool:
+def url_saude() -> str:
+    """R3: /health da própria app; a porta vem de SIGPMF_RELEITURA_SAUDE_PORTA (padrão 8000)."""
+    return f"http://127.0.0.1:{get_settings().releitura_saude_porta}/health"
+
+
+def aguarda_saude(url: str | None = None, max_s: int | None = None, passo: float = 2.0) -> bool:
+    url = url or url_saude()
     fim = time.monotonic() + (max_s or get_settings().releitura_saude_max_s)
     while time.monotonic() < fim:
         try:
-            with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 (URL local fixa)
+            with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 (URL local: 127.0.0.1 + porta inteira validada)
                 if r.status == 200:
                     return True
         except Exception:  # noqa: BLE001
