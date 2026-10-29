@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     revelar_cpf_segundos: int = Field(60, alias="REVELAR_CPF_SEGUNDOS", ge=5)
     docs_habilitado: bool = Field(False, alias="DOCS_HABILITADO")
     cpf_reveal_perfis: str = Field("admin_lgpd", alias="CPF_REVEAL_PERFIS")
+    # N3a: números de preenchimento de CPF (vírgula). Dígitos todos iguais já são regra própria.
+    cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
