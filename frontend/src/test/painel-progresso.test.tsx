@@ -131,6 +131,25 @@ describe('painel de progresso por fonte (PP1–PP11)', () => {
     const card = await screen.findByRole('article', { name: 'Educação' })
     expect(within(card).getByText('Concluída com aviso')).toBeVisible()
     expect(within(card).getByText('Tabela vazia: PES_PessoaDocumento')).toBeVisible()
+    const selo = within(card).getByText('Concluída com aviso').closest('.selo')
+    expect(selo).toHaveClass('aviso-selo')
+    expect(selo).not.toHaveClass('sucesso')  // âmbar, distinto do verde de Concluída
+    expect(selo?.textContent).toContain('⚠')
+    // texto do alerta logo abaixo do selo, sem recolher (fora de <details>)
+    expect(within(card).getByText('Tabela vazia: PES_PessoaDocumento').closest('details')).toBeNull()
+  })
+
+  it('#42: na lista de tabelas, a tabela do alerta com 0 linhas aparece como "0 · vazia"', async () => {
+    mock([[200, resp([fonte({ status: 'concluida', status_texto: 'Concluída com aviso', progresso: null,
+      tabelas: [{ tabela: 'ZZTESTE_Notas', linhas_processadas: 4200, total_origem: null, estado: 'concluida' },
+        { tabela: 'PES_PessoaDocumento', linhas_processadas: 0, total_origem: null, estado: 'concluida' },
+        { tabela: 'ZZTESTE_Outra', linhas_processadas: 0, total_origem: null, estado: 'na_fila' }],
+      ultima_execucao: { execucao_id: 9, finalizado_em: null, lidas: 4200, gravadas: 4200, lotes: 5, modo: 'Carga completa',
+        alerta: { codigo: 'tabela_vazia', tabelas: ['PES_PessoaDocumento'] } } })], false)]])
+    render(<PainelProgresso />)
+    const card = await screen.findByRole('article', { name: 'Educação' })
+    expect(within(card).getByText('Linhas processadas: 0 · vazia')).toBeInTheDocument()
+    expect(within(card).getAllByText('Linhas processadas: 0')).toHaveLength(1)  // a outra tabela com 0 não é do alerta
   })
 
   it('#42 opcional: API sem o campo alerta (main antiga) e status_texto antigo continuam funcionando', async () => {

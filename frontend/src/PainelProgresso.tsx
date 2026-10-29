@@ -85,7 +85,8 @@ function Card({ f }: { f: FonteProgresso }) {
           <ul className="pp-tabelas">
             {f.tabelas.map((t) => (
               <li key={t.tabela}><span className="pp-nome">{t.tabela}</span>
-                <span>Linhas processadas: {t.linhas_processadas === 0 ? '0' : n(t.linhas_processadas)}</span>
+                <span>Linhas processadas: {t.linhas_processadas === 0
+                  ? (alerta?.tabelas?.includes(t.tabela) ? '0 · vazia' : '0') : n(t.linhas_processadas)}</span>
                 <span>{ESTADO_TAB[t.estado]}</span></li>
             ))}
           </ul>
