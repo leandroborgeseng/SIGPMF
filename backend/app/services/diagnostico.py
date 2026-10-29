@@ -100,6 +100,9 @@ def categoria(exc: BaseException) -> dict:
 def motivo(classe: str | None, numero: int | None, tabela: str | None, objeto: str | None) -> str:
     """Texto curto em pt-BR para o card."""
     em = f" (tabela {tabela})" if tabela else ""
+    if classe == "sem_tipo_documento":
+        from app.connectors.gestaoescolar.consultas import MSG_SEM_TIPO_DOCUMENTO
+        return MSG_SEM_TIPO_DOCUMENTO
     if numero == 207:
         return f"Coluna inexistente na origem: {objeto or '?'}{em}. Ajustar a lista de colunas da política."
     if numero == 208:

@@ -25,6 +25,17 @@ def cpf_sintetico(n: int) -> str:
     return base + digitos_verificadores(base)
 
 
+# Catálogo sintético de tipos (como SYS_TipoDocumentacao): 1 CPF e 4 NIS aceitos; 2 RG fora.
+CATALOGO_ZZ = [{"tdo_id": 1, "tdo_classificacao": 1, "tdo_sigla": "CPF", "tdo_validacao": 1},
+               {"tdo_id": 2, "tdo_classificacao": 2, "tdo_sigla": "RG", "tdo_validacao": 2},
+               {"tdo_id": 4, "tdo_classificacao": 4, "tdo_sigla": "NIS", "tdo_validacao": 2}]
+IDS_ZZ = (1, 4)
+
+
+def _ids(f):
+    return IDS_ZZ if f.tipos_documento else None
+
+
 def pid(n: int) -> str:
     return str(uuid.UUID(int=0x2222_0000_0000_0000_0000_0000_0000_0000 + n))
 
@@ -56,11 +67,11 @@ def origem() -> dict[str, list[dict]]:
     ]
     docs = [
         {"pes_id": pid(1), "tdo_id": 1, "psd_numero": cpf_sintetico(1), "psd_situacao": 1,
-         "psd_dataAlteracao": "2026-10-01T10:00:00", "tdo_classificacao": 1},
+         "psd_dataAlteracao": "2026-10-01T10:00:00"},
         {"pes_id": pid(2), "tdo_id": 4, "psd_numero": "99900000002", "psd_situacao": 1,
-         "psd_dataAlteracao": "2026-10-01T10:00:00", "tdo_classificacao": 4},
+         "psd_dataAlteracao": "2026-10-01T10:00:00"},
         {"pes_id": pid(11), "tdo_id": 1, "psd_numero": cpf_sintetico(11), "psd_situacao": 1,
-         "psd_dataAlteracao": "2026-10-01T10:00:00", "tdo_classificacao": 1},
+         "psd_dataAlteracao": "2026-10-01T10:00:00"},
     ]
     alunos = [{"alu_id": i, "pes_id": pid(i), "end_id": None, "alu_situacao": 3 if i == 4 else 1,
                "alu_dataAlteracao": "2026-10-01T10:00:00"} for i in (1, 2, 3, 4, 5)]
@@ -106,15 +117,21 @@ def origem() -> dict[str, list[dict]]:
 class LeitorMock:
     """Mesma interface do LeitorGE: monta o SQL real (e passa pelo guard), devolve a página por keyset em memória."""
 
-    def __init__(self, dados):
+    def __init__(self, dados, catalogo=None):
         self.dados = dados
         self.sqls: list[str] = []
+        self.params: list[tuple] = []
         self.q = cq.ConsultasGE()
+        self.catalogo = CATALOGO_ZZ if catalogo is None else catalogo
 
     def ler(self, fonte, ultima, limite):
-        sql, _params = self.q.pagina(fonte, limite, ultima)
+        ids, mapa = cq.mapa_tipos(self.catalogo) if fonte.tipos_documento else (None, None)
+        sql, params = self.q.pagina(fonte, limite, ultima, tdo_ids=ids)
         self.sqls.append(garante_somente_leitura(sql))
+        self.params.append(params)
         linhas = sorted(self.dados.get(fonte.nome, []), key=lambda r: tuple(r[k] for k in fonte.chave))
+        if mapa is not None:  # mesmo efeito do `d.tdo_id IN (...)` + anota_classe do LeitorGE
+            linhas = cq.anota_classe([dict(r) for r in linhas if cq.chave_tipo(r["tdo_id"]) in mapa], mapa)
         if ultima is not None:
             linhas = [r for r in linhas if tuple(r[k] for k in fonte.chave) > tuple(ultima)]
         return [dict(r) for r in linhas[:limite]]
@@ -178,7 +195,7 @@ def test_ge10_nenhuma_tabela_ou_coluna_excluida_e_lida():
     for c in ("pes_racaCor", "pes_foto", "arq_idFoto", "rlg_id", "pin_id", "alu_rendaFamiliar", "alu_tratamentoSaude",
               "alr_programaSocial", "alu_tipoMobilidadeReduzida", "alr_rendaFamiliarMensal", "psd_infoComplementares"):
         assert cq.coluna_excluida(c), c
-    texto = " ".join(q.pagina(f, 10, None)[0] for f in cq.FONTES)
+    texto = " ".join(q.pagina(f, 10, None, tdo_ids=_ids(f))[0] for f in cq.FONTES)
     for t in proibidas_tab:
         assert t.lower() not in texto.lower()
     for c in cq.COLUNAS_EXCLUIDAS:
@@ -205,18 +222,23 @@ def test_ge10_fonte_com_coluna_ou_tabela_excluida_e_recusada():
 def test_ge11_select_nolock_top_keyset_e_guard():
     q = cq.ConsultasGE()
     for f in cq.FONTES:
-        sql, params = q.pagina(f, 7, None)
+        sql, params = q.pagina(f, 7, None, tdo_ids=_ids(f))
         assert sql.startswith("SELECT TOP (7) ") and "*" not in sql
         refs = len(re.findall(r"\]\.\[dbo\]\.\[", sql))
         assert sql.count("WITH (NOLOCK)") == refs >= 1, f.nome
         assert garante_somente_leitura(sql) == sql
-        assert params == ()
-        sql2, p2 = q.pagina(f, 7, tuple(1 for _ in f.chave))
-        assert "%s" in sql2 and len(p2) == len(f.chave) * (len(f.chave) + 1) // 2
+        assert params == (_ids(f) or ())
+        sql2, p2 = q.pagina(f, 7, tuple(1 for _ in f.chave), tdo_ids=_ids(f))
+        assert "%s" in sql2 and len(p2) == len(f.chave) * (len(f.chave) + 1) // 2 + len(_ids(f) or ())
     # CoreSSO só no escopo da escola, por junção direta entre os bancos (pes_id)
     sql = q.pagina("PES_Pessoa", 5)[0]
     assert "[FRA_GestaoEscolar].[dbo].[ACA_Aluno]" in sql and "[pes_idFiliacaoMae]" in sql
-    assert "IN (1, 3, 4)" in q.pagina("PES_PessoaDocumento", 5)[0]
+    # Documento: sem filtro de classificação no SQL (NULL cairia no IN); tdo_id aceitos só como parâmetros
+    sql, params = q.pagina("PES_PessoaDocumento", 5, tdo_ids=("zz-guid-a", "zz-guid-b"))
+    assert "[d].[tdo_id] IN (%s, %s)" in sql and params == ("zz-guid-a", "zz-guid-b")
+    assert "tdo_classificacao" not in sql and "zz-guid" not in sql and "SYS_TipoDocumentacao" not in sql
+    with pytest.raises(cq.TiposDocumentoAusentes):
+        q.pagina("PES_PessoaDocumento", 5)
 
 
 def test_ge11_credencial_so_do_ambiente_e_nunca_sistema(monkeypatch):
@@ -482,7 +504,7 @@ def test_ficha_ativo_inativo_e_excluido(limpo, client, tokens):
                                     "pes_dataNascimento": "2000-01-01", "pes_sexo": 1, "pes_idFiliacaoMae": None,
                                     "pes_idFiliacaoPai": None, "pes_situacao": 1, "pes_dataAlteracao": "2026-10-01T10:00:00"})
         dados["PES_PessoaDocumento"].append({"pes_id": pid(n), "tdo_id": 1, "psd_numero": cpf, "psd_situacao": 1,
-                                             "psd_dataAlteracao": "2026-10-01T10:00:00", "tdo_classificacao": 1})
+                                             "psd_dataAlteracao": "2026-10-01T10:00:00"})
         dados["ACA_Aluno"].append({"alu_id": n, "pes_id": pid(n), "end_id": None, "alu_situacao": 1,
                                    "alu_dataAlteracao": "2026-10-01T10:00:00"})
     lei = LeitorMock(dados)

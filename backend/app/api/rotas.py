@@ -105,7 +105,7 @@ def _exec(e: Execucao) -> dict:
     return {"id": e.id, "tipo": e.tipo, "status": e.status, "usuario": e.usuario, "iniciado_em": e.iniciado_em,
             "finalizado_em": e.finalizado_em, "lidos": e.lidos, "novos": e.novos, "atualizados": e.atualizados,
             "ignorados": e.ignorados, "lotes": e.lotes, "duplicados": e.duplicados, "pendentes": e.pendentes,
-            "mensagem": e.mensagem, "erro": e.erro_publico()}
+            "mensagem": e.mensagem, "erro": e.erro_publico(), "alerta": e.alerta_publico()}
 
 
 # ---------- Catálogo ----------

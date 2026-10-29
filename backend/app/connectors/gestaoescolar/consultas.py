@@ -77,6 +77,7 @@ class Fonte:
     escopo_pessoa: str = ""         # coluna alias.pes_id restrita ao escopo da escola
     campo_data: str | None = None
     tabelas_lidas: tuple[str, ...] = field(default=())
+    tipos_documento: bool = False   # filtra d.tdo_id pelos tipos aceitos do catálogo (parâmetros), ver mapa_tipos
 
     def todas_tabelas(self) -> tuple[str, ...]:
         return (self.tabela, *(j[1] for j in self.juncoes), *self.tabelas_lidas)
@@ -121,11 +122,13 @@ FONTES: tuple[Fonte, ...] = (
              "pes_idFiliacaoPai", "pes_situacao", "pes_dataAlteracao"), ("pes_id",),
           escopo_pessoa="p.pes_id", campo_data="pes_dataAlteracao"),
     # Documento alterado não muda pes_dataAlteracao: hash próprio por linha de documento.
+    # tdo_classificacao é opcional no CoreSSO (NULL em bases antigas): o filtro não fica mais na junção.
+    # O catálogo SYS_TipoDocumentacao (7 linhas) é lido antes; os tdo_id aceitos (mapa_tipos) entram como
+    # parâmetros em `d.tdo_id IN (...)` e a classe derivada vai na coluna `tdo_classe` de cada linha.
     Fonte("PES_PessoaDocumento", PESSOAS, "pessoas", "PES_PessoaDocumento", "d",
-          _c("d", "pes_id", "tdo_id", "psd_numero", "psd_situacao", "psd_dataAlteracao")
-          + (("td.tdo_classificacao", "tdo_classificacao"),), ("pes_id", "tdo_id"),
-          juncoes=(("pessoas", "SYS_TipoDocumentacao", "td", "td.[tdo_id] = d.[tdo_id]"),),
-          filtro="td.[tdo_classificacao] IN (1, 3, 4)", escopo_pessoa="d.pes_id", campo_data="psd_dataAlteracao"),
+          _c("d", "pes_id", "tdo_id", "psd_numero", "psd_situacao", "psd_dataAlteracao"), ("pes_id", "tdo_id"),
+          escopo_pessoa="d.pes_id", campo_data="psd_dataAlteracao", tabelas_lidas=("SYS_TipoDocumentacao",),
+          tipos_documento=True),
     Fonte("PES_CertidaoCivil", PESSOAS, "pessoas", "PES_CertidaoCivil", "cc",
           _c("cc", "pes_id", "ctc_id", "ctc_tipo", "ctc_modeloNovo", "ctc_matricula", "ctc_situacao", "ctc_dataAlteracao"),
           ("pes_id", "ctc_id"), filtro="cc.[ctc_tipo] = 1", escopo_pessoa="cc.pes_id", campo_data="ctc_dataAlteracao"),
@@ -137,6 +140,65 @@ FONTES: tuple[Fonte, ...] = (
           filtro="pe.[pse_enderecoPrincipal] = 1", escopo_pessoa="pe.pes_id", campo_data="pse_dataAlteracao"),
 )
 POR_NOME = {f.nome: f for f in FONTES}
+
+# ---- Tipos de documento (CPF / PIS / NIS) ----
+CLASSES_ACEITAS = (1, 3, 4)  # tdo_classificacao: 1 CPF, 3 PIS, 4 NIS (schema CoreSSO)
+# Plano B (decisão final do Tech Lead, 29/10/2026): fora de 1/3/4, a classificação é ignorada (na origem os 7 tipos
+# estão com 99) e decide a sigla (sem caixa, sem espaços nas pontas). Siglas na origem: CNPJ, CPF, RG, NIS, CIN, CNS e
+# uma vazia. Aceitas: CPF, NIS, PIS e PIS/PASEP. CNS (saúde, fora da v1), CIN, CNPJ, RG e sigla vazia ficam de fora.
+SIGLAS = {"CPF": 1, "PIS": 3, "PIS/PASEP": 3, "NIS": 4}
+SEM_TIPO_DOCUMENTO = "sem_tipo_documento"
+MSG_SEM_TIPO_DOCUMENTO = ("Nenhum tipo de documento CPF, PIS ou NIS foi encontrado no catálogo "
+                          "SYS_TipoDocumentacao da origem; a leitura de documentos foi interrompida.")
+
+
+class TiposDocumentoAusentes(RuntimeError):
+    """Catálogo sem nenhum tipo aceito: motivo fixo (`codigo`), nunca o texto da exceção."""
+    codigo = SEM_TIPO_DOCUMENTO
+
+    def __init__(self) -> None:
+        super().__init__(MSG_SEM_TIPO_DOCUMENTO)
+
+
+def _int_ou_none(v) -> int | None:
+    try:
+        return None if v is None else int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def classe_do_tipo(tipo: dict) -> int | None:
+    """Aceito se tdo_classificacao em (1, 3, 4) (plano A) OU se a sigla for CPF, NIS, PIS ou PIS/PASEP (plano B).
+    Qualquer outra classificação é ignorada; CNS, CIN, RG, CNH, CNPJ e sigla vazia ficam de fora."""
+    cl = _int_ou_none(tipo.get("tdo_classificacao"))
+    if cl in CLASSES_ACEITAS:
+        return cl
+    return SIGLAS.get(str(tipo.get("tdo_sigla") or "").strip().upper())
+
+
+def chave_tipo(tdo_id) -> str:
+    return str(tdo_id).strip().lower()
+
+
+def mapa_tipos(catalogo: list[dict]) -> tuple[tuple, dict[str, int]]:
+    """(tdo_id aceitos, no tipo original do driver, para os parâmetros; {tdo_id normalizado: classe}).
+    Nenhum aceito -> TiposDocumentoAusentes."""
+    ids, mapa = [], {}
+    for t in catalogo:
+        cl = classe_do_tipo(t)
+        if cl is not None and t.get("tdo_id") is not None:
+            ids.append(t["tdo_id"])
+            mapa[chave_tipo(t["tdo_id"])] = cl
+    if not ids:
+        raise TiposDocumentoAusentes()
+    return tuple(ids), mapa
+
+
+def anota_classe(linhas: list[dict], mapa: dict[str, int]) -> list[dict]:
+    """Grava a classe derivada (`tdo_classe`) em cada linha de documento lida."""
+    for r in linhas:
+        r["tdo_classe"] = mapa.get(chave_tipo(r.get("tdo_id")))
+    return linhas
 TABELAS_PERMITIDAS = frozenset(t for f in FONTES for t in f.todas_tabelas()) | {"ACA_Aluno", "ACA_AlunoResponsavel"}
 
 
@@ -234,7 +296,15 @@ class ConsultasGE:
                 f" OR EXISTS (SELECT 1 FROM {aluno} AS [xm] WITH (NOLOCK) JOIN {pes} AS [xp] WITH (NOLOCK)"
                 f" ON [xp].[pes_id] = [xm].[pes_id] WHERE [xp].[pes_idFiliacaoMae] = {c}))")
 
-    def pagina(self, fonte: Fonte | str, limite: int, ultima: tuple | None = None) -> tuple[str, tuple]:
+    def tipos_documento(self) -> str:
+        """Catálogo de tipos de documento (7 linhas na origem; sem dado pessoal)."""
+        t = self._tab("pessoas", "SYS_TipoDocumentacao")
+        return garante_somente_leitura(
+            f"SELECT [td].[tdo_id], [td].[tdo_classificacao], [td].[tdo_sigla], [td].[tdo_validacao]"
+            f" FROM {t} AS [td] WITH (NOLOCK)")
+
+    def pagina(self, fonte: Fonte | str, limite: int, ultima: tuple | None = None,
+               tdo_ids: tuple | None = None) -> tuple[str, tuple]:
         f = POR_NOME[fonte] if isinstance(fonte, str) else fonte
         if f.nome not in POR_NOME or POR_NOME[f.nome] != f:
             raise TabelaRecusada(f"Fonte {f.nome} fora da lista do conector de educação.")
@@ -252,6 +322,12 @@ class ConsultasGE:
             conds.append(f"({f.filtro})")
         if f.escopo_pessoa:
             conds.append(self.escopo(f.escopo_pessoa))
+        params = tuple(params or ())
+        if f.tipos_documento:  # só parâmetros (GUIDs do catálogo); nunca valor concatenado no SQL
+            if not tdo_ids:
+                raise TiposDocumentoAusentes()
+            conds.append(f"{_ident(f.alias)}.[tdo_id] IN ({', '.join(['%s'] * len(tdo_ids))})")
+            params += tuple(tdo_ids)
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY " + ", ".join(_col(e) for e in chave_expr)
@@ -266,6 +342,7 @@ class LeitorGE:
         self.config = config
         self.consultas = ConsultasGE(config.banco_escolar, config.banco_pessoas)
         self._conn = None
+        self._tipos: tuple[tuple, dict[str, int]] | None = None  # catálogo lido uma vez por conexão
 
     def __enter__(self):
         import pymssql  # import tardio: só com origem real
@@ -282,5 +359,11 @@ class LeitorGE:
 
     def ler(self, fonte: Fonte, ultima: tuple | None, limite: int) -> list[dict[str, Any]]:
         from app.core.sql_guard import executa_somente_leitura
-        sql, params = self.consultas.pagina(fonte, limite, ultima)
-        return executa_somente_leitura(self._conn, sql, params or None, limite=limite)
+        if not fonte.tipos_documento:
+            sql, params = self.consultas.pagina(fonte, limite, ultima)
+            return executa_somente_leitura(self._conn, sql, params or None, limite=limite)
+        if self._tipos is None:
+            self._tipos = mapa_tipos(executa_somente_leitura(self._conn, self.consultas.tipos_documento(), limite=1000))
+        ids, mapa = self._tipos
+        sql, params = self.consultas.pagina(fonte, limite, ultima, tdo_ids=ids)
+        return anota_classe(executa_somente_leitura(self._conn, sql, params or None, limite=limite), mapa)
