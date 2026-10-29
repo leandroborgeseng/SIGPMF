@@ -38,6 +38,8 @@ class RegistroBronze(Base):
     # CC9 (0009): linha guardada em quarentena (ex.: "chave_nula"); prata e ouro ignoram
     quarentena: Mapped[str | None] = mapped_column(String(40))
     quarentena_campos: Mapped[list | None] = mapped_column(JSONType)
+    # 0019: de qual ambiente da origem veio a linha (SIL: producao|sandbox). A prata da SIL só lê 'producao'.
+    ambiente_origem: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
 
 
 SV = {"schema": "silver"}

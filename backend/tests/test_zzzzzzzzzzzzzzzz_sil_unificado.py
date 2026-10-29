@@ -59,7 +59,8 @@ class Api:
 
 def _cfg(sandbox=True, secret=SECRET, max_lotes=1):
     return ConfigSil(f"https://{PROD}/v1", "zz-id", secret, "zz", base_url_sandbox=f"https://{SANDBOX}/v1" if sandbox
-                     else None, req_por_s=20.0, max_lotes_por_execucao=max_lotes)
+                     else None, req_por_s=20.0, max_lotes_por_execucao=max_lotes,
+                     usar_sandbox=sandbox)
 
 
 def _con(api, **kw):
@@ -98,10 +99,11 @@ def test_leitor_sem_queda_para_producao_em_resposta_http(status):
     assert {h[0] for h in api.hits} == {SANDBOX}
 
 
-def test_leitor_cai_para_producao_so_em_erro_de_rede():
+def test_leitor_sandbox_fora_da_rede_nao_cai_para_producao():
     api = Api(rede_sandbox=True)
-    rows = _con(api).ler_amostra("Empresas")
-    assert len(rows) == 50 and api.gets() and all(h[0] == PROD for h in api.gets())
+    with pytest.raises(ErroSil):
+        _con(api).ler_amostra("Empresas")
+    assert api.hits and {h[0] for h in api.hits} == {SANDBOX}
 
 
 @pytest.mark.parametrize("secret", [None, ""])
@@ -138,13 +140,14 @@ def test_teto_de_lotes_por_execucao_configuravel(monkeypatch):
     assert len(api.gets()) == 3
 
 
-def test_retentativa_loga_info_e_so_a_queda_e_warning(caplog):
-    """R1 (QA #23): cada tentativa em INFO; só o aviso de queda para a produção fica em WARNING."""
+def test_retentativa_loga_info_e_so_a_falha_de_rede_e_warning(caplog):
+    """R1 (QA #23): cada tentativa em INFO; a falha de rede vira 1 WARNING (sem queda para a produção)."""
     api = Api(rede_sandbox=True)
     with caplog.at_level(logging.DEBUG, logger="sigpmf.conector.sil"):
-        _con(api).ler_amostra("Empresas")
+        with pytest.raises(ErroSil):
+            _con(api).ler_amostra("Empresas")
     avisos = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert len(avisos) == 1 and "tentando o próximo" in avisos[0]
+    assert len(avisos) == 1 and "tentando o próximo" not in avisos[0]
     assert any("tentativa" in r.getMessage() and r.levelno == logging.INFO for r in caplog.records)
     tudo = caplog.text
     for proibido in ("zzunif.invalid", SECRET, "zz-id", "ZZTOKEN"):

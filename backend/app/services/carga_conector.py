@@ -39,6 +39,13 @@ def leitor_de(conector: str, cfg):
         from app.connectors.sil.conector import SilConnector
         return SilConnector(nome=conector)
     return SqlServerConnector(cfg, nome=conector)
+def base_sil_log() -> str:
+    """Base da SIL desta execução (TL 29/10), sem credencial: 'ambiente=producao host=...'."""
+    from app.connectors.sil.config import ConfigSil
+    c = ConfigSil.do_ambiente()
+    return f"ambiente={c.ambiente or '-'} host={c.host or '-'}"
+
+
 TIPO_AMOSTRA = "amostra_conector"
 TIPO_AMOSTRA_ISS = "carga_municipe_amostra"  # ISS usa a carga do Munícipe (#6) com a política ISS
 TIPOS_AMOSTRA = (TIPO_AMOSTRA, TIPO_AMOSTRA_ISS)
@@ -217,7 +224,8 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
                           atualizado_em=datetime.now(UTC))
             db.add(ex)
             db.commit()
-        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem="Origem do conector sil: API SIL (REST, só leitura)")
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem="Origem do conector sil: API SIL (REST, só leitura); "
+                   + base_sil_log())
                if conector in CONECTORES_API else
                Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
                    mensagem=f"Banco de origem do conector {conector}: {cfg.database or '-'} via {origem_banco}"))

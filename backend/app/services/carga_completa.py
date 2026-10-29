@@ -401,7 +401,14 @@ def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str, extra: dict
     db.commit()
     audita(db, ex.usuario, "carga_completa_finalizada", f"execucao:{ex.id}",
            {"resultado": status, "lidas": ex.lidos, "gravadas": ex.novos + ex.atualizados, "ignoradas": ex.ignorados,
-            "total_origem": ex.total_origem, **(extra or {})})
+            "total_origem": ex.total_origem, **_origem_sil(ex), **(extra or {})})
+
+
+def _origem_sil(ex: Execucao) -> dict:
+    if ex.sistema != "SIL":
+        return {}
+    from app.connectors.sil.config import ConfigSil
+    return ConfigSil.do_ambiente().origem_publica()
 
 
 def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
@@ -417,8 +424,14 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
                 db.commit()
                 _camadas(db, ex, conector, sistema, pode_pular=False)  # pedido explícito: sempre reconstrói
             elif ex.modo == "incremental":
+                if conector in cc.CONECTORES_API:
+                    db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Base da API SIL: {cc.base_sil_log()}"))
+                    db.commit()
                 _executa_incremental(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
             else:
+                if conector in cc.CONECTORES_API:  # TL 29/10: registra a base da SIL usada nesta execução
+                    db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Base da API SIL: {cc.base_sil_log()}"))
+                    db.commit()
                 _executa(db, ex, conector, sistema, leitor or leitor_padrao(conector, db))
         except Exception as exc:  # noqa: BLE001 - lotes já confirmados ficam; o checkpoint permite retomar
             db.rollback()

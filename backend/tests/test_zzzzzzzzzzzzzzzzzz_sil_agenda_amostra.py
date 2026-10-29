@@ -163,3 +163,188 @@ def test_carga_completa_com_api_ignorando_sequencia_fica_parcial_e_checkpoint_em
         assert [int(x.url.params["Sequencia"]) for x in api2.reqs][0] == 1
     finally:
         _zera_checkpoint_sil(db)
+
+
+# ---------------------------------------------------------------- TL 29/10: base oficial padrão, sandbox só explícito
+
+def _env_sil(monkeypatch, sandbox_flag=None):
+    from tests.test_zzzzzzzzzzzzzzzz_sil_unificado import PROD
+    monkeypatch.setenv("SIL_BASE_URL", f"https://{PROD}/v1")
+    monkeypatch.setenv("SIL_BASE_URL_SANDBOX", f"https://{SANDBOX}/v1")
+    monkeypatch.setenv("SIL_CLIENT_ID", "zz-id")
+    monkeypatch.setenv("SIL_CLIENT_SECRET", "zz-segredo-sintetico")
+    if sandbox_flag is None:
+        monkeypatch.delenv("SIL_USAR_SANDBOX", raising=False)
+    else:
+        monkeypatch.setenv("SIL_USAR_SANDBOX", sandbox_flag)
+
+
+def test_padrao_usa_a_oficial_mesmo_com_sandbox_configurado(monkeypatch):
+    from app.connectors.sil.config import ConfigSil
+    from tests.test_zzzzzzzzzzzzzzzz_sil_unificado import PROD
+    _env_sil(monkeypatch)
+    c = ConfigSil.do_ambiente()
+    assert c.bases() == [("producao", f"https://{PROD}/v1")] and c.ambiente == "producao" and c.host == PROD
+    api = Api()
+    from app.connectors.sil.conector import SilConnector
+    SilConnector(c, transporte=httpx.MockTransport(api), esperar=lambda s: None).ler_amostra("Empresas")
+    assert {h[0] for h in api.hits} == {PROD}                      # nunca toca a homologação
+
+
+@pytest.mark.parametrize("flag", ["false", "0", "", "nao"])
+def test_flag_desligada_nao_usa_sandbox(monkeypatch, flag):
+    from app.connectors.sil.config import ConfigSil
+    _env_sil(monkeypatch, flag)
+    assert ConfigSil.do_ambiente().ambiente == "producao"
+
+
+def test_sandbox_so_com_flag_explicita_e_sem_fallback(monkeypatch):
+    from app.connectors.sil.conector import ErroSil, SilConnector
+    from app.connectors.sil.config import ConfigSil
+    _env_sil(monkeypatch, "true")
+    c = ConfigSil.do_ambiente()
+    assert c.bases() == [("sandbox", f"https://{SANDBOX}/v1")]   # única base: a oficial não é tentada
+    api = Api(rede_sandbox=True)
+    with pytest.raises(ErroSil):
+        SilConnector(c, transporte=httpx.MockTransport(api), esperar=lambda s: None).ler_amostra("Empresas")
+    assert {h[0] for h in api.hits} == {SANDBOX}
+
+
+def test_oficial_fora_da_rede_nao_cai_para_sandbox():
+    from app.connectors.sil.conector import ErroSil
+    from tests.test_zzzzzzzzzzzzzzzz_sil_unificado import PROD
+
+    class ApiRedeProd(Api):
+        def __call__(self, req):
+            if req.url.host == PROD:
+                self.hits.append((req.url.host, req.method, req.url.path))
+                raise httpx.ConnectError("zz sem rede")
+            return super().__call__(req)
+    api = ApiRedeProd()
+    with pytest.raises(ErroSil):
+        _con(api, sandbox=False).ler_amostra("Empresas")
+    from app.connectors.sil.config import ConfigSil
+    con = ConfigSil(f"https://{PROD}/v1", "zz-id", "zz-s", "zz", base_url_sandbox=f"https://{SANDBOX}/v1")
+    from app.connectors.sil.conector import SilConnector
+    with pytest.raises(ErroSil):
+        SilConnector(con, transporte=httpx.MockTransport(api), esperar=lambda s: None).ler_amostra("Empresas")
+    assert {h[0] for h in api.hits} == {PROD}
+
+
+def test_execucao_registra_a_base_usada_no_log(db, sil_mock, monkeypatch):  # noqa: F811
+    from app.models.controle import Log
+    from tests.test_zzzzzzzzzzzzzzzz_sil_unificado import PROD
+    _env_sil(monkeypatch)
+    a = cc.executar_amostra(db, "admin@aion.local", "sil")
+    msgs = [m for (m,) in db.execute(select(Log.mensagem).where(Log.execucao_id == a.id))]
+    assert any(f"ambiente=producao host={PROD}" in m for m in msgs), msgs
+    assert not any("zz-segredo" in m or "zz-id" in m for m in msgs)
+
+
+# ---------------------------------------------------------------- 0019/0020: ambiente_origem na bronze
+
+def _limpa_sil(db):
+    from app.models.camadas import RegistroBronze
+    db.query(RegistroBronze).filter(RegistroBronze.sistema_origem == "SIL").delete()
+    db.commit()
+
+
+def test_ingere_marca_o_ambiente_e_prata_so_le_producao(db, monkeypatch):
+    from app.models.camadas import EmpresaSil, RegistroBronze
+    from app.silver import tributario
+    _limpa_sil(db)
+    ex = _exec(db, "amostra_conector", "SIL", "sucesso")
+    _env_sil(monkeypatch, "true")
+    ingere(db, "SIL", "Empresas", "Ccm", None, [{"Ccm": 9001, "Nome": "ZZTESTE SANDBOX"},
+                                                 {"Ccm": 9002, "Nome": "ZZTESTE IGUAL"}], ex.id)
+    _env_sil(monkeypatch)
+    c = ingere(db, "SIL", "Empresas", "Ccm", None, [{"Ccm": 9002, "Nome": "ZZTESTE IGUAL"},
+                                                     {"Ccm": 9003, "Nome": "ZZTESTE PROD"}], ex.id)
+    assert c["ignorados"] == 0                                     # a mesma linha da produção não colide
+    amb = set(db.scalars(select(RegistroBronze.id_origem)
+                         .where(RegistroBronze.sistema_origem == "SIL", RegistroBronze.ambiente_origem == "sandbox")))
+    assert amb == {"9001", "9002"}
+    tributario.reconstruir(db)
+    db.flush()
+    assert sorted(db.scalars(select(EmpresaSil.ccm))) == [9002, 9003]
+    db.rollback()
+    _limpa_sil(db)
+
+
+def test_outros_sistemas_sempre_producao(db, monkeypatch):
+    from app.bronze.ingestao import ambiente_da_origem
+    _env_sil(monkeypatch, "true")
+    assert ambiente_da_origem("SIL") == "sandbox" and ambiente_da_origem("SAUDE") == "producao"
+
+
+def _cenario(db, novos=(1, 1)):
+    from app.models.camadas import RegistroBronze
+    _limpa_sil(db)
+    exs = []
+    for i, n in enumerate(novos):
+        ex = _exec(db, "enriquecimento_sil", "SIL", "sucesso")
+        ex.novos = n
+        db.commit()
+        for k in range(n):
+            db.add(RegistroBronze(sistema_origem="SIL", tabela="empresas", id_origem=f"zz-{i}-{k}",
+                                  dados={"Nome": "ZZTESTE"}, hash=f"{i:02d}{k:062d}", execucao_id=ex.id))
+        exs.append(ex.id)
+    db.commit()
+    return tuple(exs)
+
+
+def _ambientes(db, ids):
+    from app.models.camadas import RegistroBronze
+    db.expire_all()
+    return sorted(db.scalars(select(RegistroBronze.ambiente_origem).where(RegistroBronze.execucao_id.in_(ids))))
+
+
+def test_0020_marca_so_as_execucoes_e_e_idempotente(db):
+    from app.services.marca_sandbox_sil import marcar
+    ids = _cenario(db)
+    r = marcar(db.connection(), ids)
+    db.commit()
+    assert r == {"esperado": 2, "encontradas": 2, "marcadas": 2}
+    assert _ambientes(db, ids) == ["sandbox", "sandbox"]
+    r2 = marcar(db.connection(), ids)                              # 2ª vez: nada muda
+    db.commit()
+    assert r2["marcadas"] == 0 and _ambientes(db, ids) == ["sandbox", "sandbox"]
+    _limpa_sil(db)
+
+
+def test_0020_nao_toca_outras_execucoes(db):
+    from app.services.marca_sandbox_sil import marcar
+    ids = _cenario(db, (1, 1, 1))
+    marcar(db.connection(), ids[:2])
+    db.commit()
+    assert _ambientes(db, ids[2:]) == ["producao"]
+    _limpa_sil(db)
+
+
+def test_0020_contagem_divergente_aborta_sem_mudar(db):
+    from app.models.controle import Execucao as Ex
+    from app.services.marca_sandbox_sil import ContagemDivergente, marcar
+    ids = _cenario(db)
+    db.get(Ex, ids[0]).novos = 5                                   # metadado diz 5+1, bronze tem 2
+    db.commit()
+    with pytest.raises(ContagemDivergente):
+        marcar(db.connection(), ids)
+    db.rollback()
+    assert _ambientes(db, ids) == ["producao", "producao"]
+    _limpa_sil(db)
+
+
+def test_0020_acima_do_teto_aborta(db):
+    from app.services.marca_sandbox_sil import ContagemDivergente, marcar
+    ids = _cenario(db, (3,))
+    with pytest.raises(ContagemDivergente):
+        marcar(db.connection(), ids, teto=2)
+    db.rollback()
+    assert _ambientes(db, ids) == ["producao"] * 3
+    _limpa_sil(db)
+
+
+def test_0020_banco_sem_as_execucoes_nao_faz_nada(db):
+    from app.services.marca_sandbox_sil import marcar
+    assert marcar(db.connection(), (987654, 987655))["marcadas"] == 0
+    db.rollback()
