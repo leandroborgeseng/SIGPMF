@@ -534,8 +534,23 @@ def _agendamento(db: Session, conector: str, travar: bool = False) -> Agendament
     return ag
 
 
+CHAVE_TRAVA_SIL = zlib.crc32(b"amostra:SIL")  # mesma trava das cargas SIL e do scripts/reset_sil.py
+MOTIVO_SIL_TRAVADA = "sil_trava_ocupada"
+MSG_SIL_TRAVADA = ("A SIL está com uma carga ou um reset em andamento (trava amostra:SIL). "
+                   "Espere terminar para ligar o agendamento.")
+
+
+class AgendaTravada(RuntimeError):
+    """B1 (#38 follow-up): ligar a agenda da SIL com a trava amostra:SIL ocupada (carga ou reset)."""
+
+
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
               ordem: int | None = None) -> Agendamento:
+    # B1: antes da trava da linha (o reset segura a linha FOR UPDATE e a trava); try = sem esperar
+    if ativo and conector == "sil" and not db.execute(
+            text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_TRAVA_SIL}).scalar():
+        db.rollback()
+        raise AgendaTravada(MOTIVO_SIL_TRAVADA)
     ag = _agendamento(db, conector, travar=True)
     antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}
     if horario is not None:

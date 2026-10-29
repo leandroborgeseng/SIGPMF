@@ -168,7 +168,7 @@ def test_reset_so_sil_mantem_outras_fontes_e_auditoria(eng, cenario):
         # "SIL" sai da lista de sistemas de quem fica; o só-SIL (sem a flag) fica como estava
         sis = dict(c.execute(text("SELECT cidadao_id, sistemas::text FROM gold.cidadao_sistemas WHERE cidadao_id = ANY(:i)"),
                              {"i": list(cenario.values())}).all())
-        assert sis[cenario["compartilhado"]] == '["SAUDE"]' and sis[cenario["sil_com_obito"]] == "[]"
+        assert sis[cenario["compartilhado"]] == '["SAUDE"]' and sis[cenario["sil_com_obito"]] == '["CEMITERIO"]'  # B2: recalculada pelas fontes que ficam
         assert sis[cenario["so_sil"]] == '["SIL"]' and sis[cenario["so_outra"]] == '["SAUDE"]'
         assert c.execute(text(f'SELECT count(*) FROM "{s}"."gold__cidadao_sistemas__tira_sil"')).scalar() >= 2
     assert rel.backup[f"{s}.controle__execucoes"] == antes["ex_sil"]
@@ -379,3 +379,95 @@ def test_mutante_restringe_backup_so_dono(eng, cenario):
             c.execute(text(f"ALTER DEFAULT PRIVILEGES REVOKE USAGE ON SCHEMAS FROM {papel}, PUBLIC"))
             c.execute(text(f'DROP SCHEMA IF EXISTS "{s}" CASCADE'))
             c.execute(text(f"DROP ROLE IF EXISTS {papel}"))
+
+
+# ---- follow-up do #38: B1 (agenda respeita a trava amostra:SIL) e B2 (lista de sistemas recalculada) ----
+def _ativo(c):
+    return c.execute(text("SELECT ativo FROM controle.agendamentos WHERE conector='sil'")).scalar()
+
+
+def test_b1_ligar_agenda_sil_com_reset_segurando_a_trava_da_409(client, tokens, eng):
+    from app.services import agenda
+    assert agenda.CHAVE_TRAVA_SIL == CHAVE and CHAVE in rs.CHAVES_TRAVA_SIL
+    with eng.begin() as c:
+        c.execute(text("UPDATE controle.agendamentos SET ativo=false WHERE conector='sil'"))
+    reset = eng.connect()  # o reset segura a trava de transação (como em executar())
+    try:
+        reset.begin()
+        assert reset.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": CHAVE}).scalar()
+        r = client.put("/api/agenda/sil", json={"ativo": True}, headers=tokens["admin"])
+        assert r.status_code == 409 and r.json()["detail"] == "A SIL está com uma carga ou um reset em andamento " \
+            "(trava amostra:SIL). Espere terminar para ligar o agendamento."
+        with eng.connect() as c:
+            assert _ativo(c) is False
+            aud = c.execute(text("SELECT detalhe FROM controle.auditoria WHERE acao='agenda_alterada_recusada' "
+                                 "ORDER BY id DESC LIMIT 1")).scalar()
+            assert aud == {"motivo": "sil_trava_ocupada", "conector": "sil"}
+        # outra agenda não é afetada pela trava da SIL; desligar a SIL também não
+        assert client.put("/api/agenda/sil", json={"ativo": False}, headers=tokens["admin"]).status_code == 200
+    finally:
+        reset.rollback()
+        reset.close()
+    # trava livre: liga normalmente
+    assert client.put("/api/agenda/sil", json={"ativo": True}, headers=tokens["admin"]).status_code == 200
+    with eng.begin() as c:
+        assert _ativo(c) is True
+        c.execute(text("UPDATE controle.agendamentos SET ativo=false WHERE conector='sil'"))
+
+
+def test_b1_reset_real_segurando_a_trava(client, tokens, eng, cenario):
+    """Durante executar() (na saída '== ANTES'), ligar a agenda da SIL pela rota dá 409 e ela fica false."""
+    vistos = []
+
+    def saida(msg):
+        if msg.startswith("== ANTES"):
+            vistos.append(client.put("/api/agenda/sil", json={"ativo": True}, headers=tokens["admin"]).status_code)
+    rs.executar(eng, "ZZTESTE operador", confirmar=False, schema_backup=_schema(), saida=saida)
+    assert vistos == [409]
+    with eng.connect() as c:
+        assert _ativo(c) is False
+
+
+def _lista(c, cid):
+    return c.execute(text("SELECT sistemas::text FROM gold.cidadao_sistemas WHERE cidadao_id=:c"), {"c": cid}).scalar()
+
+
+def test_b2_caso_do_tester_sil_mais_dado_de_outra_fonte_nao_fica_vazio(eng, cenario):
+    """sistemas=['SIL'] + dado do ouro de outra fonte -> não é "só SIL" e termina com a outra fonte, não []."""
+    cid = "zz" + uuid.uuid4().hex[:30]
+    misto = "zz" + uuid.uuid4().hex[:30]
+    with eng.begin() as c:
+        _gold(c, cid, ["SIL"], ["SIL", "ISS"])
+        _gold(c, misto, ["DIVIDA", "SIL"], ["SIL", "IPTU"])  # lista antiga + fonte nova dos dados, ordenadas
+    s = _schema()
+    rs.executar(eng, "ZZTESTE operador", confirmar=True, schema_backup=s, saida=lambda _: None)
+    with eng.connect() as c:
+        assert _lista(c, cid) == '["ISS"]'
+        assert _lista(c, misto) == '["DIVIDA", "IPTU"]'
+        assert _lista(c, cenario["sil_com_obito"]) == '["CEMITERIO"]'
+        assert _lista(c, cenario["so_sil"]) == '["SIL"]'  # sem a flag: fica como estava
+        vazios = c.execute(text("SELECT count(*) FROM gold.cidadao_sistemas cs WHERE cs.sistemas = '[]'::jsonb AND EXISTS ("
+                                "SELECT 1 FROM gold.cidadao_dados d WHERE d.cidadao_id = cs.cidadao_id)")).scalar()
+        assert vazios == 0
+        bk = dict(c.execute(text(f'SELECT cidadao_id, sistemas::text FROM "{s}"."gold__cidadao_sistemas__tira_sil"')).all())
+        assert bk[cid] == '["SIL"]' and bk[misto] == '["DIVIDA", "SIL"]'
+
+
+def test_b2_rollback_devolve_listas_exatas(eng, cenario):
+    cid = "zz" + uuid.uuid4().hex[:30]
+    with eng.begin() as c:
+        _gold(c, cid, ["SIL"], ["SIL", "ISS"])
+    with eng.connect() as c:
+        antes = _tudo(c)
+        listas = dict(c.execute(text("SELECT cidadao_id, sistemas::text FROM gold.cidadao_sistemas")).all())
+    s = _schema()
+    rs.executar(eng, "ZZTESTE operador", confirmar=True, remover_ouro_so_sil=True, schema_backup=s, saida=lambda _: None)
+    sql = rs.sql_rollback(s).replace(":'operador'", "'ZZTESTE operador'")
+    with eng.begin() as c:
+        for st in [x for x in sql.splitlines() if x and not x.startswith("\\") and x not in ("BEGIN;", "COMMIT;")]:
+            c.execute(text(st.rstrip(";")))
+    with eng.connect() as c:
+        depois = _tudo(c)
+        assert {k: v for k, v in depois.items() if k != "auditoria"} == {k: v for k, v in antes.items() if k != "auditoria"}
+        assert dict(c.execute(text("SELECT cidadao_id, sistemas::text FROM gold.cidadao_sistemas")).all()) == listas
+    assert json.loads(listas[cid]) == ["SIL"]

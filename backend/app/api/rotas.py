@@ -958,6 +958,10 @@ def agenda_alterar(conector: str, dados: AgendaIn, req: Request, u: Usuario = De
         _404()
     except ag.AgendaInvalida as exc:
         raise HTTPException(422, str(exc)) from None
+    except ag.AgendaTravada:  # B1: motivo e mensagem fixos (nada de str(exc))
+        audita(db, u.email, "agenda_alterada_recusada", f"agendamento:{conector}",
+               {"motivo": ag.MOTIVO_SIL_TRAVADA, "conector": conector}, _ip(req))
+        raise HTTPException(409, ag.MSG_SIL_TRAVADA) from None
     return ag.estado(db)
 
 
