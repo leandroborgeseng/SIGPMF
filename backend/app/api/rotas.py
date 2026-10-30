@@ -750,8 +750,10 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
             "dados": [{"dominio": d.dominio, "campo": d.campo,
                        "valor": (normaliza_data_iso(d.valor) or d.valor) if d.campo in CAMPOS_DATA else d.valor, "fonte": d.sistema,
                        "atualizado_em": d.fonte_atualizado_em} for d in dados],
-            "enderecos": [{"valor": e.logradouro, "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
-                           "mais_recente": e.mais_recente} for e in ends]}
+            # EN8: 2 linhas (o texto da Saúde vem com "\n"); origem_endereco só diz de qual bloco veio (geral/outro)
+            "enderecos": [{"valor": e.logradouro, "linhas": (e.logradouro or "").split("\n") if e.logradouro else [],
+                           "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
+                           "mais_recente": e.mais_recente, "origem_endereco": e.origem_endereco} for e in ends]}
 
 
 def _empresa_sil(e, *, revela: bool) -> dict:

@@ -196,6 +196,8 @@ SAUDE = Politica(
     colunas={
         "pacientes": ("Matricula", "Nome", "NomeSocial", "Cpf", "Cartao_Sus", "Dt_Nasc", "Sexo", "Mae", "Pai",
                       "Cd_Rua", "Nr", "Cod_Bairro", "Cep", "Complemento", "Falecido", "DataObito",
+                      # EN11 (DBA 29/10): bloco Outro_* quando Cd_Rua está vazio. Cod_Cidade/Cod_Estado ficam fora (EN12)
+                      "Outra_Rua", "Outro_Numero", "Outro_Bairro", "Outra_Cidade", "Outro_Estado", "Outro_Cep",
                       "Normalizado", "Matricula_Correta", "Dt_Cad", "dt_ultimaatual"),
         "Pacientes_CNS": ("Matricula", "Cartao_Sus", "Data_Atribuicao", "Tipo_Cartao"),
         "ESUS_Cadastro_Domiciliar": ("Codigo_Cadastro", "UUID", "Nome_Logradouro", "Numero_Imovel", "Complemento",

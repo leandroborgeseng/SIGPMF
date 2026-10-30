@@ -224,6 +224,8 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     linear antigo só para o teste de regressão (mesmo resultado). medicao: recebe tempo/linhas/RSS por etapa (também
     vai para o log app.silver.medicao, sem PII)."""
     med = medicao if medicao is not None else Medicao()
+    from app.silver import endereco_saude
+    endereco_saude.carrega(db)  # EN10: referência Rua/Bairro do Geral para o endereço da Saúde
     p, peso_prov = _params(db)
     for m in (Endereco, Vinculo, Identificador, CorrelacaoPendente, Inconsistencia, Cidadao, SistemaSilver):
         db.execute(delete(m))
@@ -446,8 +448,16 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
                           bronze_id=r.id, metodo=metodo, confianca=conf, atributos=attrs,
                           fonte_atualizado_em=r.atualizado_origem_em)
             if c.get("endereco"):  # CM10: endereço de sepultura/titular fica como texto livre
-                enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
-                                          fonte_atualizado_em=r.atualizado_origem_em))
+                ep = c.get("endereco_partes")
+                if ep:  # EN10/EN11: partes estruturadas (Saúde); o texto formatado fica em `logradouro`
+                    enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], bairro=ep["bairro"], cep=ep["cep"],
+                                              tipo_logradouro=ep["tipo_logradouro"], numero=ep["numero"],
+                                              complemento=ep["complemento"], cidade=ep["cidade"], uf=ep["uf"],
+                                              codigo_ibge=ep["codigo_ibge"], origem_endereco=ep["origem_endereco"],
+                                              sistema=r.sistema_origem, fonte_atualizado_em=r.atualizado_origem_em))
+                else:
+                    enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
+                                              fonte_atualizado_em=r.atualizado_origem_em))
     _grava(db, Vinculo, gera_vinculos())
     med.marca("grava_vinculos", saida=len(vinculos))
     ultimo: dict[str, Endereco] = {}

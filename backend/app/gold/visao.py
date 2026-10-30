@@ -22,7 +22,7 @@ DOMINIO_CAMPO = {"nome": "identificacao", "data_nascimento": "identificacao", "n
                  "nome_pai": "identificacao", "sexo": "identificacao", "data_obito": "identificacao",
                  "endereco": "endereco"}
 CAMPOS_DATA = {"data_nascimento", "data_obito"}
-FORA_DA_GOLD = {"cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado", "pista_matricula_correta"}
+FORA_DA_GOLD = {"endereco_partes", "cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado", "pista_matricula_correta"}
 GOLD_LOTE = 5000
 
 _SQL_CIDADAO_SISTEMAS = text("""
@@ -45,6 +45,8 @@ def _mais_novo(v_data, atual_data) -> bool:
 
 def reconstruir(db: Session, progresso=None) -> dict[str, int]:
     """progresso(processados, total): sinal de vida a cada lote (vínculos processados / total de vínculos)."""
+    from app.silver import endereco_saude
+    endereco_saude.carrega(db)  # EN10: mesma referência da prata
     db.execute(delete(DadoGold))
     db.execute(delete(CidadaoSistemas))
     db.flush()

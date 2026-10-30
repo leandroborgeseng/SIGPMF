@@ -198,7 +198,7 @@ def test_cc3_cc4_cc6_carga_completa_em_lotes(client, tokens, origem, db):
     assert paginas and all("TOP (2)" in s for s, _ in paginas)
     for sql, _ in o.sqls:
         assert garante_somente_leitura(sql) and "*" not in sql.replace("COUNT(*)", "")
-        assert not re.search(r"\[(?:\w*_)?CID\w*\]|senha", sql, re.IGNORECASE)
+        assert not re.search(r"\[(?:\w*_)?CID(?!ade\])\w*\]|senha", sql, re.IGNORECASE)
         assert "OFFSET" not in sql
     for t in tabs:
         sqls_t = [(s, p) for s, p in paginas if f"[dbo].[{t}]" in s]

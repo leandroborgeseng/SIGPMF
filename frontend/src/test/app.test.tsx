@@ -148,8 +148,10 @@ describe('simulador', () => {
 
   it('fonte e data dd/mm/aaaa e CPF mascarado (UX-S9/S10)', async () => {
     const { container } = await abrir('leitura')
-    expect(screen.getByText(/Rua Teste 2 — Fonte: DEMO_SAUDE · Atualizado em 05\/03\/2026/)).toBeInTheDocument()
-    expect(screen.getByText('Há outras versões em outras fontes')).toBeInTheDocument()
+    // EN5/UXO1: o valor fica sozinho e a procedência vai para o chip <OrigemDado> (aria-label não depende do relógio)
+    expect(screen.getByText('Rua Teste 2')).toBeInTheDocument()
+    expect(screen.getByRole('note', { name: 'Fonte: Demo_saude, atualizado em 5 de março de 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Ver (outro valor|outros \d+ valores)$/ })).toBeInTheDocument()
     expect(screen.getByTestId('cpf')).toHaveTextContent(CPF_MASC)
     expect(screen.queryByRole('button', { name: 'Revelar CPF' })).toBeNull()
     await semViolacoesSerias(container)
