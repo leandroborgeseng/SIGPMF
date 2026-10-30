@@ -241,7 +241,7 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizand
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
-      {pendente && b.conector_id && ehAdmin && <ExecucaoPendente conector={b.conector_id} nome={b.nome} onMudou={() => onAgenda?.()} />}
+      {b.conector_id && ehAdmin && <ExecucaoPendente conector={b.conector_id} nome={b.nome} pendente={pendente} onMudou={() => onAgenda?.()} />}
       {exige && b.conector_id && (
         <div className="acoes" id={`acoes-${b.conector_id}`}>
           <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { salvaSessao } from '../api'
 import { AuthProvider } from '../auth'
-import { SEM_SUPORTE_CANCELAR } from '../ExecucaoPendente'
+import { NAO_CANCELOU, SEM_SUPORTE_CANCELAR } from '../ExecucaoPendente'
 import { CONFIRMA_PENDENTE } from '../PainelAmostra'
 
 // PR-B (TL): execução pendente (forcar=true) no card do conector. Dados mockados ZZTESTE, nada real.
@@ -63,6 +63,71 @@ const AGENDA = {
 }
 
 describe('execução pendente (forcar=true)', () => {
+  it('A1: PUT 200 mas a agenda relida ainda tem forcar=true -> não diz "cancelada" e mantém o selo', async () => {
+    mock((url, init) => {
+      if (url === '/api/agenda/divida' && init?.method === 'PUT') return [200, { ok: true }]  // API antiga ignora forcar
+      if (url === '/api/agenda') return [200, AGENDA]
+      return null
+    })
+    montar()
+    const c = await cartao('Dívida ativa')
+    await userEvent.click(await within(c).findByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' }))
+    expect(await within(c).findByText(NAO_CANCELOU)).toBeVisible()
+    expect(within(c).queryByText(/cancelada\./)).toBeNull()
+    expect(within(c).getByText('Execução pendente: carga completa')).toBeVisible()
+  })
+
+  it('A1: com a agenda relida em forcar=false, diz "cancelada" e o selo some', async () => {
+    let forcar = true
+    mock((url, init) => {
+      if (url === '/api/agenda/divida' && init?.method === 'PUT') { forcar = false; return [200, { ok: true }] }
+      if (url === '/api/agenda') return [200, { ...AGENDA, itens: [{ ...AGENDA.itens[0], forcar }] }]
+      return null
+    })
+    montar()
+    const c = await cartao('Dívida ativa')
+    await userEvent.click(await within(c).findByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' }))
+    await waitFor(() => expect(within(c).queryByText('Execução pendente: carga completa')).toBeNull())
+    expect(within(c).getByText('Execução pendente cancelada.')).toBeVisible()
+  })
+
+  it('A1: durante o pedido o botão fica desabilitado com "Cancelando…"; depois "Execução pendente cancelada."', async () => {
+    let libera: () => void = () => {}
+    const espera = new Promise<void>((r) => { libera = r })
+    let forcar = true
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/agenda/divida' && init?.method === 'PUT') { await espera; forcar = false; return new Response('{}', { status: 200 }) }
+      if (url === '/api/agenda') return new Response(JSON.stringify({ ...AGENDA, itens: [{ ...AGENDA.itens[0], forcar }] }), { status: 200 })
+      if (url === '/api/conectores') return new Response(JSON.stringify({ conectores: [], execucoes: [], bases: BASES, totais: {}, carga_habilitada: true }), { status: 200 })
+      if (url === '/api/fontes/progresso') return new Response(JSON.stringify(PROGRESSO_VAZIO), { status: 200 })
+      return new Response(JSON.stringify(SIT(false, SEM)), { status: 200 })
+    })
+    vi.stubGlobal('fetch', f)
+    montar()
+    const c = await cartao('Dívida ativa')
+    await userEvent.click(await within(c).findByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' }))
+    const b = within(c).getByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' })
+    expect(b).toBeDisabled()
+    expect(b).toHaveTextContent('Cancelando…')
+    libera()
+    await waitFor(() => expect(within(c).queryByText('Execução pendente: carga completa')).toBeNull())
+    expect(within(c).getByText('Execução pendente cancelada.')).toBeVisible()
+  })
+
+  it('M3: âncora fonte-<id> nos cards fixos de Conectores (SIL, Educação) sem duplicar a da base', async () => {
+    mock((url) => url === '/api/conectores'
+      ? [200, { conectores: [{ id: 9, codigo: 'SIL', nome: 'API SIL', status: 'Ativo', ultima_execucao: null, credencial: 'x', amostra_limite: 1000, tabelas: [] },
+        { id: 10, codigo: 'EDUCACAO', nome: 'Educação', status: 'Ativo', ultima_execucao: null, credencial: 'x', amostra_limite: 1000, tabelas: [] },
+        { id: 11, codigo: 'DIVIDA', nome: 'Dívida', status: 'Ativo', ultima_execucao: null, credencial: 'x', amostra_limite: 1000, tabelas: [] }],
+      execucoes: [], bases: BASES, totais: {}, carga_habilitada: true }]
+      : url === '/api/agenda' ? [200, AGENDA] : null)
+    const { container } = montar()
+    await screen.findByRole('heading', { name: /API SIL/ })
+    expect(container.querySelector('#fonte-sil')).not.toBeNull()
+    expect(container.querySelector('#fonte-educacao')).not.toBeNull()
+    expect(container.querySelectorAll('#fonte-divida')).toHaveLength(1)
+  })
+
   it('selo âmbar + "Cancelar execução pendente" faz PUT {forcar:false}; 404/422 = mensagem amigável', async () => {
     const puts: string[] = []
     let resposta: [number, unknown] = [200, { ok: true }]
@@ -82,6 +147,8 @@ describe('execução pendente (forcar=true)', () => {
     await userEvent.click(within(c).getByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' }))
     await waitFor(() => expect(puts).toHaveLength(2))
     expect(within(c).getByText(SEM_SUPORTE_CANCELAR)).toBeVisible()
+    expect(SEM_SUPORTE_CANCELAR).toBe('Não foi possível cancelar a execução pendente. Ela continua agendada.')
+    expect(within(c).getByText('Execução pendente: carga completa')).toBeVisible()
   })
 
   it('"Aprovar amostra" com execução pendente pede confirmação com foco em Cancelar', async () => {

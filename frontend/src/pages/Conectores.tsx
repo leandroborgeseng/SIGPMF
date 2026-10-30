@@ -22,6 +22,8 @@ export default function Conectores() {
   const podeExecutar = sessao?.perfil === 'admin' || sessao?.perfil === 'operador'
   const ehAdmin = sessao?.perfil === 'admin'
 
+  // M3: âncora fonte-<id> também nos cards fixos (SIL, Educação); sem duplicar a do card da base
+  const idsBases = new Set((d?.bases ?? []).map((b) => b.conector_id).filter(Boolean) as string[])
   const carregar = useCallback(() => {
     setErro(false); setD(null)
     api<Resp>('/conectores').then(setD).catch(() => setErro(true))
@@ -80,7 +82,7 @@ export default function Conectores() {
           <>
             <ul className="lista-cartoes" aria-label="Conectores">
               {d.conectores.map((c) => (
-                <li key={c.id} className="cartao">
+                <li key={c.id} className="cartao" id={idsBases.has(c.codigo.toLowerCase()) ? undefined : `fonte-${c.codigo.toLowerCase()}`}>
                   <h2>{c.nome} ({c.codigo})</h2>
                   <p>Status: <span className="selo mapeado"><i aria-hidden="true" />{c.status}</span></p>
                   <p>Última execução: {c.ultima_execucao ? `${dataHoraBR(c.ultima_execucao.iniciado_em)} · ${c.ultima_execucao.lidos} lidos e ${c.ultima_execucao.novos} novos` : '—'}</p>
