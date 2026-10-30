@@ -160,3 +160,70 @@ def test_migracao_0036_idempotente(banco, monkeypatch):
         with adm.connect() as c:
             c.execute(text(f'DROP DATABASE IF EXISTS "{nome}" WITH (FORCE)'))
         adm.dispose()
+
+
+def test_contador_da_prata_e_do_ouro_nunca_volta(db, monkeypatch):
+    """D1 (QA #59): a gravação em lote não pode mandar (0, None) ao contador; ele só cresce e o total não some."""
+    monkeypatch.setattr(pr, "LOTE", 500)  # vários lotes de gravação com pouco dado
+    try:
+        sintetico_prata.gera(db, 3000)
+        for camada in ("prata", "ouro"):
+            vistos = []
+
+            def prog(n, t, v=vistos):
+                v.append((n, t))
+            if camada == "prata":
+                pr.reconstruir(db, progresso=prog, cancelado=lambda: False)
+            else:
+                visao.reconstruir(db, progresso=prog, cancelado=lambda: False)
+            assert vistos, camada
+            assert all(t is not None for _, t in vistos), (camada, vistos)
+            assert all(b[0] >= a[0] for a, b in zip(vistos, vistos[1:], strict=False)), (camada, vistos)
+    finally:
+        db.rollback()
+
+
+def test_migracao_0036_lock_timeout_e_indice_invalido(banco, monkeypatch):
+    """R1: com transação longa aberta, o CONCURRENTLY falha em lock_timeout com mensagem clara (sem travar o boot);
+    o índice INVALID que sobra é descartado e recriado na execução seguinte."""
+    from alembic import command
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    url = make_url(banco)
+    nome = f"{url.database}_mig0036lt"
+    adm = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}"'))
+            c.execute(text(f'CREATE DATABASE "{nome}"'))
+    except Exception:  # noqa: BLE001
+        adm.dispose()
+        pytest.skip("sem permissão para criar o banco de teste da migração")
+    alvo = url.set(database=nome).render_as_string(hide_password=False)
+    cfg = alembic_cfg()
+    cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
+    monkeypatch.setenv("SIGPMF_INDICE_CONCORRENTE", "1")
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", "1s")
+    eng = create_engine(alvo)
+    try:
+        command.upgrade(cfg, "0035")
+        longa = eng.connect().execution_options(isolation_level="REPEATABLE READ")
+        tx = longa.begin()
+        longa.execute(text("SELECT count(*) FROM bronze.registros"))  # transação aberta (snapshot)
+        with pytest.raises(RuntimeError, match="não foi criado em 1s"):
+            command.upgrade(cfg, "head")
+        tx.rollback()
+        longa.close()
+        q = text("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                 "WHERE c.relname = 'ix_registros_ultima_versao'")
+        with eng.connect() as c:
+            assert c.scalar(q) is False  # sobrou INVALID
+            assert c.execute(text("SELECT version_num FROM controle.alembic_version")).scalar() == "0035"
+        command.upgrade(cfg, "head")  # próxima execução: drop concurrently + recria
+        with eng.connect() as c:
+            assert c.scalar(q) is True
+    finally:
+        eng.dispose()
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}" WITH (FORCE)'))
+        adm.dispose()

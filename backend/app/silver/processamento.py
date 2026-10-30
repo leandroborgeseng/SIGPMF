@@ -89,7 +89,8 @@ class Pulso:
             self._ult = agora
 
     def grava(self) -> None:
-        """Lote gravado: cancelamento e pulso com o último contador (não volta a 0 na tela)."""
+        """Lote gravado: checa o cancelamento e pulsa com o último (n, total) já informado, sem zerar nem
+        voltar o contador da etapa na tela."""
         self.lote(*self._n)
 
     def passo(self, n: int, total: int | None) -> None:
@@ -193,8 +194,6 @@ def _grava(db: Session, model, objs, lote: int = LOTE, pulso: "Pulso | None" = N
             buf = []
             if pulso is not None:
                 pulso.grava()
-            if pulso is not None:
-                pulso.lote(0, None) if pulso.cancelado else None
     if buf:
         db.execute(insert(model), buf)
 
