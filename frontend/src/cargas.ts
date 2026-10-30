@@ -19,7 +19,6 @@ export type Carga = {
 export type RespAndamento = { agora: string; sem_sinal_limite_s: number; cargas: Carga[] }
 
 export const ATUALIZA_MS = 10_000
-export const ETAPAS = [['leitura', 'Leitura'], ['bronze', 'Bronze'], ['prata', 'Prata'], ['ouro', 'Ouro']] as const
 export const STATUS: Record<Status, { texto: string; icone: string; classe: string }> = {
   na_fila: { texto: 'Na fila', icone: '⏳', classe: 'neutro' },
   rodando: { texto: 'Rodando', icone: '▶', classe: 'em_andamento' },
@@ -53,15 +52,29 @@ export function duracao(s: number | null | undefined): string {
   return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`
 }
 
-export function indiceEtapa(etapa: string | null): number {
-  if (etapa === 'concluida') return ETAPAS.length
-  const i = ETAPAS.findIndex(([k]) => k === etapa)
-  return i < 0 ? 0 : i
+// TL: 3 fases. A leitura da origem grava direto na bronze: aparece como "Bronze · lendo origem".
+export const FASES = ['Bronze', 'Prata', 'Ouro'] as const
+export function indiceFase(etapa: string | null): number {
+  if (etapa === 'concluida') return FASES.length
+  if (etapa === 'prata') return 1
+  if (etapa === 'ouro') return 2
+  return 0
 }
-export function textoEtapa(etapa: string | null): string {
-  if (etapa === 'concluida') return 'Etapas concluídas'
-  const i = indiceEtapa(etapa)
-  return `Etapa ${i + 1} de ${ETAPAS.length}: ${ETAPAS[i][1]}`
+export function rotuloFase(etapa: string | null, i: number): string {
+  return i === 0 && (etapa === 'leitura' || !etapa) ? 'Bronze · lendo origem' : FASES[i]
+}
+export function ariaFase(etapa: string | null): string {
+  if (etapa === 'concluida') return 'Fases concluídas: Bronze, Prata e Ouro'
+  const i = indiceFase(etapa)
+  return `Fase ${i + 1} de ${FASES.length}: ${rotuloFase(etapa, i)}`
+}
+/** "✓ Bronze · Prata ● · Ouro": ✓ nas concluídas, ● na atual. */
+export function textoFases(etapa: string | null): string {
+  const atual = indiceFase(etapa)
+  return FASES.map((_, i) => (i < atual ? `✓ ${FASES[i]}` : i === atual ? `${rotuloFase(etapa, i)} ●` : FASES[i])).join(' · ')
+}
+export function textoErro(motivo: string | null): string {
+  return `${(motivo ?? 'A carga falhou').replace(/\.$/, '')}. Para tentar de novo, use Rodar de novo em Conectores.`
 }
 
 /** CT6/CT17/UXC2: progresso da subetapa. Sem total: nunca percentual. Sem contador: consulta sem contagem parcial. */

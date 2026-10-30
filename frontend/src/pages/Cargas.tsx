@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import {
-  ATUALIZA_MS, ETAPAS, STATUS, dataHoraBRT, duracao, estimativa, horaBRT, indiceEtapa, num, segundosDesde,
-  semResultadosAinda, sinalDeVida, textoEtapa, textoProgresso, type Carga, type RespAndamento, type Status,
+  ATUALIZA_MS, STATUS, ariaFase, dataHoraBRT, duracao, estimativa, horaBRT, num, segundosDesde,
+  semResultadosAinda, sinalDeVida, textoErro, textoFases, textoProgresso, type Carga, type RespAndamento, type Status,
 } from '../cargas'
 import '../cargas.css'
 
@@ -12,20 +13,8 @@ function Selo({ status }: { status: Status }) {
   return <span className={`selo ${s.classe}`}><span aria-hidden="true">{s.icone}</span> {s.texto}</span>
 }
 
-function Stepper({ etapa }: { etapa: string | null }) {
-  const atual = indiceEtapa(etapa)
-  return (
-    <>
-      <ol className="cg-stepper" aria-label="Etapas da carga">
-        {ETAPAS.map(([k, nome], i) => (
-          <li key={k} className={i < atual ? 'feita' : i === atual ? 'atual' : ''} aria-current={i === atual ? 'step' : undefined}>
-            {i < atual ? '✓ ' : ''}{nome}
-          </li>
-        ))}
-      </ol>
-      <span className="cg-stepper-texto">{textoEtapa(etapa)}</span>
-    </>
-  )
+function Fases({ etapa }: { etapa: string | null }) {
+  return <p className="cg-fases" role="img" aria-label={ariaFase(etapa)}>{textoFases(etapa)}</p>
 }
 
 function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: number }) {
@@ -41,12 +30,11 @@ function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: numb
         <div className="cg-selos">
           <Selo status={a.status} />
           <span className="selo neutro">{a.tipo}</span>
-          {a.etapa && <span className="selo neutro">{textoEtapa(a.etapa)}</span>}
           {c.agenda_ativa === false && <span className="selo atencao">Agenda desligada</span>}
           {vida?.travada && <span className="selo atencao" role="status"><span aria-hidden="true">⚠</span> Possível travamento</span>}
         </div>
       </header>
-      <Stepper etapa={a.etapa} />
+      <Fases etapa={a.etapa} />
       {rodando && (
         <div className="cg-agora">
           <p className="cg-subetapa"><strong>{a.subetapa ?? 'Preparando a etapa'}</strong></p>
@@ -60,14 +48,18 @@ function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: numb
           {vida && <p className={vida.travada ? 'aviso-ambar' : 'cg-nota'}>{vida.texto}</p>}
         </div>
       )}
-      {(a.status === 'erro' || a.status === 'parcial') && (
-        <p className={a.status === 'erro' ? 'cg-erro' : 'aviso-ambar'}>
-          {a.motivo ?? (a.status === 'erro' ? 'A carga falhou.' : 'Carga parcial.')}{a.proxima_acao ? ` Próxima ação: ${a.proxima_acao}.` : ''}
+      {a.status === 'erro' && (
+        <p className="cg-erro">
+          {textoErro(a.motivo)}{' '}
+          <Link to={`/conectores#fonte-${c.sistema.toLowerCase()}`}>Abrir {c.fonte} em Conectores</Link>
         </p>
       )}
+      {a.status === 'parcial' && (
+        <p className="aviso-ambar">{a.motivo ?? 'Carga parcial.'}{a.proxima_acao ? ` Próxima ação: ${a.proxima_acao}.` : ''}</p>
+      )}
       <dl className="cg-fatos">
-        <div><dt>Lidas</dt><dd>{num(a.lidos)}</dd></div>
-        <div><dt>Gravadas</dt><dd>{num(a.gravados)}</dd></div>
+        <div><dt>Lidas nesta execução</dt><dd>{num(a.lidos)}</dd></div>
+        <div><dt>Gravadas nesta execução</dt><dd>{num(a.gravados)}</dd></div>
         <div><dt>Quarentena</dt><dd>{num(a.quarentena)}</dd></div>
         <div><dt>Início</dt><dd>{dataHoraBRT(a.iniciado_em)}</dd></div>
         <div><dt>Última completa</dt><dd>{dataHoraBRT(c.ultima_completa_em)}</dd></div>

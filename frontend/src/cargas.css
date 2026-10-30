@@ -4,12 +4,6 @@
 .cg-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cg-topo h2 { margin: 0 0 6px; font-size: 1.05rem; }
 .cg-selos { display: flex; flex-wrap: wrap; gap: 6px; }
-.cg-stepper { display: none; list-style: none; padding: 0; margin: 0; gap: 6px; }
-.cg-stepper li { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--muted); }
-.cg-stepper li.feita { color: var(--ok-ink); border-color: var(--ok-line); }
-.cg-stepper li.atual { color: var(--brand-hover); border-color: var(--brand); font-weight: 700; }
-.cg-stepper-texto { font-size: 13px; font-weight: 600; }
-@media (min-width: 600px) { .cg-stepper { display: flex; } .cg-stepper-texto { display: none; } }
 .cg-agora p { margin: 4px 0; }
 .cg-subetapa { overflow-wrap: anywhere; }
 .cg-nota { color: var(--muted); font-size: 13px; }
@@ -23,3 +17,6 @@
 .cg-tabela th, .cg-tabela td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .cg-cabecalho { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
 .cg-cabecalho h1 { margin: 0; }
+.cg-fases { margin: 0; font-weight: 600; font-size: 14px; }
+/* UX M4: a barra inferior fixa (64 px) não cobre o fim do último card */
+@media (max-width: 1023px) { .cg { padding-bottom: calc(64px + 16px + env(safe-area-inset-bottom)); } }

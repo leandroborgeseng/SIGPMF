@@ -1,4 +1,5 @@
 """Configuração do conector SIL, só por variável de ambiente (SIL1). Nada tem valor padrão sensível."""
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -13,6 +14,8 @@ def _num(nome: str, padrao: float, minimo: float, maximo: float) -> float:
     try:
         x = float(v) if v is not None else padrao
     except ValueError:
+        x = padrao
+    if not math.isfinite(x):  # nan/inf: float() aceita, min/max não resolvem (D1)
         x = padrao
     return min(max(x, minimo), maximo)
 

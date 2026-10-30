@@ -1,7 +1,10 @@
 import { act, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import Cargas from '../pages/Cargas'
-import { estimativa, sinalDeVida, textoProgresso, type Carga, type Execucao, type RespAndamento } from '../cargas'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { MemoryRouter } from 'react-router-dom'
+import CargasPagina from '../pages/Cargas'
+import { ariaFase, textoFases, estimativa, sinalDeVida, textoProgresso, type Carga, type Execucao, type RespAndamento } from '../cargas'
 import { salvaSessao } from '../api'
 
 const AGORA = new Date('2026-10-29T23:00:00Z') // 20:00 BRT
@@ -20,6 +23,7 @@ const carga = (o: Partial<Carga> = {}, a: Partial<Execucao> = {}): Carga => ({
   historico: Array.from({ length: 30 }, (_, i) => ({ id: 100 - i, tipo: 'Incremental', status: 'concluida' as const, iniciado_em: iso(86400 * (i + 1)), duracao_s: 720, lidos: 1000, gravados: 1000 })),
   ultima_completa_em: iso(86400), ultima_incremental_em: iso(3600), agenda_ativa: true, agenda_horario: '02:00', ...o,
 })
+const Cargas = () => <MemoryRouter><CargasPagina /></MemoryRouter>
 const resp = (cargas: Carga[]): RespAndamento => ({ agora: AGORA.toISOString(), sem_sinal_limite_s: 300, cargas })
 
 function mock(r: RespAndamento) {
@@ -80,7 +84,8 @@ describe('tela de cargas (CT5, CT9, CT10, CT20, CT21, CT22)', () => {
     render(<Cargas />)
     const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
     expect(within(card).getByText('Com erro')).toBeVisible()
-    expect(within(card).getByText('Falha ao ler a origem Próxima ação: Rodar de novo.')).toBeVisible()
+    expect(within(card).getByText(/^Falha ao ler a origem\. Para tentar de novo, use Rodar de novo em Conectores\./)).toBeVisible()
+    expect(within(card).getByRole('link', { name: 'Abrir ZZTESTE Fonte em Conectores' })).toHaveAttribute('href', '/conectores#fonte-zzteste')
   })
   it('CT21/UXC8: log das subetapas em BRT e histórico de 30', async () => {
     mock(resp([carga()]))
@@ -98,5 +103,36 @@ describe('tela de cargas (CT5, CT9, CT10, CT20, CT21, CT22)', () => {
     await act(async () => { vi.advanceTimersByTime(10_000) })
     expect(f).toHaveBeenCalledTimes(2)
     expect(f.mock.calls[0][0]).toBe('/api/cargas/andamento')
+  })
+})
+
+describe('ciclo 2 (TL fases, UX M1–M4)', () => {
+  it('TL: 3 fases com ✓ nas concluídas e ● na atual; leitura = "Bronze · lendo origem"', () => {
+    expect(textoFases('prata')).toBe('✓ Bronze · Prata ● · Ouro')
+    expect(textoFases('ouro')).toBe('✓ Bronze · ✓ Prata · Ouro ●')
+    expect(textoFases('leitura')).toBe('Bronze · lendo origem ● · Prata · Ouro')
+    expect(textoFases('bronze')).toBe('Bronze ● · Prata · Ouro')
+    expect(ariaFase('prata')).toBe('Fase 2 de 3: Prata')
+    expect(ariaFase('leitura')).toBe('Fase 1 de 3: Bronze · lendo origem')
+  })
+  it('M1: a fase aparece uma vez só (sem chip duplicado) e com aria-label', async () => {
+    mock(resp([carga()]))
+    render(<Cargas />)
+    const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
+    expect(within(card).getByRole('img', { name: 'Fase 2 de 3: Prata' })).toHaveTextContent('✓ Bronze · Prata ● · Ouro')
+    expect(within(card).queryByText(/Etapa \d de/)).toBeNull()
+    expect(within(card).queryAllByText(/Fase \d de 3/)).toHaveLength(0)
+  })
+  it('M2: rótulos "nesta execução"', async () => {
+    mock(resp([carga()]))
+    render(<Cargas />)
+    const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
+    expect(within(card).getByText('Lidas nesta execução')).toBeVisible()
+    expect(within(card).getByText('Gravadas nesta execução')).toBeVisible()
+    expect(within(card).queryByText('Lidas')).toBeNull()
+  })
+  it('M4: padding-bottom para a barra inferior fixa', () => {
+    const css = readFileSync(resolve(__dirname, '../cargas.css'), 'utf8')
+    expect(css).toMatch(/\.cg \{ padding-bottom: calc\(64px/)
   })
 })
