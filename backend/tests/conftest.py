@@ -100,3 +100,19 @@ def _camadas_sem_assinatura(request):
         c.execute(text("DELETE FROM controle.camadas_estado"))
     eng.dispose()
     yield
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "agenda_real: não neutraliza a trava CT26 (agenda ativo=false bloqueia a completa)")
+
+
+@pytest.fixture(autouse=True)
+def _ct26_agenda_nao_pausa_completa(request, monkeypatch):
+    """CT26: as migrações semeiam a agenda com ativo=false, o que bloqueia a carga completa manual. Os testes antigos
+    da carga completa não tratam da agenda, então aqui a trava fica neutra; os testes da CT26 usam @agenda_real."""
+    if request.node.get_closest_marker("agenda_real"):
+        yield
+        return
+    from app.services import carga_completa as ccomp
+    monkeypatch.setattr(ccomp, "motivo_pausada_agenda", lambda db, conector: None)
+    yield

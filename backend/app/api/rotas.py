@@ -573,6 +573,10 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     """Carga completa real (CC3): background, lotes com checkpoint, cancelável. Só admin (CC5), auditada (CC4)."""
     conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_solicitada", f"conector:{conector}", ip=_ip(req))
+    pausada = ccomp.motivo_pausada_agenda(db, conector)
+    if pausada:  # CT26: nada é criado nem enfileirado
+        audita(db, u.email, "carga_completa_negada", f"conector:{conector}", {"motivo": "agenda_pausada"}, _ip(req))
+        raise HTTPException(409, pausada)
     try:
         ex = ccomp.iniciar(db, u.email, conector)
     except ccomp.Bloqueado as exc:
