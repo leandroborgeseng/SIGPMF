@@ -79,6 +79,11 @@ def test_in1_assinatura_muda_com_bronze_parametro_e_regras(db):
 
 def test_in1_completa_sem_mudanca_pula_prata_e_ouro_mas_reconcilia(db, origem, monkeypatch):  # noqa: F811
     _amostras(db)
+    from sqlalchemy import delete
+
+    from app.models.controle import CamadasMarca
+    db.execute(delete(CamadasMarca))  # Parte 2: começa sem marca d'água (1ª vez = recomposição completa)
+    db.commit()
     n = _contador_reconstrucao(monkeypatch)
     ex1 = _completa(db, "saude")
     assert ex1.status == "sucesso" and n["prata"] == 1 and "silver=" in ex1.mensagem

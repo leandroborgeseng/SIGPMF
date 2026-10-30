@@ -173,7 +173,10 @@ def _ultimas_versoes(db: Session):
     so_fatos = sistemas_so_fatos() + ("GESTAOESCOLAR", "CORESSO")  # TR3: fatos tributários (milhões de linhas) nem saem do banco
     fatos = [tuple(x.split("|", 1)) for x in tabelas_fato()]
     R = RegistroBronze
-    ult = (select(R.id).where(R.quarentena.is_(None), R.sistema_origem.not_in(so_fatos),  # CC9
+    # D6 (TL 30/10): predicado único quarentena IS NULL AND ambiente_origem = 'producao' (o da bronze.ultima_versao
+    # e do índice ix_bronze_registros_ultima): homologação/sandbox nunca vira cidadão
+    ult = (select(R.id).where(R.quarentena.is_(None), R.ambiente_origem == "producao",
+                              R.sistema_origem.not_in(so_fatos),  # CC9
                               tuple_(R.sistema_origem, R.tabela).not_in(fatos))
            .ext(distinct_on(R.sistema_origem, R.tabela, R.id_origem))
            .order_by(R.sistema_origem, R.tabela, R.id_origem, R.id.desc()).subquery())

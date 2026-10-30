@@ -71,6 +71,9 @@ class Execucao(Base):
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # IN2 (0012): 'completa' (relê tudo) ou 'incremental' (só o alterado desde a marca d'água); nulo = completa
     modo: Mapped[str | None] = mapped_column(String(20))
+    # Parte 2 (0038): modo da prata/ouro (incremental | recomposicao) e contagens do delta
+    camadas_modo: Mapped[str | None] = mapped_column(String(20))
+    camadas_contagens: Mapped[dict | None] = mapped_column(JSONType)
     # SEI7 (0022): ambiente de onde a execução leu ("oficial" ou "homologacao"); nulo nos conectores sem essa noção
     ambiente_origem: Mapped[str | None] = mapped_column(String(20))
     # PR-B (0035): subetapa em texto fixo (sem dado pessoal), contador da subetapa e último sinal de vida
@@ -330,3 +333,25 @@ class ExecucaoSubetapa(Base):
     total: Mapped[int | None] = mapped_column(BigInteger)
     iniciada_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finalizada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CamadasMarca(Base):
+    """Parte 2 (0038): marca d'água da prata/ouro incrementais por (sistema, tabela)."""
+    __tablename__ = "camadas_marca"
+    __table_args__ = S
+    sistema: Mapped[str] = mapped_column(String(50), primary_key=True)
+    tabela: Mapped[str] = mapped_column(String(200), primary_key=True)
+    ultimo_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    expandido_ate: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    assinatura: Mapped[str | None] = mapped_column(Text)
+    execucao_id: Mapped[int | None] = mapped_column(Integer)
+    atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CamadasPendencia(Base):
+    """Parte 2 (0038): fila durável de chaves a recalcular na prata/ouro incrementais."""
+    __tablename__ = "camadas_pendencias"
+    __table_args__ = S
+    tipo: Mapped[str] = mapped_column(String(20), primary_key=True)
+    chave: Mapped[str] = mapped_column(String(250), primary_key=True)
+    criado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())

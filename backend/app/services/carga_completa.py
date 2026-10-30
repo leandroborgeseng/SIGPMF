@@ -372,9 +372,10 @@ def ativa(db: Session, sistema: str) -> Execucao | None:
                                             Execucao.status == "em_andamento").order_by(Execucao.id.desc()).limit(1))
 
 
-def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False) -> None:
+def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False, recompor: bool = False) -> None:
     """Background (thread daemon). Os testes substituem por execução síncrona com origem sintética."""
-    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs={"somente_camadas": somente_camadas},
+    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs={"somente_camadas": somente_camadas,
+                                                                      "recompor": recompor},
                      daemon=True, name=f"carga-completa-{conector}").start()
 
 
@@ -442,7 +443,9 @@ def interromper_orfas(db: Session) -> int:
     return n
 
 
-def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = False, modo: str = "completa") -> Execucao:
+def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = False, modo: str = "completa",
+            recompor: bool = False) -> Execucao:
+    """recompor (Parte 2, PI6): só prata/ouro, recomposição completa pedida pelo admin (não exige carga interrompida)."""
     """IN2: modo 'completa' relê a origem inteira (keyset + checkpoint); 'incremental' só o alterado desde a marca d'água."""
     if modo not in MODOS:
         raise ValueError(f"Modo de carga inválido: {modo!r}")
@@ -450,7 +453,7 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
     motivo = motivo_bloqueio(db, conector)
     if motivo:
         raise Bloqueado(motivo)
-    if somente_camadas and not pode_retomar_camadas(db, sistema):
+    if somente_camadas and not recompor and not pode_retomar_camadas(db, sistema):
         raise Bloqueado("Só dá para retomar prata e ouro de uma carga interrompida com a leitura da origem concluída.")
     disco = recursos.motivo_disco_cheio(exige_leitura=True)
     if disco:
@@ -478,7 +481,7 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
         _solta(trava, sistema)
         raise
     if somente_camadas:
-        disparar(ex.id, conector, trava, somente_camadas=True)
+        disparar(ex.id, conector, trava, somente_camadas=True, **({"recompor": True} if recompor else {}))
     else:
         disparar(ex.id, conector, trava)
     return ex
@@ -559,7 +562,8 @@ def _origem_sil(ex: Execucao) -> dict:
     return ConfigSil.do_ambiente().origem_publica()
 
 
-def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
+def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False,
+          recompor: bool = False) -> None:
     sistema = _sistema(conector)
     proprio = db is None
     db = db or SessionLocal()
@@ -570,7 +574,7 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Retomando prata e ouro de {conector} a partir "
                                                                       "da bronze (sem reler a origem)"))
                 db.commit()
-                _camadas(db, ex, conector, sistema, pode_pular=False)  # pedido explícito: sempre reconstrói
+                _camadas(db, ex, conector, sistema, pode_pular=False, recompor=recompor)  # pedido explícito
             elif ex.modo == "incremental":
                 if conector in cc.CONECTORES_API:
                     db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Base da API SIL: {cc.base_sil_log()}"))
@@ -713,7 +717,43 @@ def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) ->
     log.info("carga completa %s: %s", ex_id, msg)
 
 
-def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True) -> None:
+def _camadas_incremental(db: Session, ex: Execucao, conector: str, ate: int, motivo: str) -> str | None:
+    """Parte 2: prata/ouro incrementais, commit por lote. Trava de SESSÃO numa conexão própria (os commits por lote
+    soltariam a trava de transação). Devolve o resumo, ou None se cancelou (já finalizada)."""
+    from app.services import camadas_incremental as ci
+    from app.services import subetapa as sub
+    from app.services import trava as tv
+    t0 = _inicio_etapa(db, ex, "prata", None)
+    with get_engine().connect() as trava:
+        import time as _t
+        while not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": tv.CHAVE_CAMADAS}).scalar():
+            sinal_de_vida(ex.id)
+            _t.sleep(2.0)
+        try:
+            with sub.Pulso(ex.id):
+                res = ci.executa(db, ate, ex.id, cancelado=lambda: pedido_cancelar(ex.id),
+                                 progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot),
+                                 ouro=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot),
+                                 confere=confere_prata)
+        except ci.Cancelado:
+            db.rollback()
+            ex = db.get(Execucao, ex.id)
+            ex.tabela_atual = None
+            _finaliza(db, ex, "cancelada", f"Carga de {NOMES[conector]} cancelada durante a prata/ouro incrementais. "
+                                           "Os lotes já confirmados ficam; Retomar camadas continua da fila.")
+            return None
+        finally:
+            sub.finaliza(ex.id)
+            trava.execute(text("select pg_advisory_unlock(:k)"), {"k": tv.CHAVE_CAMADAS})
+    ex = db.get(Execucao, ex.id)
+    ex.camadas_contagens = {**res, "sem_alteracao": int(ex.ignorados or 0), "motivo": motivo}
+    _log_separado(ex.id, "prata", t0, res)
+    ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", res["lotes_chaves"], datetime.now(UTC)
+    return f"camadas=incremental {res}"
+
+
+def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True,
+             recompor: bool = False) -> None:
     """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada.
     IN1: se nenhuma entrada mudou desde a última reconstrução (camadas_estado), a reconstrução é pulada (o resultado
     seria idêntico); a reconciliação da carga completa roda do mesmo jeito."""
@@ -724,9 +764,24 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=MSG_CAMADAS_MANTIDAS))
         resumo = MSG_CAMADAS_MANTIDAS
     else:
+        from app.services import camadas_incremental as ci
+        from app.services import ultima_versao
+        ate = ultima_versao.sincroniza(db)  # fora da trava; idempotente, commit por faixa
+        modo, motivo = ci.decide(db, ate, recompor or not pode_pular)  # IN1: Retomar camadas sempre recompõe
+        ex.camadas_modo = modo
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Prata/ouro: {modo} ({motivo})"))
+        db.commit()  # nada pendente em ex antes da trava (o sinal de vida vem por outra conexão)
+        resumo = None
+        if modo == "incremental":
+            resumo = _camadas_incremental(db, ex, conector, ate, motivo)
+            if resumo is None:
+                return None
+            camadas_estado.registra(db, assin, ex.id)
+    if resumo is None:
         R = RegistroBronze  # P1: chaves distintas pela tupla (sem concat), coberto pelo índice 0036
         total = int(db.scalar(select(func.count()).select_from(
-            select(R.sistema_origem, R.tabela, R.id_origem).where(R.quarentena.is_(None)).distinct().subquery())) or 0)
+            select(R.sistema_origem, R.tabela, R.id_origem).where(R.quarentena.is_(None),
+                                                                 R.ambiente_origem == "producao").distinct().subquery())) or 0)
         t0 = _inicio_etapa(db, ex, "prata", total)  # faz commit: a trava de transação das camadas vem depois
         from app.services import trava as tv
         tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
@@ -756,6 +811,8 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         _log_separado(ex.id, "ouro", t1, gres)
         ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
+        ci.marca_tudo(db, ate, ex.id)  # Parte 2: mesma transação; próxima carga segue incremental daqui
+        ex.camadas_contagens = {"motivo": motivo}
         resumo = f"silver={sres} gold={gres}"
     lido = f"lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados} ignorados={ex.ignorados}"
     if ex.modo == "incremental":  # a reconciliação compara com o COUNT(*) da última completa: não vale aqui
@@ -873,6 +930,8 @@ def situacao(db: Session, conector: str) -> dict:
             "id": ex.id, "status": ex.status, "usuario": ex.usuario, "iniciado_em": ex.iniciado_em,
             "finalizado_em": ex.finalizado_em, "lidos": ex.lidos, "novos": ex.novos, "atualizados": ex.atualizados,
             "ignorados": ex.ignorados, "lotes": ex.lotes, "gravados": ex.novos + ex.atualizados,
+            # Parte 2 (PI12): modo da prata/ouro e contagens do delta (só números e o motivo, sem dado)
+            "camadas_modo": ex.camadas_modo, "camadas_contagens": ex.camadas_contagens,
             "total_origem": ex.total_origem, "processados": sum(c.posicao for c in cps),
             # CC12 (Designer): "X de N tabelas já lidas" no card da carga pausada
             "tabelas_lidas": sum(1 for c in cps if c.concluida), "tabelas_total": len(cc.tabelas_do_conector(sistema)), "tabela_atual": ex.tabela_atual,

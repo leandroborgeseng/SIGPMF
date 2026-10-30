@@ -42,6 +42,16 @@ class RegistroBronze(Base):
     ambiente_origem: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
 
 
+class UltimaVersao(Base):
+    """Parte 2 (0038): versão mais recente SEM quarentena de cada chave da bronze (núcleo do incremental)."""
+    __tablename__ = "ultima_versao"
+    __table_args__ = {"schema": "bronze"}
+    sistema_origem: Mapped[str] = mapped_column(String(50), primary_key=True)
+    tabela: Mapped[str] = mapped_column(String(200), primary_key=True)
+    id_origem: Mapped[str] = mapped_column(String(200), primary_key=True)
+    registro_id: Mapped[int] = mapped_column(BigInteger)
+
+
 SV = {"schema": "silver"}
 
 

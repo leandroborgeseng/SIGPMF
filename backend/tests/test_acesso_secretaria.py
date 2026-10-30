@@ -473,6 +473,7 @@ NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a pr�
     ("POST", "/api/conectores/diagnostico"), ("GET", "/api/conectores/{conector}/completa"),
     ("GET", "/api/conectores/{conector}/completa/estimativa"), ("POST", "/api/conectores/{conector}/completa"),
     ("GET", "/api/conectores/{conector}/completa/quarentena"), ("POST", "/api/conectores/{conector}/completa/retomar-camadas"),
+    ("POST", "/api/conectores/{conector}/completa/recompor-camadas"),
     ("POST", "/api/conectores/{conector}/completa/cancelar"), ("GET", "/api/sistema/recursos"),
     ("POST", "/api/conectores/iss/municipes/executar"), ("GET", "/api/execucoes/{eid}/logs"), ("GET", "/api/indicadores"),
     ("GET", "/api/politicas"), ("POST", "/api/politicas/retencao/executar"), ("POST", "/api/usuarios"), ("GET", "/api/auditoria"),

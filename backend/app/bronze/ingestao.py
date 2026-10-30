@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.camadas import RegistroBronze
 from app.models.controle import Log
+from app.services.ultima_versao import atualiza as atualiza_ultima_versao
 
 
 def hash_registro(dados: dict[str, Any]) -> str:
@@ -71,8 +72,11 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_dat
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
             RegistroBronze.id_origem.in_(ids), RegistroBronze.ambiente_origem == amb)))  # LOW: por ambiente
         stmt = insert(RegistroBronze).values(list(linhas.values())).on_conflict_do_nothing(
-            index_elements=["sistema_origem", "tabela", "id_origem", "hash"]).returning(RegistroBronze.id_origem)
-        inseridos = [row[0] for row in db.execute(stmt)]
+            index_elements=["sistema_origem", "tabela", "id_origem", "hash"]).returning(RegistroBronze.id_origem,
+                                                                                    RegistroBronze.id)
+        ret = db.execute(stmt).all()
+        inseridos = [row[0] for row in ret]
+        atualiza_ultima_versao(db, sistema, tabela, ret, amb)  # Parte 2: só linhas sem quarentena passam por aqui
         atual = sum(1 for x in inseridos if x in existentes)
         c["atualizados"] += atual
         c["novos"] += len(inseridos) - atual

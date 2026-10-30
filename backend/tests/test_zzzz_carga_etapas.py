@@ -53,6 +53,11 @@ def test_cc7_api_etapas_e_logs_de_inicio_e_fim(client, tokens, origem, db):  # n
             vistos.append((e.etapa, e.processadas_etapa, e.total_etapa, e.atualizado_em is not None, e.status))
         finally:
             outra.close()
+    from sqlalchemy import delete
+
+    from app.models.controle import CamadasMarca
+    db.execute(delete(CamadasMarca))  # Parte 2: sem marca d'água -> recomposição completa (prata e ouro com etapas)
+    db.commit()
     pytest.MonkeyPatch.setattr(pytest.MonkeyPatch(), ccomp, "sinal_de_vida", espiao)
     try:
         ex = _carga_ok(client, tokens, db)

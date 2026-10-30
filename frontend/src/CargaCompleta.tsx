@@ -13,6 +13,8 @@ export type ExecCompleta = {
   tabelas_lidas?: number | null; tabelas_total?: number | null
   total_etapa?: number | null; atualizado_em?: string | null; sem_progresso?: boolean; alerta_min?: number
   pode_retomar_camadas?: boolean
+  camadas_modo?: 'incremental' | 'recomposicao' | null
+  camadas_contagens?: { novas?: number; alteradas?: number; excluidas?: number; sem_alteracao?: number; motivo?: string } | null
 }
 export type Etapa = 'leitura' | 'prata' | 'ouro' | 'concluida'
 export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
@@ -258,6 +260,18 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
             {sit.camadas.gerados_prata != null && <div><dt>Registros gerados na prata</dt><dd>{milhar(sit.camadas.gerados_prata)}</dd></div>}
             <div><dt>Pendências</dt><dd>{milhar(sit.camadas.pendencias)}</dd></div>
           </dl>
+          {ex.camadas_modo && (
+            <dl className="camadas" aria-label="Modo da prata e do ouro">
+              <div><dt>Modo</dt><dd>{ex.camadas_modo === 'incremental' ? 'Incremental' : 'Recomposição completa'}</dd></div>
+              {ex.camadas_modo === 'incremental' && ex.camadas_contagens && (<>
+                <div><dt>Novas</dt><dd>{milhar(ex.camadas_contagens.novas)}</dd></div>
+                <div><dt>Alteradas</dt><dd>{milhar(ex.camadas_contagens.alteradas)}</dd></div>
+                <div><dt>Excluídas</dt><dd>{milhar(ex.camadas_contagens.excluidas)}</dd></div>
+                <div><dt>Sem alteração</dt><dd>{milhar(ex.camadas_contagens.sem_alteracao)}</dd></div>
+              </>)}
+            </dl>
+          )}
+          {ex.camadas_contagens?.motivo && <p className="sutil">Motivo: {ex.camadas_contagens.motivo}</p>}
           {(sit.quarentena ?? 0) > 0 && (
             <div className="aviso-ambar" role="status">
               <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena (chave nula)</p>
