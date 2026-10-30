@@ -61,8 +61,8 @@ class Pulso:
     o laço avança) e checagem de cancelamento a cada lote."""
     PULSO_S = 10.0
 
-    def __init__(self, progresso=None, cancelado=None):
-        self.progresso, self.cancelado = progresso, cancelado
+    def __init__(self, progresso=None, cancelado=None, batimento=None):
+        self.progresso, self.cancelado, self.batimento = progresso, cancelado, batimento
         self._ult = time.monotonic()
         self._n: tuple[int, int | None] = (0, None)
 
@@ -76,6 +76,16 @@ class Pulso:
         self._n = (n, total)
         if self.progresso and (forca or agora - self._ult >= self.PULSO_S):
             self.progresso(n, total)
+            self._ult = agora
+
+    def leitura(self, n: int) -> None:
+        """Leitura da bronze (total ainda desconhecido): cancelamento a cada lote e batimento (só atualizado_em) a cada
+        PULSO_S, sem mexer no contador da etapa."""
+        if n % LOTE == 0 and self.cancelado and self.cancelado():
+            raise CamadasCanceladas("cancelamento pedido")
+        agora = time.monotonic()
+        if self.batimento and (n % LOTE == 0 or agora - self._ult >= self.PULSO_S):
+            self.batimento()
             self._ult = agora
 
     def grava(self) -> None:
@@ -272,14 +282,14 @@ class _Indice:
 
 
 def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Medicao | None = None,
-                cancelado=None) -> dict[str, int]:
+                cancelado=None, batimento=None) -> dict[str, int]:
     """progresso(processados, total): sinal de vida (chamado a cada bloco). indexado=False mantém o algoritmo
     linear antigo só para o teste de regressão (mesmo resultado). medicao: recebe tempo/linhas/RSS por etapa (também
     vai para o log app.silver.medicao, sem PII). cancelado(): checado a cada lote; se True, sobe CamadasCanceladas
     (quem chama faz rollback: a prata/ouro anteriores ficam intactas)."""
     if not indexado:
         exige_ambiente_teste("prata linear")
-    pulso = Pulso(progresso, cancelado)
+    pulso = Pulso(progresso, cancelado, batimento)
     med = medicao if medicao is not None else Medicao()
     p, peso_prov = _params(db)
     for m in (Endereco, Vinculo, Identificador, CorrelacaoPendente, Inconsistencia, Cidadao, SistemaSilver):
@@ -318,7 +328,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
 
     regs = []
     for r, dados in _ultimas_versoes(db):
-        pulso.passo(len(regs) + 1, None)
+        pulso.leitura(len(regs) + 1)
         m = MAPEAMENTOS.get((r.sistema_origem, r.tabela), {})
         if not m or m.get("papel") == "fato":  # sem mapeamento (ISS.Municipes) ou fato tributário: silver própria
             continue

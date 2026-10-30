@@ -691,7 +691,8 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
         try:
             sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot),
-                                             cancelado=lambda: pedido_cancelar(ex.id))
+                                             cancelado=lambda: pedido_cancelar(ex.id),
+                                             batimento=lambda: tv.sinal_de_vida(ex.id))
         except processamento.CamadasCanceladas:
             return _camadas_canceladas(db, ex, conector)
         confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
