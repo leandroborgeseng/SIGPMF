@@ -210,7 +210,7 @@ def test_migracao_0036_lock_timeout_e_indice_invalido(banco, monkeypatch):
         longa = eng.connect().execution_options(isolation_level="REPEATABLE READ")
         tx = longa.begin()
         longa.execute(text("SELECT count(*) FROM bronze.registros"))  # transação aberta (snapshot)
-        with pytest.raises(RuntimeError, match="não foi criado em 1s"):
+        with pytest.raises(RuntimeError, match="não foi possível criar o índice bronze.ix_registros_ultima_versao em 1s"):
             command.upgrade(cfg, "head")
         tx.rollback()
         longa.close()
@@ -222,6 +222,82 @@ def test_migracao_0036_lock_timeout_e_indice_invalido(banco, monkeypatch):
         command.upgrade(cfg, "head")  # próxima execução: drop concurrently + recria
         with eng.connect() as c:
             assert c.scalar(q) is True
+    finally:
+        eng.dispose()
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}" WITH (FORCE)'))
+        adm.dispose()
+
+
+def _mod_0036():
+    import importlib.util
+    import os
+    caminho = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alembic", "versions",
+                           "0036_indice_ultima_versao.py")
+    spec = importlib.util.spec_from_file_location("m0036", caminho)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@pytest.mark.parametrize("valor", ["0", "0s", "0ms", "0min", "000", " 0s ", "-5s", "abc", "1h", "30s; DROP"])
+def test_lock_timeout_zero_ou_invalido_volta_ao_padrao(monkeypatch, caplog, valor):
+    m = _mod_0036()
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", valor)
+    with caplog.at_level("WARNING"):
+        assert m._lock_timeout() == "30s"
+    msgs = [r.getMessage() for r in caplog.records]
+    assert msgs and all("SIGPMF_INDICE_LOCK_TIMEOUT" in x for x in msgs)
+    assert all(x.replace("30s", "").replace("SIGPMF_INDICE_LOCK_TIMEOUT", "").find(valor.strip()) < 0 for x in msgs)
+
+
+@pytest.mark.parametrize(("valor", "esperado"), [("5s", "5s"), ("1500", "1500ms"), ("2min", "2min"), ("007s", "7s")])
+def test_lock_timeout_valido(monkeypatch, valor, esperado):
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", valor)
+    assert _mod_0036()._lock_timeout() == esperado
+
+
+def test_migracao_0036_drop_do_invalido_com_transacao_aberta(banco, monkeypatch):
+    """(c) o DROP INDEX CONCURRENTLY do índice INVALID também respeita o lock_timeout e falha com mensagem clara."""
+    from alembic import command
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    url = make_url(banco)
+    nome = f"{url.database}_mig0036dr"
+    adm = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}"'))
+            c.execute(text(f'CREATE DATABASE "{nome}"'))
+    except Exception:  # noqa: BLE001
+        adm.dispose()
+        pytest.skip("sem permissão para criar o banco de teste da migração")
+    alvo = url.set(database=nome).render_as_string(hide_password=False)
+    cfg = alembic_cfg()
+    cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
+    monkeypatch.setenv("SIGPMF_INDICE_CONCORRENTE", "1")
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", "1s")
+    eng = create_engine(alvo)
+    try:
+        command.upgrade(cfg, "0035")
+        with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as c:  # índice INVALID de propósito
+            c.execute(text("CREATE INDEX ix_registros_ultima_versao ON bronze.registros (id)"))
+            c.execute(text("UPDATE pg_index SET indisvalid = false WHERE indexrelid = "
+                           "'bronze.ix_registros_ultima_versao'::regclass"))
+        longa = eng.connect().execution_options(isolation_level="REPEATABLE READ")
+        tx = longa.begin()
+        longa.execute(text("SELECT count(*) FROM bronze.registros"))
+        with pytest.raises(RuntimeError) as e:
+            command.upgrade(cfg, "head")
+        msg = str(e.value)
+        assert "não foi possível descartar o índice" in msg and e.value.__cause__ is None
+        assert e.value.__suppress_context__ and "postgresql" not in msg and (url.password or "§") not in msg
+        tx.rollback()
+        longa.close()
+        command.upgrade(cfg, "head")
+        with eng.connect() as c:
+            assert c.scalar(text("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                                 "WHERE c.relname = 'ix_registros_ultima_versao'")) is True
     finally:
         eng.dispose()
         with adm.connect() as c:
