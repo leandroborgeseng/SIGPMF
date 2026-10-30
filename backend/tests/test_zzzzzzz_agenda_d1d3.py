@@ -66,7 +66,8 @@ def test_d3_auditoria_grava_antes_real_com_forcar(client, tokens, db, saude):
     assert r.status_code == 200, r.text
     d = _ultima(db, "agenda_alterada").detalhe
     assert d["antes"] == {"horario": "03:15", "ativo": True, "ordem": 4, "forcar": True}
-    assert d["depois"] == {"horario": "02:00", "ativo": False, "ordem": 2, "forcar": False}
+    # FA1: desligar mantém o forcar (a fonte só não roda enquanto ativo=false)
+    assert d["depois"] == {"horario": "02:00", "ativo": False, "ordem": 2, "forcar": True}
 
 
 def test_d3_limpar_forcar_audita_valor_anterior_real(client, tokens, db, saude):

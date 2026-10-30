@@ -39,6 +39,7 @@ class _Sessao:
 
     def __init__(self, cliente: ClienteSil):
         self.cliente, self.lotes, self.truncado = cliente, 0, False
+        self.teto: int | None = None  # SL1: só a amostra tem teto de lotes; a carga (completa/incremental) não
         self.ultimo_lote_cheio = False  # o último lote veio com LOTE_API itens: a API provavelmente tem mais
         self.alerta: dict | None = None  # página com CCM repetido / sem CCM novo: a execução para (sem pular checkpoint)
 
@@ -171,11 +172,11 @@ class SilConnector:
         while len(out) < limite:
             if conn.alerta:
                 break
-            if conn.lotes >= self.max_lotes:
+            if conn.teto is not None and conn.lotes >= conn.teto:
                 if not conn.truncado:
                     conn.truncado = True
                     log.info("SIL: teto de %d lote(s) por execução atingido (SIL_MAX_LOTES_POR_EXECUCAO)",
-                             self.max_lotes)
+                             conn.teto)
                 break
             lote = self.lote_empresas(conn, seq)
             out.extend(lote)
@@ -184,7 +185,7 @@ class SilConnector:
                 break
             if not lote:
                 break
-            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+            if conn.teto is not None and conn.lotes >= conn.teto and conn.ultimo_lote_cheio:
                 conn.truncado = True  # teto atingido e a API ainda tem lotes: execução parcial
             prox = lote[-1]["Ccm"] + 1
             if prox <= seq:  # nunca repete a mesma Sequencia
@@ -194,6 +195,7 @@ class SilConnector:
 
     def ler_amostra(self, tabela: str, politica=None, campo_incremental=None, desde=None) -> list[dict]:
         conn = self.abrir()
+        conn.teto = self.max_lotes  # SL1: o teto (SIL_MAX_LOTES_POR_EXECUCAO, padrão 1) vale só aqui
         try:
             out = self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.amostra_limite)[: self.amostra_limite]
             if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:

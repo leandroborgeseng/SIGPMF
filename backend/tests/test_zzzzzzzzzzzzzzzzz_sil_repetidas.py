@@ -43,6 +43,7 @@ def test_a_ccm_string_vira_int_e_keyset_avanca():
     api = Api(ccms=range(1, 151))
     con = _con(api, max_lotes=3)
     s = con.abrir()
+    s.teto = con.max_lotes  # SL1: teto só na sessão da amostra
     try:
         linhas = con.ler_pagina(s, "Empresas", None, ("Ccm",), None, 1000)
     finally:

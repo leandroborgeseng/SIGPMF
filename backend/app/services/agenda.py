@@ -111,8 +111,9 @@ def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
     a espera entre tentativas."""
     if not ag.ativo:
         return False
-    if ag.forcar:
-        return True
+    if ag.forcar:  # FA4: forçado roda fora da janela, mas respeita a espera depois de uma tentativa sem carga
+        prox = _utc(ag.proxima_tentativa_em)
+        return prox is None or agora >= prox
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
     if not na_janela(m, ini, fim) or ag.ultima_data == dia_da_janela(local, ini, fim):
@@ -278,6 +279,7 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
     """IN6/IN9: a agenda dispara a carga INCREMENTAL da educação (cge.incremental); a completa é só manual (ADMIN)."""
     from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
     from app.services import carga_gestaoescolar as cge
+    forcado = bool(ag.forcar)
     recusa = educacao_recusa(db, agora)
     if recusa:
         return _encerra(db, ag, "ocupada" if recusa[0] == "ocupado" else "bloqueada", recusa[1], agora,
@@ -290,6 +292,8 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
                 ex = cge.incremental(db, lt, cfg, USUARIO, agora=agora)
         else:
             ex = cge.incremental(db, leitor, cfg, USUARIO, agora=agora)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
     except (PermissionError, cge.CargaRecusada) as exc:
         return _encerra(db, ag, "bloqueada", cge.mensagem_segura(exc), agora, resolvido=False)
     except Exception as exc:  # noqa: BLE001
@@ -309,8 +313,11 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
 def _executar_contagens(db: Session, ag: Agendamento, agora: datetime) -> str:
     """Roda o job J1–J4 (só leitura, só agregados). Falha vira mensagem fixa, nunca str(exc)."""
     from app.contagens import job
+    forcado = bool(ag.forcar)
     try:
         ex = job.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         return _encerra(db, ag, "falha", f"Contagens não concluídas ({type(exc).__name__}).", agora, resolvido=False)
@@ -329,12 +336,23 @@ def _alerta_tabela_vazia(ag: Agendamento, ex: Execucao) -> None:
         alertar(f"Carga de {_nome(ag.conector)}: tabela(s) com 0 linhas", f"{a['texto']}\n\nVeja o Monitor de cargas no SIGPMF.")
 
 
+def _consome_forcar(db: Session, ag: Agendamento, execucao_id: int | None) -> None:
+    """FA4: o forcar só é limpo aqui, depois que uma carga foi criada a partir dele (execução com id)."""
+    if not ag.forcar:
+        return
+    ag.forcar = False
+    db.commit()
+    registra_forcar(db, ag.conector, USUARIO, True, False, "agenda", motivo=f"carga_criada execucao_id={execucao_id}")
+
+
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
     s = get_settings()
     if len(mensagem) > MAX_MENSAGEM:
         mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
     anterior = ag.ultimo_status
-    ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
+    # FA4: _encerra NUNCA mexe no forcar. Antes ele zerava o forcar em todo encerramento (ocupada, bloqueada,
+    # sem_mudanca, falha ao iniciar...), inclusive quando nenhuma carga tinha sido criada a partir dele.
+    ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em = status, mensagem, datetime.now(UTC)
     ini, fim = janela(s.agenda_janela)
     hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
     if resolvido:
@@ -349,6 +367,8 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
             ag.ultima_mensagem = mensagem
         else:
             ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
+    if ag.forcar and ag.proxima_tentativa_em is None:  # forcar pendente sem carga criada: tenta de novo depois
+        ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
     db.commit()
     audita(db, USUARIO, f"agenda_{status}", f"agendamento:{ag.conector}",
            {"execucao_id": ag.ultima_execucao_id, "tentativas": ag.tentativas, "resolvido": resolvido})
@@ -383,6 +403,7 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
     agora = agora or datetime.now(UTC)
     conector, nome = ag.conector, _nome(ag.conector)
     anterior = ag.ultimo_status
+    forcado = bool(ag.forcar)
     ag.ultimo_inicio_em, ag.ultimo_status, ag.ultima_mensagem = datetime.now(UTC), "em_andamento", None
     db.commit()
     if conector == EDUCACAO:
@@ -404,7 +425,7 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
             return _encerra(db, ag, "falha", f"Não foi possível consultar a origem de {nome}: "
                                              f"{motivo_seguro(c['classe'], c['numero'], c['tabela'], c['objeto'])}.",
                             agora, resolvido=False)
-        if ag.assinatura_origem == assin and anterior in RESOLVIDOS and not _tem_indisponivel(assin):
+        if not forcado and ag.assinatura_origem == assin and anterior in RESOLVIDOS and not _tem_indisponivel(assin):
             return _encerra(db, ag, "sem_mudanca", f"A origem de {nome} não mudou desde a última carga: nada foi lido.",
                             agora, resolvido=True)
     modo = modo_da_vez(ag, agora)
@@ -421,6 +442,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
                         agora, resolvido=False)
     ag.ultima_execucao_id = ex.id
     db.commit()
+    if forcado:
+        _consome_forcar(db, ag, ex.id)
     ex = esperar(db, ex.id, parar)
     db.refresh(ag)
     if ex.status == "em_andamento":
@@ -611,13 +634,17 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
         if horario != ag.horario:
             ag.ultima_data = None  # novo horário vale já hoje
         ag.horario = horario
-    forcar_cancelado = False
     if ativo is not None:
+        religou = ativo and not ag.ativo
         ag.ativo = ativo
         if ativo:
             ag.tentativas, ag.proxima_tentativa_em = 0, None
-        elif ag.forcar:  # #33 M1: desligar cancela um "Executar agora" pendente (não dispara ao religar)
-            ag.forcar, forcar_cancelado = False, True
+        # FA1: desligar NÃO zera o forcar (a fonte só não roda enquanto ativo=false).
+        # FA2: ao religar, o forcar só volta se o usuário mantiver a opção marcada (forcar=true); padrão false.
+        if religou:
+            ag.forcar = forcar is True
+    if forcar is True and ag.ativo:
+        ag.forcar, ag.tentativas, ag.proxima_tentativa_em = True, 0, None
     if ordem is not None:
         ag.ordem = ordem
     forcar_limpo = None
@@ -633,9 +660,8 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
            {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem,
                                        "forcar": bool(ag.forcar)}})
-    if forcar_cancelado:
-        audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
-               {"motivo": "forcar_cancelado_desligado", "conector": conector})
+    if antes["forcar"] != bool(ag.forcar):
+        registra_forcar(db, conector, usuario, antes["forcar"], bool(ag.forcar), "tela")
     if forcar_limpo is not None:
         _audita_forcar_limpo(db, usuario, conector, forcar_limpo)
     return ag
@@ -657,13 +683,14 @@ def limpar_forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     db.commit()
     db.refresh(ag)
     _audita_forcar_limpo(db, usuario, conector, antes)
+    registra_forcar(db, conector, usuario, antes, False, "tela")
     return ag
 
 
 def forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     """#33 B2: forcar=true numa única UPDATE ... WHERE ativo (atômica). Se outro pedido desligou antes, nenhuma
     linha muda e sobe AgendaDesligada (409); se desligar vier depois, ele trava a linha e cancela o forcar."""
-    _agendamento(db, conector)  # 404 se não existe
+    antes = bool(_agendamento(db, conector).forcar)  # 404 se não existe
     feito = db.execute(update(Agendamento).where(Agendamento.conector == conector, Agendamento.ativo.is_(True))
                        .values(forcar=True, tentativas=0, proxima_tentativa_em=None, atualizado_por=usuario,
                                atualizado_em=datetime.now(UTC)).returning(Agendamento.id)).first()
@@ -673,4 +700,26 @@ def forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     ag = _agendamento(db, conector)
     db.refresh(ag)
     audita(db, usuario, "agenda_executar_agora", f"agendamento:{conector}")
+    registra_forcar(db, conector, usuario, antes, True, "tela")
     return ag
+
+
+ORIGENS_FORCAR = ("tela", "agenda", "_encerra")
+
+
+def registra_forcar(db: Session, conector: str, usuario: str | None, antes: bool, depois: bool, origem: str,
+                    motivo: str | None = None) -> None:
+    """FA3: toda mudança do forcar vira uma linha em controle.logs: quem (id do usuário, nunca e-mail), quando
+    (criado_em), origem (tela | agenda | _encerra), antes e depois. Sem PII."""
+    from app.models.controle import Log, Usuario
+    if origem not in ORIGENS_FORCAR:
+        raise ValueError(origem)
+    quem = usuario or "?"
+    if "@" in quem:
+        uid = db.scalar(select(Usuario.id).where(Usuario.email == quem))
+        quem = f"usuario_id={uid}" if uid is not None else "usuario_id=?"
+    msg = (f"[agenda_forcar] conector={conector} antes={bool(antes)} depois={bool(depois)} origem={origem} "
+           f"quem={quem}" + (f" motivo={motivo}" if motivo else ""))
+    db.add(Log(execucao_id=None, nivel="INFO", mensagem=msg))
+    db.commit()
+    log.info(msg)

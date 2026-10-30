@@ -97,7 +97,8 @@ def test_32_ativo_true_comportamento_mantido(client, tokens, db, monkeypatch):
 
 
 def test_33_desligar_cancela_executar_agora_pendente_e_audita(client, tokens, db, monkeypatch):
-    """M1: Executar agora pendente + desligar -> forcar False e auditoria; religar não roda fora da janela."""
+    """FA1/FA2 (substitui M1): Executar agora pendente + desligar -> forcar mantido, mas não roda; religar sem
+    marcar a opção -> forcar false e não roda fora da janela."""
     from datetime import UTC, datetime
     from zoneinfo import ZoneInfo
 
@@ -112,14 +113,12 @@ def test_33_desligar_cancela_executar_agora_pendente_e_audita(client, tokens, db
     execs = _foto(db)[0]
     r = client.put("/api/agenda/sil", headers=tokens["admin"], json={"ativo": False})
     assert r.status_code == 200
-    assert next(i for i in r.json()["itens"] if i["conector"] == "sil")["forcar"] is False
-    assert _foto(db)[2] is False
-    aud = db.scalar(select(Auditoria).where(Auditoria.acao == "agenda_executar_agora_cancelado")
-                    .order_by(Auditoria.id.desc()))
-    assert aud.alvo == "agendamento:sil"
-    assert aud.detalhe == {"motivo": "forcar_cancelado_desligado", "conector": "sil"}
-    assert aud.usuario and "@" in aud.usuario
-    _sem_segredo(aud)
+    it = next(i for i in r.json()["itens"] if i["conector"] == "sil")
+    assert it["forcar"] is True and it["proxima_em"] is None
+    assert _foto(db)[2] is True
+    db.expire_all()
+    desligado = db.scalar(select(Agendamento).where(Agendamento.conector == "sil"))
+    assert ag.devido(desligado, datetime.now(UTC), 0, 1440) is False
     # religar às 12h (fora da janela 00:00-06:00): nada é devido e o ciclo não abre execução
     assert client.put("/api/agenda/sil", headers=tokens["admin"], json={"ativo": True}).status_code == 200
     meio_dia = datetime(2026, 10, 29, 12, 0, tzinfo=ZoneInfo("America/Sao_Paulo")).astimezone(UTC)
@@ -213,8 +212,9 @@ def test_33_b2_desligar_trava_linha_e_forcar_concorrente_recusa(db):
 
 
 def test_33_b2_corrida_simultanea_nunca_desligado_com_forcar(db):
-    """'Executar agora' e 'desligar' ao mesmo tempo (20 rodadas): nunca termina ativo=False com forcar=True."""
+    """'Executar agora' e 'desligar' ao mesmo tempo (20 rodadas): termina desligado e nunca roda (FA1)."""
     import threading
+    from datetime import UTC, datetime
 
     from app.core.db import SessionLocal
     from app.services import agenda as ag
@@ -250,7 +250,12 @@ def test_33_b2_corrida_simultanea_nunca_desligado_com_forcar(db):
         for t in ts:
             t.join(10)
         assert not erros
-        assert _estado_sil(db) == (False, False)
+        # FA1: desligar não zera mais o forcar; o invariante é: termina desligado e não roda
+        ativo, _forcar = _estado_sil(db)
+        assert ativo is False
+        db.expire_all()
+        item = db.scalar(select(Agendamento).where(Agendamento.conector == "sil"))
+        assert ag.devido(item, datetime.now(UTC), 0, 1440) is False
     _limpa(db)
 
 

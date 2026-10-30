@@ -73,6 +73,6 @@ class AgendaIn(BaseModel):
 
     @model_validator(mode="after")
     def _forcar_so_false(self):
-        if self.forcar is True:
+        if self.forcar is True and self.ativo is not True:  # FA2: true só junto com ativo=true (religar marcado)
             raise ValueError("forcar só aceita false (limpar execução pendente); use \"Executar agora\" para forçar.")
         return self

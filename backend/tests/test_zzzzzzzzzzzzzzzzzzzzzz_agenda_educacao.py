@@ -151,7 +151,8 @@ def test_executar_agora_ok_e_desligar_cancela_forcar(client, tokens, db, monkeyp
     assert client.put("/api/agenda/educacao", json={"ativo": False}, headers=tokens["admin"]).status_code == 200
     db.expire_all()
     a = db.scalar(select(Agendamento).where(Agendamento.conector == "educacao"))
-    assert a.ativo is False and a.forcar is False  # sem forcar órfão
+    assert a.ativo is False and a.forcar is True  # FA1: mantido, mas não roda desligado
+    assert ag.devido(a, datetime.now(UTC), 0, 1440) is False
     # forcar atômico: com ativo=false, a UPDATE ... WHERE ativo não muda nada
     try:
         ag.forcar(db, "educacao", "admin@aion.local")
@@ -189,7 +190,8 @@ def _forca_educacao(db, monkeypatch):
     _exec(db, cge.TIPO_AMOSTRA, "sucesso", lidos=5)
     db.execute(update(Agendamento).where(Agendamento.conector != "educacao").values(ativo=False, forcar=False))
     db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=True, forcar=True,
-                                                                                      ultima_mensagem=None))
+                                                                                      ultima_mensagem=None,
+                                                                                      proxima_tentativa_em=None))
     db.commit()
 
 
