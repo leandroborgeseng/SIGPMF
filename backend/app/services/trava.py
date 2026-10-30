@@ -42,7 +42,7 @@ def trava_livre(db: Session, sistema: str) -> bool:
 def sinal_de_vida(ex_id: int, etapa: str | None = None, processadas: int | None = None,
                   total: int | None = None) -> None:
     """Heartbeat (conexão separada, commit próprio). Com `etapa`, grava também etapa e contador (como a completa)."""
-    vals = {"atualizado_em": datetime.now(UTC)}
+    vals = {"atualizado_em": datetime.now(UTC), "ultimo_sinal_em": datetime.now(UTC)}
     if etapa is not None:
         vals.update(etapa=etapa, processadas_etapa=processadas, total_etapa=total)
     with get_engine().begin() as c:

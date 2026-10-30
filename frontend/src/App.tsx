@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from './auth'
 import Layout from './Layout'
 import AcessoSecretaria from './pages/AcessoSecretaria'
+import Cargas from './pages/Cargas'
 import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
@@ -26,6 +27,7 @@ export default function App() {
       <Route element={<Protegido><Layout /></Protegido>}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/conectores" element={<Conectores />} />
+        <Route path="/cargas" element={<Cargas />} />
         <Route path="/simulador" element={<Simulador />} />
         <Route path="/explorar" element={<ExplorarDados />} />
         <Route path="/painel" element={<PainelGeral />} />
