@@ -103,17 +103,38 @@ class SilConnector:
         return _Sessao(ClienteSil(self.config, transport=self._transporte, relogio=self._relogio, dormir=self._esperar))
 
     # ------------------------------------------------------------------ empresas
+    def _get_lote(self, s: _Sessao, sequencia: int) -> Any:
+        try:
+            return s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)})  # allowlist + token + retry no ClienteSil
+        except ErroSil as exc:
+            if exc.sequencia is None:
+                exc.sequencia = int(sequencia)
+            raise
+
     def lote_empresas(self, s: _Sessao, sequencia: int) -> list[dict]:
-        j = s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)})  # allowlist + token + retry no ClienteSil
+        j = self._get_lote(s, sequencia)
         s.lotes += 1
-        if j is None:  # 404: fim da sequência
-            return []
-        itens = _empresas(j)
-        s.ultimo_lote_cheio = isinstance(itens, list) and len(itens) >= LOTE_API
-        if itens is None:
-            if isinstance(j, dict) and not j:
+        for repeticao in (1, 2):
+            if j is None:  # 404: fim da sequência
                 return []
-            raise ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
+            itens = _empresas(j)
+            if itens is not None or (isinstance(j, dict) and not j):
+                break
+            # 200 com corpo fora do formato: só Sequencia, tipo do JSON e NOMES das chaves de topo (nunca valores).
+            chaves = sorted(str(k) for k in j)[:20] if isinstance(j, dict) else []
+            log.warning("SIL: resposta inesperada em consultarlote: Sequencia=%d status=200 tipo_json=%s chaves=%s "
+                        "(repetição %d de 2)", int(sequencia), type(j).__name__, chaves, repeticao)
+            if repeticao == 1:  # TL 30/10: repete a mesma Sequencia uma vez antes de falhar
+                j = self._get_lote(s, sequencia)
+                continue
+            exc = ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
+            exc.status, exc.sequencia = 200, int(sequencia)
+            exc.tentativa = getattr(s.cliente, "ultima_tentativa", None)
+            raise exc
+        if itens is None:  # {}: comportamento de sempre (fim)
+            s.ultimo_lote_cheio = False
+            return []
+        s.ultimo_lote_cheio = len(itens) >= LOTE_API
         linhas = [achata_empresa(x.get("empresa") or {}) for x in itens
                   if isinstance(x, dict) and (x.get("empresa") or {}).get("Ccm")]
         validas = [r for r in linhas if r["Ccm"] >= sequencia]

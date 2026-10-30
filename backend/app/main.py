@@ -32,6 +32,21 @@ def configurar_logs() -> logging.Logger:
         h._sigpmf_medicao = True
         med.addHandler(h)
     med.disabled = False
+    # SIL (TL 30/10): sem handler, o INFO de sigpmf.conector.sil / sigpmf.sil caía no lastResort do logging (só
+    # WARNING+), e a 349 falhou sem nenhuma linha. Os loggers do SIL só registram método, caminho sem query, status,
+    # tentativa e Sequencia; httpx/httpcore seguem em WARNING (logariam a URL com a query).
+    for nome in ("sigpmf.conector.sil", "sigpmf.sil"):
+        lg = logging.getLogger(nome)
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        if not any(getattr(h, "_sigpmf_stdout", False) for h in lg.handlers):
+            h = logging.StreamHandler(sys.stdout)
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+            h._sigpmf_stdout = True
+            lg.addHandler(h)
+        lg.disabled = False
+    for nome in ("httpx", "httpcore"):
+        logging.getLogger(nome).setLevel(logging.WARNING)
     return med
 
 
