@@ -7,7 +7,7 @@ Ordem das fontes (aceite, DBA 29/10): 1) `Cd_Rua` -> `Geral.dbo.Rua` (CD_RUA) co
 `Cod_Cidade`/`Cod_Estado` são códigos internos: nunca são lidos nem exibidos (EN12, regra IM8d).
 
 A referência (ref.geral_rua / ref.geral_bairro) é carregada uma vez por reconstrução (`carrega`) num cache do
-módulo; sem referência carregada, `Cd_Rua` sem correspondência cai no bloco Outro_*. Nada daqui vai para log.
+módulo; `Cd_Rua` preenchido sem referência mostra RUA_SEM_REF (R1) e nunca usa o bloco Outro_*. Nada daqui vai para log.
 """
 import re
 from typing import Any
@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session
 from app.core.sql_guard import garante_somente_leitura
 
 SEM_RUA = "Rua não informada na origem"
+# R1 (TL 30/10): código preenchido sem a referência do Geral carregada -> texto fixo, sem cair no bloco Outro_*
+RUA_SEM_REF = "Rua cadastrada na origem (referência não carregada)"
+BAIRRO_SEM_REF = "Bairro cadastrado na origem (referência não carregada)"
 OUTRO = ("Outra_Rua", "Outro_Numero", "Outro_Bairro", "Outra_Cidade", "Outro_Estado", "Outro_Cep")
 _NAO_DIGITO = re.compile(r"\D")
 
@@ -44,6 +47,17 @@ def _int(v: Any) -> int | None:
         return None
 
 
+_UF = re.compile(r"^[A-Z]{2}$")
+
+
+def uf(v: Any) -> str | None:
+    """Outro_Estado é varchar(2) (sp_columns, DevOps 30/10): strip + upper; só 2 letras A–Z valem. Vazio, espaço,
+    número ou texto longo -> None (vira "não informado"); nunca trunca um nome de estado."""
+    s = _t(v, 10)
+    s = s.upper() if s else None
+    return s if s and _UF.match(s) else None
+
+
 def cep8(v: Any) -> str | None:
     """EN4: só dígitos; exatamente 8 dígitos (não zerado) é CEP, o resto é descartado."""
     if v is None or isinstance(v, bool):
@@ -64,7 +78,7 @@ def linha_rua(d: dict) -> dict | None:
     ibge = _NAO_DIGITO.sub("", str(d.get("Cod_IBGE_Municipio") or ""))
     return {"cd_rua": cd, "tipo_logradouro": _t(d.get("Descr_Tipo_Logradouro"), 80),
             "logradouro": _t(d.get("ENDERECO")) or _t(d.get("Logradouro")), "cep": cep8(d.get("CEP")),
-            "cidade": _t(d.get("CIDADE"), 120), "uf": (_t(d.get("UF"), 2) or "").upper() or None,
+            "cidade": _t(d.get("CIDADE"), 120), "uf": uf(d.get("UF")),
             "codigo_ibge": ibge if len(ibge) == 7 else None}
 
 
@@ -105,19 +119,25 @@ def define_ref(ruas: dict | None = None, bairros: dict | None = None) -> None:
 
 # ---------- resolução ----------
 def partes(d: dict) -> dict:
-    """EN10/EN11: partes estruturadas do endereço do paciente (origem_endereco: geral | outro | nenhum)."""
-    rua = _REF["ruas"].get(_int(d.get("Cd_Rua")))
-    if rua is not None:
-        bai = _REF["bairros"].get(_int(d.get("Cod_Bairro"))) or {}
-        return {"tipo_logradouro": rua.get("tipo_logradouro"), "logradouro": rua.get("logradouro"),
-                "numero": _t(d.get("Nr"), 30), "complemento": _t(d.get("Complemento"), 200),
-                "bairro": bai.get("bairro"), "cidade": rua.get("cidade") or bai.get("cidade"), "uf": rua.get("uf"),
+    """EN10/EN11/R1: partes do endereço (origem_endereco: geral | pendente | outro | nenhum). Outro_* só com Cd_Rua vazio;
+    Cod_Bairro preenchido sem referência vira BAIRRO_SEM_REF (mesma regra da rua)."""
+    cd_rua, cd_bai = _int(d.get("Cd_Rua")), _int(d.get("Cod_Bairro"))
+    if cd_rua is not None:  # R1: Cd_Rua preenchido nunca usa o bloco Outro_* (só o Cd_Rua vazio usa)
+        rua = _REF["ruas"].get(cd_rua)
+        bai = _REF["bairros"].get(cd_bai) if cd_bai is not None else None
+        bairro = (bai or {}).get("bairro") if bai is not None else (BAIRRO_SEM_REF if cd_bai is not None else None)
+        base = {"numero": _t(d.get("Nr"), 30), "complemento": _t(d.get("Complemento"), 200), "bairro": bairro}
+        if rua is None:  # Geral não lido ("não ler") ou código sem correspondência
+            return {**base, "tipo_logradouro": None, "logradouro": RUA_SEM_REF, "cidade": (bai or {}).get("cidade"),
+                    "uf": None, "cep": cep8(d.get("Cep")), "codigo_ibge": None, "origem_endereco": "pendente"}
+        return {**base, "tipo_logradouro": rua.get("tipo_logradouro"), "logradouro": rua.get("logradouro"),
+                "cidade": rua.get("cidade") or (bai or {}).get("cidade"), "uf": rua.get("uf"),
                 "cep": cep8(d.get("Cep")) or rua.get("cep"), "codigo_ibge": rua.get("codigo_ibge"),
                 "origem_endereco": "geral"}
-    if any(_t(d.get(c)) for c in OUTRO):
+    if any(_t(d.get(c)) for c in OUTRO):  # vazio/só espaço conta como nulo (_t)
         return {"tipo_logradouro": None, "logradouro": _t(d.get("Outra_Rua")), "numero": _t(d.get("Outro_Numero"), 30),
                 "complemento": _t(d.get("Complemento"), 200), "bairro": _t(d.get("Outro_Bairro"), 200),
-                "cidade": _t(d.get("Outra_Cidade"), 120), "uf": (_t(d.get("Outro_Estado"), 2) or "").upper() or None,
+                "cidade": _t(d.get("Outra_Cidade"), 120), "uf": uf(d.get("Outro_Estado")),
                 "cep": cep8(d.get("Outro_Cep")), "codigo_ibge": None, "origem_endereco": "outro"}
     return {"tipo_logradouro": None, "logradouro": None, "numero": _t(d.get("Nr"), 30),
             "complemento": _t(d.get("Complemento"), 200), "bairro": None, "cidade": None, "uf": None,

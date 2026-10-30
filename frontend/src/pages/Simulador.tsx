@@ -196,7 +196,14 @@ const rotuloUnico = (dom: string, itens: Dado[]) => itens.length === 1 && (CAMPO
 function ValorCampo({ d }: { d: Dado }) {
   if (!d.valor) return <span className="campo-valor nao-informado">Não informado na origem</span>
   if (d.campo === 'data_nascimento' || d.campo === 'data_obito') return <span className="campo-valor">{dataBR(d.valor)}</span>
-  return <span className="campo-valor">{d.valor.split('\n').map((l, i) => <span key={i} className="linha">{l}</span>)}</span>
+  return <span className="campo-valor">{d.valor.split('\n').map((l, i) => <Linha key={i} texto={l} />)}</span>
+}
+
+/** R1/UXO6: textos fixos de ausência (rua/bairro sem referência ou não informados) em itálico e cor secundária. */
+const AUSENCIA = /^(Rua não informada na origem|Rua cadastrada na origem \(referência não carregada\)|Bairro cadastrado na origem \(referência não carregada\))/
+function Linha({ texto }: { texto: string }) {
+  return <span className="linha">{texto.split(' · ').map((p, i) => (
+    <span key={i}>{i > 0 && ' · '}{AUSENCIA.test(p) ? <span className="nao-informado">{p}</span> : p}</span>))}</span>
 }
 
 function outrosEnderecos(ends: EnderecoFicha[], d: Dado): EnderecoFicha[] {
@@ -221,7 +228,7 @@ function OutrosValores({ itens }: { itens: EnderecoFicha[] }) {
         <ul className="outros-valores">
           {itens.map((e, i) => (
             <li key={i}>
-              {e.valor ? <span className="campo-valor">{(e.linhas?.length ? e.linhas : e.valor.split('\n')).map((l, j) => <span key={j} className="linha">{l}</span>)}</span>
+              {e.valor ? <span className="campo-valor">{(e.linhas?.length ? e.linhas : e.valor.split('\n')).map((l, j) => <Linha key={j} texto={l} />)}</span>
                 : <span className="campo-valor nao-informado">Não informado na origem</span>}
               <OrigemDado fonte={e.fonte} atualizadoEm={e.atualizado_em} />
             </li>

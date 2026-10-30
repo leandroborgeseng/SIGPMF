@@ -67,11 +67,27 @@ describe('OrigemDado (UXO2–UXO4, UXO8)', () => {
   })
 })
 
+describe('R1: Cd_Rua sem referência do Geral', () => {
+  it('mostra "Rua cadastrada na origem (referência não carregada)" em itálico e nada do bloco Outro_*', async () => {
+    const R = 'Rua cadastrada na origem (referência não carregada), 4071'
+    const B = 'Bairro cadastrado na origem (referência não carregada) · CEP 14405-457'
+    FICHA.dados[0] = { ...FICHA.dados[0], valor: `${R}\n${B}` }
+    try {
+      await abrir()
+      const c = campo('Endereço')
+      expect([...c.querySelectorAll('.campo-valor > .linha')].map((l) => l.textContent)).toEqual([R, B])
+      expect(within(c).getByText('Rua cadastrada na origem (referência não carregada), 4071')).toHaveClass('nao-informado')
+      expect(within(c).getByText('Bairro cadastrado na origem (referência não carregada)')).toHaveClass('nao-informado')
+      expect(c.textContent).not.toMatch(/OUTRA|Outro_/)
+    } finally { FICHA.dados[0] = { ...FICHA.dados[0], valor: `${L1}\n${L2}` } }
+  })
+})
+
 describe('ficha do cidadão: endereço e procedência', () => {
   it('EN1/EN8/UXO1: endereço em 2 linhas e o chip numa linha própria, abaixo do valor', async () => {
     await abrir()
     const c = campo('Endereço')
-    const linhas = c.querySelectorAll('.campo-valor .linha')
+    const linhas = c.querySelectorAll('.campo-valor > .linha')
     expect([...linhas].map((l) => l.textContent)).toEqual([L1, L2])
     const chip = within(c).getAllByRole('note')[0]
     expect(chip).toHaveTextContent('Saúde · atualizado em 20/02/2026')

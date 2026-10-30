@@ -71,9 +71,41 @@ def test_en11_cd_rua_vazio_usa_bloco_outro(ref):
         "ZZTESTE Av. Brasil", "10", "ZZTESTE Vila", "Ribeirão Preto", "SP", "14010000")
 
 
-def test_en11_cd_rua_sem_referencia_cai_no_bloco_outro():
+# ---------- R1 (TL 30/10): Cd_Rua preenchido sem Geral lido -> texto fixo, Outro_* ignorado ----------
+OUTROS = {"Outra_Rua": "ZZTESTE OUTRA RUA", "Outro_Numero": "77", "Outro_Bairro": "ZZTESTE OUTRO BAIRRO",
+          "Outra_Cidade": "ZZTESTE Cidade", "Outro_Estado": "MG", "Outro_Cep": "37000000"}
+
+
+def test_r1_cd_rua_preenchido_sem_referencia_ignora_outro():
+    es.define_ref()  # Geral "não ler": nenhuma referência carregada
+    d = _pac(1, None, Cd_Rua=901, Cod_Bairro=77, Nr="4071", Cep="14405457", **OUTROS)
+    p = es.partes(d)
+    assert p["origem_endereco"] == "pendente" and p["logradouro"] == es.RUA_SEM_REF
+    assert p["bairro"] == es.BAIRRO_SEM_REF and p["numero"] == "4071" and p["cep"] == "14405457"
+    t = es.texto(d)
+    assert t == f"{es.RUA_SEM_REF}, 4071\n{es.BAIRRO_SEM_REF} · CEP 14405-457"
+    assert not any(v in t for v in OUTROS.values())  # nada do bloco Outro_*
+
+
+def test_r1_cd_rua_sem_cod_bairro_nao_inventa_bairro():
     es.define_ref()
-    assert es.partes(_pac(2, None, Cd_Rua=901, Outra_Rua="ZZTESTE R"))["origem_endereco"] == "outro"
+    assert es.texto(_pac(1, None, Cd_Rua=901, **OUTROS)) == es.RUA_SEM_REF
+
+
+def test_r1_bairro_sem_referencia_com_rua_resolvida(ref):
+    p = es.partes(_pac(1, None, Cd_Rua=901, Cod_Bairro=555, **OUTROS))
+    assert p["origem_endereco"] == "geral" and p["bairro"] == es.BAIRRO_SEM_REF and p["cidade"] == "Franca"
+
+
+def test_r1_cd_rua_vazio_com_outro_usa_outro():
+    es.define_ref()
+    p = es.partes(_pac(2, None, Cod_Bairro=77, **OUTROS))
+    assert p["origem_endereco"] == "outro" and p["logradouro"] == "ZZTESTE OUTRA RUA" and p["bairro"] == "ZZTESTE OUTRO BAIRRO"
+
+
+def test_r1_ambos_vazios_mantem_texto_atual():
+    es.define_ref()
+    assert es.texto(_pac(3, None, Nr="4071")) == f"{es.SEM_RUA}, 4071"
 
 
 # ---------- EN12: Cod_Cidade / Cod_Estado nunca aparecem ----------
@@ -140,11 +172,12 @@ def test_ref_geral_importa_upsert_sem_duplicar(db):
 # ---------- EN14 + EN7: ponta a ponta (bronze -> prata -> ouro -> ficha), sem PII no log ----------
 def test_en14_ponta_a_ponta_tres_casos_e_sem_pii_no_log(client, tokens, db, caplog):
     es.importa(db, [RUA], [BAIRRO])
-    cpfs = [_cpf(b) for b in ("901234567", "902345678", "903456789")]
+    cpfs = [_cpf(b) for b in ("901234567", "902345678", "903456789", "904567891")]
     linhas = [_pac(990001, cpfs[0], Cd_Rua=901, Cod_Bairro=77, Nr="4071", Cep="14405457"),
               _pac(990002, cpfs[1], Outra_Rua="ZZTESTE Av. Brasil", Outro_Numero="10", Outra_Cidade="Franca",
                    Outro_Estado="SP"),
-              _pac(990003, cpfs[2], Nr="4071", Cep="14405457")]
+              _pac(990003, cpfs[2], Nr="4071", Cep="14405457"),
+              _pac(990004, cpfs[3], Cd_Rua=555, Cod_Bairro=556, Nr="12", **OUTROS)]  # R1: código sem referência
     ex = Execucao(tipo="zzteste_endereco", sistema="SAUDE", status="sucesso", usuario="zz@aion.local")
     db.add(ex)
     db.commit()
@@ -157,7 +190,8 @@ def test_en14_ponta_a_ponta_tres_casos_e_sem_pii_no_log(client, tokens, db, capl
     assert not re.search(r"ZZTESTE|14405|4071", caplog.text)  # EN7: nada do endereço nem do nome no log
     esperado = {"990001": ("geral", "Rua ZZTESTE DAS FLORES, 4071", "ZZTESTE Centro · Franca/SP · CEP 14405-457"),
                 "990002": ("outro", "ZZTESTE Av. Brasil, 10", "Franca/SP"),
-                "990003": ("nenhum", f"{es.SEM_RUA}, 4071", "CEP 14405-457")}
+                "990003": ("nenhum", f"{es.SEM_RUA}, 4071", "CEP 14405-457"),
+                "990004": ("pendente", f"{es.RUA_SEM_REF}, 12", es.BAIRRO_SEM_REF)}
     for mat, (origem, l1, l2) in esperado.items():
         cid = db.scalar(select(Vinculo.cidadao_id).where(Vinculo.sistema == "SAUDE", Vinculo.chave_origem == mat))
         assert cid, mat
@@ -172,3 +206,21 @@ def test_en14_ponta_a_ponta_tres_casos_e_sem_pii_no_log(client, tokens, db, capl
         assert ends[0]["linhas"] == [l1, l2] and ends[0]["origem_endereco"] == origem
         assert "Cod_Cidade" not in r.text and "999" not in str(ends)
         assert mat not in str(r.url)  # sem PII na URL: só o cidadao_id opaco
+
+
+# ---------- Outro_* (sp_columns: varchar nulo; Outro_Estado varchar(2)) ----------
+@pytest.mark.parametrize("valor,esperado", [("sp", "SP"), (" mg ", "MG"), ("SP", "SP"), ("", None), ("  ", None),
+                                            (None, None), ("S", None), ("35", None), ("São Paulo", None), ("S1", None)])
+def test_outro_estado_uf_de_2_letras_strip_upper_invalido_vira_nao_informado(valor, esperado):
+    es.define_ref()
+    p = es.partes(_pac(2, None, Outra_Rua="ZZTESTE R", Outra_Cidade="ZZTESTE Cidade", Outro_Estado=valor))
+    assert p["uf"] == esperado
+    l2 = es.linhas(p)[1]
+    assert l2 == ("ZZTESTE Cidade/" + esperado if esperado else "ZZTESTE Cidade")
+    assert "Sã" not in l2 and "35" not in l2  # nunca trunca nem mostra código
+
+
+def test_outro_vazios_ou_espacos_sao_nulos():
+    es.define_ref()
+    p = es.partes(_pac(3, None, **{**{c: "   " for c in es.OUTRO}, "Outra_Rua": ""}))
+    assert p["origem_endereco"] == "nenhum"  # bloco só com vazio/espaço não conta como preenchido
