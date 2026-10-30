@@ -163,6 +163,8 @@ def test_retomar_camadas_sem_reler_origem_e_bronze_inalterada(client, tokens, or
     ex.status = "interrompida"  # simula a thread morta na prata (bronze toda gravada)
     db.commit()
     db.execute(text("delete from silver.vinculos where sistema = 'SAUDE'"))  # prata parcial/antiga
+    # Parte 2 (PI8): sem marca d'água (caiu antes da 1ª marca), a retomada é recomposição; com marca, segue a fila
+    db.execute(text("delete from controle.camadas_marca"))
     db.commit()
     s = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()
     assert s["execucao"]["pode_retomar_camadas"] is True
@@ -242,6 +244,7 @@ def test_cc8_5_queda_no_ouro_bronze_intacta_e_prata_ouro_voltam(client, tokens, 
     _carga_ok(client, tokens, db)
     e = _ultima(db, "SAUDE")
     e.status = "interrompida"
+    db.execute(text("delete from controle.camadas_marca"))  # Parte 2: força o caminho da recomposição (ouro cai)
     db.commit()
     antes, bronze = _camadas_snapshot(db), _bronze_assinatura(db, "SAUDE")
     from app.gold import visao
