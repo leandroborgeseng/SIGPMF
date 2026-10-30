@@ -141,10 +141,10 @@ def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
 
 def proxima(ag: Agendamento, agora: datetime, ini: int, fim: int) -> datetime | None:
     """Próximo início previsto (para a tela)."""
+    if not ag.ativo:  # agenda desligada nunca tem "próxima", nem com "Executar agora" pendente (forcar)
+        return None
     if ag.forcar:
         return agora
-    if not ag.ativo:
-        return None
     fz = _fuso()
     local = agora.astimezone(fz)
     h, m = (int(x) for x in ag.horario.split(":"))

@@ -16,7 +16,7 @@ export type FonteProgresso = {
   id: string; nome: string; status: string; status_texto: string; motivo_codigo: string | null; motivo: string | null
   falta: string[] | null; aguardando_em: string | null; aguardando_em_brt: string | null; progresso: Progresso | null
   ultima_execucao: { execucao_id: number; finalizado_em: string | null; lidas: number; gravadas: number; lotes: number; modo: string
-    alerta?: Alerta | null } | null
+    alerta?: Alerta | null; texto_limite?: string | null } | null
   tabelas: Tabela[]
 }
 export type RespProgresso = { agora: string; rodando: boolean; atualizar_a_cada_s: number; fontes: FonteProgresso[] }
@@ -53,7 +53,7 @@ function Card({ f }: { f: FonteProgresso }) {
       <header className="pp-cab">
         <h3 id={titulo}>{f.nome}</h3>
         <span className={`selo ${alerta ? 'aviso-selo' : CLASSE[f.status] ?? ''}`}><span aria-hidden="true">{alerta ? '⚠' : ICONE[f.status]} </span>{statusTexto}
-          {f.status === 'aguardando' && f.aguardando_em_brt ? ` · próxima às ${f.aguardando_em_brt} (BRT)` : ''}</span>
+          {f.status === 'aguardando' && f.motivo_codigo !== 'agenda_desligada' && f.aguardando_em_brt ? ` · próxima às ${f.aguardando_em_brt} (BRT)` : ''}</span>
       </header>
       {p && (<>
         <p className="sutil">{p.modo}</p>
@@ -75,9 +75,12 @@ function Card({ f }: { f: FonteProgresso }) {
             : <p>Aviso: {alerta.texto ?? alerta.codigo}</p>}
         </div>
       )}
-      {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}</p>}
+      {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}
+        {f.motivo_codigo === 'sem_amostra' && <> · <a href={`#acoes-${f.id}`}>Ir para Rodar amostra</a></>}</p>}
       {f.falta && <p className="pp-motivo">Não liberada — falta: {f.falta.join(' / ')}</p>}
-      {!p && f.ultima_execucao && <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} linhas processadas</p>}
+      {!p && f.ultima_execucao && (f.ultima_execucao.texto_limite
+        ? <p className="aviso-ambar">Última execução · {f.ultima_execucao.texto_limite}</p>
+        : <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} linhas processadas</p>)}
       {f.tabelas.length > 0 && (
         <details>
           <summary>Ver tabelas ({f.tabelas.length})</summary>

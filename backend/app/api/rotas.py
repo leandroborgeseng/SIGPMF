@@ -280,7 +280,8 @@ def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session 
     except sil.Conflito as exc:
         audita(db, u.email, "amostra_sil_conflito", "conector:sil", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.LOTES_POR_EXECUCAO},
+    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.lotes_por_execucao(),
+                                                                     "aprovacao": "manual"},
            _ip(req))
     db.expire_all()  # disparo síncrono nos testes: devolve o estado final
     return _exec_sil(db.get(Execucao, ex.id))
@@ -316,7 +317,8 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     except cc.Conflito as exc:
         audita(db, u.email, "amostra_conector_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}", {"conector": conector, **_origem_api(conector)},
+    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}",
+           {"conector": conector, "aprovacao": "manual", **_origem_api(conector)},
            _ip(req))
     db.expire_all()  # se o disparo foi síncrono (testes), devolve o estado final
     return _exec_amostra(db.get(Execucao, ex.id))
@@ -336,6 +338,20 @@ def _origem_api(conector: str) -> dict:
 def _exec_amostra(ex: Execucao) -> dict:
     return {**_exec(ex), "etapa": ex.etapa, "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa,
             "atualizado_em": ex.atualizado_em, "em_andamento": ex.status == "em_andamento"}
+
+
+@api.post("/conectores/{conector}/amostra/{eid}/aprovar")
+def amostra_aprovar(conector: str, eid: int, req: Request, u: Usuario = Depends(admin_auditado),
+                    db: Session = Depends(get_db)):
+    """PR-A (CT2/CT4): "Aprovar amostra" libera a carga completa. Só admin, auditado (quem, quando, SHA). Não lê a origem."""
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    try:
+        return ccomp.aprovar_amostra(db, u.email, conector, eid, _ip(req))
+    except ccomp.AprovacaoRecusada as exc:
+        audita(db, u.email, "amostra_aprovacao_recusada", f"execucao:{eid}", {"conector": conector}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
 
 
 @api.get("/conectores/{conector}/amostra/{eid}")

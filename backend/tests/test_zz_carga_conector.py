@@ -185,7 +185,12 @@ def test_carga_completa_travada_sem_amostra(client, tokens, leitor, db):
         mp.setattr(ccomp, "motivo_bloqueio", lambda db, c: ccomp.SEM_AMOSTRA)
         r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
         assert r.status_code == 409 and r.json()["detail"] == ccomp.SEM_AMOSTRA
-    assert client.post("/api/conectores/saude/amostra", headers=tokens["admin"]).status_code == 202
+    am = client.post("/api/conectores/saude/amostra", headers=tokens["admin"])
+    assert am.status_code == 202
+    # PR-A (CT2): amostra nova só libera a carga completa depois de "Aprovar amostra"
+    r = client.post("/api/conectores/saude/completa", headers=tokens["admin"])
+    assert r.status_code == 409 and r.json()["detail"] == ccomp.AMOSTRA_PENDENTE
+    assert client.post(f"/api/conectores/saude/amostra/{am.json()['id']}/aprovar", headers=tokens["admin"]).status_code == 200
     with pytest.MonkeyPatch.context() as mp:  # não dispara a carga real (sem origem neste teste)
         def nao_roda(ex_id, conector, trava):
             s = ccomp.SessionLocal()
