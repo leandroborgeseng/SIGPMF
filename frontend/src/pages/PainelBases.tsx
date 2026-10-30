@@ -193,7 +193,7 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizand
   const bl = b.bloqueio ?? null
   const travada = bl !== null && !bl.parada  // viva e com atividade recente: não dá para puxar outra
   return (
-    <li className="cartao base" aria-labelledby={`b-${b.id}`}>
+    <li className="cartao base" aria-labelledby={`b-${b.id}`} id={b.conector_id ? `fonte-${b.conector_id}` : undefined}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
       <p>
         <span className={`selo ${st.classe}`}><i aria-hidden="true" />{st.rotulo}</span>
