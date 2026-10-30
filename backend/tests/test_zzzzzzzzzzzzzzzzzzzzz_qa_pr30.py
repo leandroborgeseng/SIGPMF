@@ -162,6 +162,6 @@ def test_0021_rotula_checkpoint_gravado_pela_carga_real(db, monkeypatch):
     command.upgrade(cfg, "head")
     db.expire_all()
     cps = list(db.scalars(select(CheckpointCarga).where(func.lower(CheckpointCarga.sistema) == "sil")))
-    assert cps and {c.ambiente for c in cps} == {"sandbox"} and cps[0].ultima_chave == [50]
+    assert cps and {c.ambiente for c in cps} == {"sandbox"} and cps[0].ultima_chave == [150]  # SL1: a completa não para mais no teto de 1 lote
     assert _checkpoint_sil(db) is None                              # produção sem checkpoint
     db.commit()
