@@ -123,7 +123,7 @@ def test_pulso_por_tempo_no_maximo_30s(monkeypatch):
     assert pr.Pulso.PULSO_S <= 30
 
 
-def test_migracao_0036_idempotente(banco):
+def test_migracao_0036_idempotente(banco, monkeypatch):
     """Banco próprio (o CONCURRENTLY espera transações abertas de outros testes no banco compartilhado)."""
     from alembic import command
     from sqlalchemy import create_engine
@@ -139,6 +139,7 @@ def test_migracao_0036_idempotente(banco):
         adm.dispose()
         pytest.skip("sem permissão para criar o banco de teste da migração")
     alvo = url.set(database=nome).render_as_string(hide_password=False)
+    monkeypatch.setenv("SIGPMF_INDICE_CONCORRENTE", "1")  # caminho de produção: CONCURRENTLY
     cfg = alembic_cfg()
     cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
     try:
