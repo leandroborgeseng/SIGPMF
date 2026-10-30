@@ -6,7 +6,7 @@ A listagem passa a ler um retrato já calculado (do próprio Postgres, nunca da 
 - retrato velho ou chave mudou (execução nova/terminada) -> recalcula numa thread (uma por vez) e espera no máximo
   CONECTORES_CACHE_ESPERA_S; se não terminar, devolve o retrato anterior marcado como "atualizando";
 - sem retrato nenhum (logo após subir) -> devolve None e a rota responde zeros com "contagens_atualizando".
-Com CONECTORES_CACHE_S=0 (padrão em APP_ENV=test) recalcula sempre e espera o fim: os testes continuam exatos.
+Com CONECTORES_CACHE_S=0 (padrão em APP_ENV=test) recalcula sempre e espera o fim (só em APP_ENV=test): os testes continuam exatos.
 Nada aqui abre conexão com SQL Server ou SIL; só SELECT no Postgres da aplicação.
 """
 import logging
@@ -24,13 +24,28 @@ from app.models.controle import Execucao
 log = logging.getLogger(__name__)
 
 
+def _env_float(nome: str, padrao: float) -> float:
+    """Vazio/inválido -> padrão, com aviso no log (sem o valor)."""
+    bruto = os.environ.get(nome)
+    if bruto is None:
+        return padrao
+    try:
+        return float(bruto)
+    except ValueError:
+        log.warning("%s inválido; usando o padrão %s", nome, padrao)
+        return padrao
+
+
+def _em_teste() -> bool:
+    return os.environ.get("APP_ENV") == "test"
+
+
 def ttl_s() -> float:
-    padrao = "0" if os.environ.get("APP_ENV") == "test" else "60"
-    return float(os.environ.get("CONECTORES_CACHE_S", padrao))
+    return _env_float("CONECTORES_CACHE_S", 0.0 if _em_teste() else 60.0)
 
 
 def espera_s() -> float:
-    return float(os.environ.get("CONECTORES_CACHE_ESPERA_S", "0.5"))
+    return _env_float("CONECTORES_CACHE_ESPERA_S", 0.35)
 
 
 def chave_execucoes(db: Session) -> tuple:
@@ -88,7 +103,7 @@ def obter(db: Session, nome: str, calcula: Callable[[Session], Any]) -> tuple[An
                                   name=f"contagens-{nome}")
             ent.thread = th
             th.start()
-    th.join(None if ttl <= 0 else espera_s())
+    th.join(None if (ttl <= 0 and _em_teste()) else espera_s())  # join sem limite só em APP_ENV=test
     with _lock:
         return ent.valor, th.is_alive()
 

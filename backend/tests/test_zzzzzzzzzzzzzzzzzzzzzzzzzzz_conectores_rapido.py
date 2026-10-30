@@ -220,3 +220,39 @@ def test_health_migracao_falha_vira_null_sem_vazar(client, monkeypatch):
     assert r.status_code == 200 and r.json()["db"] == "ok"
     assert r.json()["migracao"] is None
     assert "zzteste_tabela_inexistente" not in r.text and "ZZTESTE" not in r.text
+
+
+@pytest.mark.parametrize("valor", ["", "abc"])
+def test_d1_env_invalida_usa_padrao_sem_valueerror(monkeypatch, caplog, valor):
+    monkeypatch.setenv("APP_ENV", "producao")
+    monkeypatch.setenv("CONECTORES_CACHE_S", valor)
+    monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", valor)
+    assert contagens_cache.ttl_s() == 60.0
+    assert contagens_cache.espera_s() == 0.35
+    if valor:
+        assert valor not in caplog.text
+    assert "CONECTORES_CACHE_S" in caplog.text
+
+
+def test_espera_padrao_035(monkeypatch):
+    monkeypatch.delenv("CONECTORES_CACHE_ESPERA_S", raising=False)
+    assert contagens_cache.espera_s() == 0.35
+
+
+@pytest.mark.parametrize("ttl", ["0", "-5"])
+def test_d2_ttl_zero_fora_de_teste_nao_espera_sem_limite(db, monkeypatch, ttl):
+    monkeypatch.setenv("APP_ENV", "producao")
+    monkeypatch.setenv("CONECTORES_CACHE_S", ttl)
+    monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", "0.2")
+    t = time.perf_counter()
+    v, atualizando = contagens_cache.obter(db, "zzteste-d2", lambda _db: (time.sleep(2), 1)[1])
+    assert time.perf_counter() - t < 1.0
+    assert v is None and atualizando is True
+
+
+def test_d2_ttl_zero_em_teste_espera_o_fim(db, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("CONECTORES_CACHE_S", "0")
+    monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", "0.05")
+    v, atualizando = contagens_cache.obter(db, "zzteste-d2t", lambda _db: (time.sleep(0.3), 7)[1])
+    assert v == 7 and atualizando is False
