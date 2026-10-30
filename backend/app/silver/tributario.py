@@ -35,14 +35,11 @@ def _ultimas(db: Session, sistema: str, tabela: str, chaves=None, codis=None):
         w.append(R.id_origem.in_(list(chaves)))
     if codis is not None:
         w.append(CODI_SQL.in_(list(codis)))
-    if chaves is None and codis is None:  # recomposição: max(id) por chave (índice parcial), sem depender da tabela
-        sub = select(func.max(R.id)).where(*w).group_by(R.id_origem)
-        q = select(R.id_origem, R.dados).where(R.id.in_(sub)).order_by(R.id).execution_options(yield_per=LOTE)
-    else:  # incremental: a versão vigente vem de bronze.ultima_versao (mesmo predicado D6; sincronizada antes)
-        from app.models.camadas import UltimaVersao as U
-        q = (select(R.id_origem, R.dados).join(U, U.registro_id == R.id)
-             .where(U.sistema_origem == sistema, U.tabela == tabela, *w[2:]).order_by(R.id)
-             .execution_options(yield_per=LOTE))
+    # Parte 2: a ultima_versao decide QUAIS chaves/CODIs entram (o delta); a versão é lida aqui, pelo mesmo
+    # predicado D6, via índice (CODI ou id_origem) + max(id). Juntar com a ultima_versao fazia o plano varrê-la a
+    # cada lote (medido na bancada).
+    sub = select(func.max(R.id)).where(*w).group_by(R.id_origem)
+    q = select(R.id_origem, R.dados).where(R.id.in_(sub)).order_by(R.id).execution_options(yield_per=LOTE)
     if codis is None:
         yield from db.execute(q)
         return

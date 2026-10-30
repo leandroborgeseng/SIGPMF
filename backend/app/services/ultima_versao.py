@@ -15,6 +15,7 @@ from app.models.camadas import RegistroBronze, UltimaVersao
 from app.models.controle import CamadasMarca
 
 LOTE_IDS = 200_000
+ANALISA_ACIMA = 50_000  # ids sincronizados de uma vez acima disso -> ANALYZE (o autovacuum pode estar atrás)
 MARCA = ("_ultima_versao", "_")  # linha especial em controle.camadas_marca: até que id da bronze já foi sincronizado
 
 _UPSERT_FAIXA = text("""
@@ -54,7 +55,7 @@ def sincroniza(db: Session, ate: int | None = None, lote: int = LOTE_IDS, pulso=
         db.add(m)
         db.flush()
     alvo = ate if ate is not None else int(db.scalar(select(func.max(RegistroBronze.id))) or 0)
-    de = int(m.ultimo_id or 0)
+    de = inicio = int(m.ultimo_id or 0)
     while de < alvo:
         ate_f = min(de + lote, alvo)
         db.execute(_UPSERT_FAIXA, {"de": de, "ate": ate_f})
@@ -65,4 +66,8 @@ def sincroniza(db: Session, ate: int | None = None, lote: int = LOTE_IDS, pulso=
             db.flush()
         if pulso is not None:
             pulso.grava()
+    if alvo - inicio > ANALISA_ACIMA:  # tabela cresceu muito (1º preenchimento): estatística nova antes do plano
+        db.execute(text("ANALYZE bronze.ultima_versao"))
+        if confirmar:
+            db.commit()
     return de
