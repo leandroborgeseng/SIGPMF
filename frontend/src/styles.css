@@ -446,3 +446,13 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .lista-erros { margin: .3rem 0; padding-left: 1.1rem; font-size: .9em; overflow-wrap: anywhere; }
 .carga-completa .com-dica { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; width: 100%; }
 .carga-completa .com-dica .motivo-desabilitado { margin: 0; width: 100%; }
+
+/* UXO2/UXO4/UXO7: chip de procedência (12 px, cor secundária AA, fundo cinza-claro, pílula); âmbar com mais de 12 meses */
+.origem-dado { display: inline-block; font-size: 12px; font-weight: 400; color: var(--ink-2); background: var(--muted-bg);
+  border-radius: var(--r-pill); padding: 2px 8px; margin-top: 2px; white-space: normal; overflow-wrap: anywhere; }
+.origem-dado.antigo { color: var(--warn-ink); background: var(--warn-bg); }
+.campo-valor { display: block; }
+.campo-valor .linha { display: block; }
+.nao-informado { font-style: italic; color: var(--ink-2); }
+.outros-valores { list-style: none; padding: 0; margin: .4rem 0 0; }
+.outros-valores li { margin-bottom: .4rem; }

@@ -594,14 +594,17 @@ class AgendaTravada(RuntimeError):
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
               ordem: int | None = None, forcar: bool | None = None) -> Agendamento:
     if forcar is False and horario is None and ativo is None and ordem is None:
-        return limpar_forcar(db, conector, usuario)  # nunca passa pela trava amostra:SIL (AgendaTravada)
+        return limpar_forcar(db, conector, usuario)
+    if horario is None and ativo is None and ordem is None and forcar is None:  # #61 R2: {} / {"forcar": null}
+        return _agendamento(db, conector)  # nada a mudar: 200, sem tocar a linha e sem auditoria  # nunca passa pela trava amostra:SIL (AgendaTravada)
     # B1: antes da trava da linha (o reset segura a linha FOR UPDATE e a trava); try = sem esperar
     if ativo and conector == "sil" and not db.execute(
             text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_TRAVA_SIL}).scalar():
         db.rollback()
         raise AgendaTravada(MOTIVO_SIL_TRAVADA)
     ag = _agendamento(db, conector, travar=True)
-    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}
+    # D3 (#58): valores reais lidos (linha travada) antes de qualquer mudança, forcar incluso
+    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
     if horario is not None:
         if not HORARIO.match(horario):
             raise AgendaInvalida("Horário deve ser HH:MM (00:00 a 23:59).")
@@ -621,10 +624,15 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
     if forcar is False:
         forcar_limpo = ag.forcar
         ag.forcar = False
+    depois = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
+    if depois == antes:  # #61 R2: valores iguais aos atuais -> nada muda, nada é auditado
+        db.rollback()
+        return _agendamento(db, conector)
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
-           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}})
+           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem,
+                                       "forcar": bool(ag.forcar)}})
     if forcar_cancelado:
         audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
                {"motivo": "forcar_cancelado_desligado", "conector": conector})
@@ -642,7 +650,7 @@ def _audita_forcar_limpo(db: Session, usuario: str, conector: str, antes: bool) 
 def limpar_forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     """Limpa um "Executar agora" pendente (forcar=false). Idempotente e sempre auditado (valor anterior incluso).
     Não usa a trava amostra:SIL: limpar nunca é bloqueado por carga ou reset em andamento."""
-    ag = _agendamento(db, conector)
+    ag = _agendamento(db, conector, travar=True)  # D3: lê o valor real (FOR UPDATE) antes de mudar
     antes = bool(ag.forcar)
     db.execute(update(Agendamento).where(Agendamento.conector == conector)
                .values(forcar=False, atualizado_por=usuario, atualizado_em=datetime.now(UTC)))

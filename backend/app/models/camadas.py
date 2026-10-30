@@ -107,6 +107,14 @@ class Endereco(Base):
     sistema: Mapped[str] = mapped_column(String(50))
     fonte_atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mais_recente: Mapped[bool] = mapped_column(default=False)
+    # EN10–EN12 (0037): partes estruturadas; Cod_Cidade/Cod_Estado nunca entram (IM8d)
+    tipo_logradouro: Mapped[str | None] = mapped_column(String(80))
+    numero: Mapped[str | None] = mapped_column(String(30))
+    complemento: Mapped[str | None] = mapped_column(String(200))
+    cidade: Mapped[str | None] = mapped_column(String(120))
+    uf: Mapped[str | None] = mapped_column(String(2))
+    codigo_ibge: Mapped[str | None] = mapped_column(String(7))
+    origem_endereco: Mapped[str | None] = mapped_column(String(10))
 
 
 class CorrelacaoPendente(Base):

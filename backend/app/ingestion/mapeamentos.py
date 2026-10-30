@@ -50,7 +50,7 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
         "dominio": "saude", "chave": "Matricula", "campo_incremental": "dt_ultimaatual", "papel": "pessoa",
         "rowversion": None,  # S2: usar a coluna rowversion no lugar do hash quando existir na origem
         "campos": {"nome": "Nome", "data_nascimento": "Dt_Nasc", "cpf": "Cpf", "cns": "Cartao_Sus", "nome_mae": "Mae",
-                   "nome_pai": "Pai", "sexo": "Sexo", "endereco": ("Complemento", "Nr", "Cep"),
+                   "nome_pai": "Pai", "sexo": "Sexo", "endereco": "endereco_saude",  # EN10–EN12: app.silver.endereco_saude
                    "atualizado_em": "dt_ultimaatual", "pista_normalizado": "Normalizado",
                    "pista_matricula_correta": "Matricula_Correta"}},
     ("SAUDE", "Pacientes_CNS"): {
@@ -97,7 +97,11 @@ def canonico(sistema: str, tabela: str, dados: dict) -> dict:
         return {k: dados.get(k) for k in CANONICOS}
     out = {}
     for k, orig in m["campos"].items():
-        if isinstance(orig, tuple):
+        if orig == "endereco_saude":  # EN10/EN11: Rua/Bairro do Geral, senão o bloco Outro_*
+            from app.silver import endereco_saude
+            out[k] = endereco_saude.texto(dados)
+            out["endereco_partes"] = endereco_saude.partes(dados)
+        elif isinstance(orig, tuple):
             partes = [str(dados[c]) for c in orig if dados.get(c) not in (None, "")]
             out[k] = ", ".join(partes) or None
         else:

@@ -88,6 +88,7 @@ def indicadores(db: Session, contagens: dict[str, dict[str, int]] | None = None,
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
             **_completa(db, b),
             "bloqueio": _bloqueio(db, b),
+            **_pausada(db, b),
             "com_erro": ult is not None and ult.status == "falha",
             "origem_vazia": ult is not None and ult.status == "origem_vazia",
             "contagens": ({k: None for k in ("bronze", "prata", "ouro", "pendentes")} if frio else
@@ -115,12 +116,19 @@ def _bloqueio(db: Session, b: BaseCatalogo) -> dict | None:
     return tv.estado(db, sistema, tv.NOMES.get(b.conjunto, b.conjunto))
 
 
+def _pausada(db: Session, b: BaseCatalogo) -> dict:
+    """CT26c: fonte pausada na agenda (ativo=false): a tela desabilita amostra, aprovação e carga completa."""
+    from app.services import carga_completa as ccomp
+    motivo = ccomp.motivo_pausada_agenda(db, b.conjunto, "amostra") if b.conjunto else None
+    return {"agenda_pausada": motivo is not None, "agenda_pausada_motivo": motivo}
+
+
 def _completa(db: Session, b: BaseCatalogo) -> dict:
     """CC1: liberação da carga completa real por conector (Saúde/Cemitério) e o motivo quando bloqueada."""
     from app.services import carga_completa as ccomp
     if (b.conjunto or "") not in ccomp.CONECTORES_COMPLETA or b.status != "implementado":
         return {"completa_disponivel": False, "completa_liberada": False, "completa_motivo": None}
-    motivo = ccomp.motivo_bloqueio(db, b.conjunto)
+    motivo = ccomp.motivo_bloqueio(db, b.conjunto) or ccomp.motivo_pausada_agenda(db, b.conjunto)  # CT26c
     rodando = ccomp.ativa(db, ccomp._sistema(b.conjunto)) is not None  # CC7.4: card esconde números parciais
     return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo,
             "completa_em_andamento": rodando, "exige_amostra": True, "amostra": ccomp.resumo_amostra(db, b.conjunto),

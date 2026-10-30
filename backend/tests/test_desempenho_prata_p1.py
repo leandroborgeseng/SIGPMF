@@ -144,11 +144,11 @@ def test_migracao_0036_idempotente(banco, monkeypatch):
     cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
     try:
         command.upgrade(cfg, "head")
-        command.stamp(cfg, "0035")
+        command.stamp(cfg, "0037")
         command.upgrade(cfg, "head")  # 2ª execução com o índice já criado
-        command.downgrade(cfg, "0035")
+        command.downgrade(cfg, "0037")
         command.stamp(cfg, "0036")
-        command.downgrade(cfg, "0035")  # 2º downgrade com o índice já removido
+        command.downgrade(cfg, "0037")  # 2º downgrade com o índice já removido
         command.upgrade(cfg, "head")
         eng = create_engine(alvo)
         with eng.connect() as c:
@@ -206,7 +206,7 @@ def test_migracao_0036_lock_timeout_e_indice_invalido(banco, monkeypatch):
     monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", "1s")
     eng = create_engine(alvo)
     try:
-        command.upgrade(cfg, "0035")
+        command.upgrade(cfg, "0037")
         longa = eng.connect().execution_options(isolation_level="REPEATABLE READ")
         tx = longa.begin()
         longa.execute(text("SELECT count(*) FROM bronze.registros"))  # transação aberta (snapshot)
@@ -218,7 +218,7 @@ def test_migracao_0036_lock_timeout_e_indice_invalido(banco, monkeypatch):
                  "WHERE c.relname = 'ix_registros_ultima_versao'")
         with eng.connect() as c:
             assert c.scalar(q) is False  # sobrou INVALID
-            assert c.execute(text("SELECT version_num FROM controle.alembic_version")).scalar() == "0035"
+            assert c.execute(text("SELECT version_num FROM controle.alembic_version")).scalar() == "0037"
         command.upgrade(cfg, "head")  # próxima execução: drop concurrently + recria
         with eng.connect() as c:
             assert c.scalar(q) is True
@@ -279,7 +279,7 @@ def test_migracao_0036_drop_do_invalido_com_transacao_aberta(banco, monkeypatch)
     monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", "1s")
     eng = create_engine(alvo)
     try:
-        command.upgrade(cfg, "0035")
+        command.upgrade(cfg, "0037")
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as c:  # índice INVALID de propósito
             c.execute(text("CREATE INDEX ix_registros_ultima_versao ON bronze.registros (id)"))
             c.execute(text("UPDATE pg_index SET indisvalid = false WHERE indexrelid = "

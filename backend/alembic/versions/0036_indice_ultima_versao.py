@@ -3,10 +3,10 @@
 Aditiva e idempotente: CREATE INDEX CONCURRENTLY IF NOT EXISTS fora da transação (autocommit_block), sem travar
 escrita na bronze. Downgrade: DROP INDEX CONCURRENTLY IF EXISTS.
 
-down_revision = '0035' (ponta da main depois do #57, b518060).
+down_revision = '0037' (ponta da main depois do #57, b518060).
 
 Revision ID: 0036
-Revises: 0035
+Revises: 0037
 """
 import logging
 import os
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = '0036'
-down_revision = '0035'
+down_revision = '0037'
 branch_labels = None
 depends_on = None
 
