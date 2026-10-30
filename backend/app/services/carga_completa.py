@@ -383,6 +383,9 @@ def pode_retomar_camadas(db: Session, sistema: str) -> bool:
     """Última carga interrompida com a leitura da origem já concluída (todos os checkpoints): só falta prata/ouro."""
     ex = db.scalar(select(Execucao).where(Execucao.tipo == TIPO, Execucao.sistema == sistema)
                    .order_by(Execucao.id.desc()).limit(1))
+    if ex is not None and ex.status == "cancelada":  # PI8: cancelada no meio da prata/ouro incrementais
+        from app.services import camadas_incremental as ci
+        return ci.ha_retomada(db)
     if ex is None or ex.status != "interrompida":
         return False
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
@@ -767,7 +770,8 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         from app.services import camadas_incremental as ci
         from app.services import ultima_versao
         ate = ultima_versao.sincroniza(db)  # fora da trava; idempotente, commit por faixa
-        modo, motivo = ci.decide(db, ate, recompor or not pode_pular)  # IN1: Retomar camadas sempre recompõe
+        # PI8 (TL 11h56): Retomar camadas segue do último checkpoint (fila + marca); recompor só a pedido do admin
+        modo, motivo = ci.decide(db, ate, recompor)
         ex.camadas_modo = modo
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Prata/ouro: {modo} ({motivo})"))
         db.commit()  # nada pendente em ex antes da trava (o sinal de vida vem por outra conexão)

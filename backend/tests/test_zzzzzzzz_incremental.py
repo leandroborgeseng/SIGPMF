@@ -97,14 +97,17 @@ def test_in1_completa_sem_mudanca_pula_prata_e_ouro_mas_reconcilia(db, origem, m
     assert ex3.status == "sucesso" and n["prata"] == 2 and ex3.novos >= 1
 
 
-def test_in1_retomar_camadas_sempre_reconstroi(db, origem, monkeypatch):  # noqa: F811
+def test_in1_retomar_camadas_segue_do_checkpoint(db, origem, monkeypatch):  # noqa: F811
+    """PI8 (TL 30/10 11h56): Retomar camadas segue a fila/marca; sem trabalho pendente, não recompõe tudo."""
     _amostras(db)
     _completa(db, "cemiterio")
     n = _contador_reconstrucao(monkeypatch)
     ex = db.get(Execucao, _completa(db, "cemiterio").id)
     assert n["prata"] == 0 and ccomp.MSG_CAMADAS_MANTIDAS in ex.mensagem
     ccomp._camadas(db, ex, "cemiterio", "CEMITERIO", pode_pular=False)
-    assert n["prata"] == 1
+    assert n["prata"] == 0  # nada mudou desde a última marca: incremental vazio
+    ccomp._camadas(db, ex, "cemiterio", "CEMITERIO", pode_pular=False, recompor=True)
+    assert n["prata"] == 1  # recomposição só a pedido (PI6)
 
 
 # ---------------------------------------------------------------- IN2: incremental

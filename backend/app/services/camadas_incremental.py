@@ -171,6 +171,13 @@ def _aplica(db: Session, tipo: str, chaves: list[str]) -> None:
     return cids
 
 
+def ha_retomada(db: Session) -> bool:
+    """PI8: sobrou trabalho de uma rodada incremental (fila ou marca expandida e não fechada)."""
+    if db.scalar(select(CamadasPendencia.tipo).limit(1)) is not None:
+        return True
+    return any(m.ultimo_id < m.expandido_ate for m in _marcas(db).values())
+
+
 def _pendentes(db: Session) -> int:
     return int(db.scalar(select(func.count()).select_from(CamadasPendencia)) or 0)
 
@@ -184,13 +191,18 @@ def executa(db: Session, ate: int, ex_id: int | None = None, cancelado=None, pro
     def checa():
         if cancelado is not None and cancelado():
             raise Cancelado()
+    import resource
+    import time
+    t0 = time.monotonic()
     cont = _expande(db, ate, ex_id, checa)
     total = _pendentes(db)
     feitos = 0
     por_tipo: dict[str, int] = {}
     if progresso and total:  # sem fila não manda "0 de 0" (a tela mantém o sinal de vida do Pulso)
         progresso(0, total)
+    seg_tipo: dict[str, float] = {}
     for tipo in ORDEM:
+        tt = time.monotonic()
         while True:
             checa()
             chaves = list(db.scalars(select(CamadasPendencia.chave).where(CamadasPendencia.tipo == tipo)
@@ -206,7 +218,12 @@ def executa(db: Session, ate: int, ex_id: int | None = None, cancelado=None, pro
             total = max(total, feitos + _pendentes(db))  # eventos/ouro entram na fila durante a aplicação
             if progresso:
                 progresso(feitos, total)
+        if tipo in por_tipo:
+            seg_tipo[tipo] = round(time.monotonic() - tt, 1)
     checa()
+    t_prata = time.monotonic() - t0  # PI10: prata+tributário à parte do ouro (meta de 10% só aqui)
+    rss_prata = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+    t1 = time.monotonic()
     if confere is not None:
         confere(db)  # CC11 antes do ouro, sempre (barato: só contagens)
     gres = None
@@ -221,4 +238,5 @@ def executa(db: Session, ate: int, ex_id: int | None = None, cancelado=None, pro
     for m in _marcas(db).values():
         m.ultimo_id = m.expandido_ate
     db.commit()
-    return {**cont, "excluidas": 0, "recalculadas": por_tipo, "lotes_chaves": feitos, "ouro": gres}
+    return {**cont, "excluidas": 0, "recalculadas": por_tipo, "segundos_por_tipo": seg_tipo, "lotes_chaves": feitos, "ouro": gres,
+            "prata_s": round(t_prata, 1), "ouro_s": round(time.monotonic() - t1, 1), "rss_prata_mb": rss_prata}

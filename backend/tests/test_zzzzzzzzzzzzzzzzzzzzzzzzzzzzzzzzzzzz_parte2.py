@@ -267,3 +267,52 @@ def test_pulso_e_sem_zero_por_cento_no_incremental(db, base, monkeypatch):
     assert feitos == sorted(feitos)  # contador nunca volta
     assert all(t and t > 0 and n <= t for n, t in vistos)  # sempre com total: nunca "0 de nada"
     assert vistos[-1][0] == vistos[-1][1] > 0 and ouro  # chega a 100% e o ouro (recomposto) dá sinal
+
+
+def test_pi8_retomar_camadas_segue_do_checkpoint(db, base, monkeypatch, client, tokens):
+    """Cancelar no meio da prata incremental pela carga, retomar pelo Retomar camadas: segue a fila (não recompõe) e
+    o resultado é o da recomposição (PI5)."""
+    from app.services import carga_completa as cc
+    monkeypatch.setattr(ci, "LOTE", 1)
+    monkeypatch.setattr(cc, "sinal_de_vida", lambda *a, **k: None)
+    _novo_trib_e_fatos(db, base, 21)
+    ex = Execucao(tipo=cc.TIPO, sistema="SAUDE", status="em_andamento", usuario="zzteste")
+    db.add(ex)
+    db.commit()
+    n = {"c": 0}
+
+    def pedido(_id):
+        n["c"] += 1
+        return n["c"] > 3
+    monkeypatch.setattr(cc, "pedido_cancelar", pedido)
+    cc._camadas(db, ex, "saude", "SAUDE", pode_pular=False)
+    ex = db.get(Execucao, ex.id)
+    assert ex.status == "cancelada" and ci.ha_retomada(db) and cc.pode_retomar_camadas(db, "SAUDE")
+    recomp = {"n": 0}
+    original = pr.reconstruir
+    monkeypatch.setattr(pr, "reconstruir", lambda *a, **k: (recomp.__setitem__("n", recomp["n"] + 1), original(*a, **k))[1])
+    monkeypatch.setattr(cc, "pedido_cancelar", lambda _id: False)
+    # retomada pelo endpoint do botão "Retomar camadas" (disparo síncrono no teste)
+    monkeypatch.setattr(cc, "motivo_bloqueio", lambda *_a, **_k: None)
+    from app.core import recursos
+    monkeypatch.setattr(recursos, "motivo_disco_cheio", lambda **_k: None)
+    monkeypatch.setattr(cc, "disparar", lambda ex_id, conector, trava, somente_camadas=False, **k:
+                        cc.rodar(ex_id, conector, trava, somente_camadas=somente_camadas, **k))
+    r = client.post("/api/conectores/saude/completa/retomar-camadas", headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    db.expire_all()
+    ex2 = db.scalar(select(Execucao).where(Execucao.tipo == cc.TIPO, Execucao.sistema == "SAUDE")
+                    .order_by(Execucao.id.desc()).limit(1))
+    assert ex2.status == "sucesso" and ex2.camadas_modo == "incremental" and recomp["n"] == 0
+    assert not ci.ha_retomada(db)
+    inc = snapshot(db)
+    R = RegistroBronze  # nada duplicado nem pulado: cada chave vigente de fato/tributário uma vez na prata
+    for tabela, sql in (("Consultas", "SELECT count(*), count(DISTINCT chave_origem) FROM silver.atendimentos"),
+                        ("Financeiro_Exercicio", "SELECT count(*), count(DISTINCT chave_origem) FROM silver.lancamentos")):
+        linhas, distintas = db.execute(text(sql)).one()
+        vigentes = db.scalar(select(func.count()).select_from(UltimaVersao).where(UltimaVersao.tabela == tabela))
+        assert linhas == distintas == vigentes, tabela
+    assert R is not None
+    monkeypatch.setattr(pr, "reconstruir", original)
+    rodada(db, recompor=True)  # = execução sem interrupção
+    assert snapshot(db) == inc

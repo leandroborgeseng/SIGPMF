@@ -98,7 +98,7 @@ def fase(a):
     from app.core.db import SessionLocal
     from app.services import camadas_incremental as ci
     from app.services import ultima_versao as uv
-    from tests.test_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz_parte2 import rodada, snapshot
+    from tests.test_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz_parte2 import snapshot
     sis, tab = a.tabela.split(".", 1)
     tab = tab.split(".")[-1]
     db = SessionLocal()
@@ -106,12 +106,39 @@ def fase(a):
     if a.fase == "sincroniza":
         out["ate"] = uv.sincroniza(db)
     elif a.fase in ("completa", "incremental", "recompoe"):
-        out["modo"] = rodada(db, recompor=a.fase == "recompoe")
-        if a.fase != "incremental":
-            pass
+        # PI10: prata+tributário medidos à parte do ouro (tempo e RSS de pico até o fim de cada fase)
+        import resource
+
+        from app.gold import visao
+        from app.silver import processamento as pr
+        ate = uv.sincroniza(db)
+        modo, _ = ci.decide(db, ate, a.fase == "recompoe")
+        out["modo"] = modo
+        if modo == "recomposicao":
+            t = time.perf_counter()
+            pr.reconstruir(db)
+            out["prata_s"] = round(time.perf_counter() - t, 1)
+            out["rss_prata_mb"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+            t = time.perf_counter()
+            visao.reconstruir(db)
+            ci.marca_tudo(db, ate, None)
+            db.commit()
+            out["ouro_s"] = round(time.perf_counter() - t, 1)
+        else:
+            r = ci.executa(db, ate)
+            out.update({k: r[k] for k in ("prata_s", "ouro_s", "rss_prata_mb", "novas", "alteradas",
+                                         "recalculadas", "segundos_por_tipo")})
     elif a.fase == "delta":
         ex = db.execute(text("SELECT max(id) FROM controle.execucoes")).scalar()
         db.execute(text(GERA_FATOS), {"sis": sis, "tab": tab, "n": a.fatos, "v": a.v, "ex": ex})
+        # D5: 1% das posses e do Financeiro também muda (dado novo só em campo sintético)
+        db.execute(text("""INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id,
+                                quarentena, ambiente_origem)
+            SELECT DISTINCT ON (id_origem) sistema_origem, tabela, id_origem,
+                   dados || jsonb_build_object('Data_Baixa', NULL, 'Valor_Pago', :v), md5(hash || :v), :ex, NULL, 'producao'
+              FROM bronze.registros WHERE tabela IN ('Cadastro_Possuidor', 'Financeiro_Exercicio')
+               AND quarentena IS NULL AND abs(hashtext(id_origem)) % 100 = :v ORDER BY id_origem, id DESC"""),
+                   {"v": a.v, "ex": ex})
         db.commit()
     elif a.fase == "snapshot":
         out["snap"] = snapshot(db)
