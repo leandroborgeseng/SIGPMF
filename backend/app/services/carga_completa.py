@@ -183,6 +183,42 @@ def _quarentena(db: Session, ex: Execucao, sistema: str, tabela: str, linhas: li
     return len(linhas)
 
 
+def separa_pulos_sil(brutas: list) -> tuple[list, list[dict]]:
+    """Linhas marcadas pelo conector SIL como Sequencia pulada (200 inesperado) saem da bronze e vão à quarentena."""
+    from app.connectors.sil.conector import CHAVE_PULO
+    boas, pulos = [], []
+    for r in brutas:
+        if isinstance(r, dict) and CHAVE_PULO in r:
+            pulos.append(r[CHAVE_PULO])
+        else:
+            boas.append(r)
+    return boas, pulos
+
+
+def quarentena_pulos_sil(db: Session, ex: Execucao, sistema: str, tabela: str, pulos: list[dict]) -> int:
+    """TL 30/10: cada Sequencia pulada vira uma linha de quarentena com Sequencia, status, tipo_json e NOMES das
+    chaves de topo (nenhum valor). Idempotente por Sequencia; mesma transação do lote e do checkpoint."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.bronze.ingestao import hash_registro
+    from app.connectors.sil.conector import MOTIVO_PULO
+    if not pulos:
+        return 0
+    vals = []
+    for p in pulos:
+        dados = {"Sequencia": int(p["sequencia"]), "status": p.get("status"), "tipo_json": p.get("tipo_json"),
+                 "chaves": list(p.get("chaves") or [])}
+        vals.append({"sistema_origem": sistema, "tabela": tabela, "id_origem": f"{MOTIVO_PULO}:{dados['Sequencia']}",
+                     "dados": dados, "hash": hash_registro(dados), "execucao_id": ex.id, "quarentena": MOTIVO_PULO,
+                     "quarentena_campos": dados["chaves"]})
+        db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=(
+            f"{sistema}.{tabela}: Sequencia={dados['Sequencia']} pulada para a quarentena (resposta inesperada da "
+            f"API: status={dados['status']} tipo_json={dados['tipo_json']} chaves={dados['chaves']})")))
+    db.execute(insert(RegistroBronze).values(vals).on_conflict_do_nothing(
+        index_elements=["sistema_origem", "tabela", "id_origem", "hash"]))
+    return len(pulos)
+
+
 class Bloqueado(RuntimeError):
     """Carga completa não liberada (motivo é seguro para a UI)."""
 
@@ -640,9 +676,12 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
                 _subetapa_leitura(ex.id, t, cp.posicao, cp.total_origem)
                 brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
-                linhas = [linha_json(r, cols) for r in brutas]
-                if brutas:
+                boas, pulos = separa_pulos_sil(brutas)
+                linhas = [linha_json(r, cols) for r in boas]
+                if brutas:  # o checkpoint passa da Sequencia pulada (mesma transação da quarentena)
                     cp.ultima_chave = codifica_chave(_valores_chave(brutas[-1], ord_, cols))
+                    quarentena_pulos_sil(db, ex, sistema, t, pulos)
+                if linhas:
                     c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id, s.carga_lote,
                                rowversion=m.get("rowversion"), confirmar=False)
                     for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
@@ -652,7 +691,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 cp.atualizado_em = datetime.now(UTC)
                 parcial = _parcial(conn)
                 # Teto de lotes (SIL_MAX_LOTES_POR_EXECUCAO) com a origem ainda tendo dados: o checkpoint NÃO fecha.
-                cp.concluida = parcial is None and len(linhas) < s.carga_lote
+                cp.concluida = parcial is None and len(brutas) < s.carga_lote
                 ex.etapa, ex.total_etapa, ex.atualizado_em = "leitura", ex.total_origem, datetime.now(UTC)
                 ex.processadas_etapa = sum(c.posicao for c in cps.values())
                 db.commit()  # bronze do lote + checkpoint + progresso: tudo ou nada
@@ -827,14 +866,17 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
     return out
 
 
+MOTIVOS_QUARENTENA = {MOTIVO_CHAVE_NULA: "Chave nula na origem",
+                      "sil_resposta_inesperada": "Sequencia pulada: resposta inesperada da API SIL"}
+
+
 def quarentena(db: Session, conector: str) -> list[dict]:
     """CC9.2: detalhe só para admin, sem valores da linha (nem CPF): tabela, motivo, campos nulos, id (hash), data."""
     sistema = _sistema(conector)
     q = select(RegistroBronze.id, RegistroBronze.tabela, RegistroBronze.quarentena, RegistroBronze.quarentena_campos,
                RegistroBronze.id_origem, RegistroBronze.extraido_em).where(
         RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None)).order_by(RegistroBronze.id)
-    return [{"id": r.id, "tabela": r.tabela, "motivo": "Chave nula na origem" if r.quarentena == MOTIVO_CHAVE_NULA
-             else r.quarentena, "campos_nulos": r.quarentena_campos or [], "referencia": r.id_origem,
+    return [{"id": r.id, "tabela": r.tabela, "motivo": MOTIVOS_QUARENTENA.get(r.quarentena, r.quarentena), "campos_nulos": r.quarentena_campos or [], "referencia": r.id_origem,
              "extraido_em": r.extraido_em} for r in db.execute(q.limit(1000))]
 
 
@@ -960,9 +1002,12 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                 _subetapa_leitura(ex.id, t, ex.processadas_etapa, None)
                 brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
                           else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
-                linhas = [linha_json(r, cols) for r in brutas]
+                boas, pulos = separa_pulos_sil(brutas)
+                linhas = [linha_json(r, cols) for r in boas]
                 if brutas:
                     ultima = _valores_chave(brutas[-1], ord_, cols)
+                    quarentena_pulos_sil(db, ex, sistema, t, pulos)
+                if linhas:
                     c = ingere(db, sistema, t, m["chave"], campo, linhas, ex.id, s.carga_lote,
                                rowversion=m.get("rowversion"), confirmar=False)
                     for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
@@ -974,7 +1019,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                 if parcial is not None:
                     ex.tabela_atual = None
                     return _finaliza_parcial(db, ex, conector, parcial, t_leitura)
-                if len(linhas) < s.carga_lote:
+                if len(brutas) < s.carga_lote:
                     break
                 if s.carga_pausa_ms:
                     time.sleep(s.carga_pausa_ms / 1000)

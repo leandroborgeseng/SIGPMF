@@ -87,7 +87,7 @@ function Uuid({ v }: { v: string }) {
 }
 
 const OCULTO = '••• (oculto)'
-const ROTULO_QUARENTENA: Record<string, string> = { chave_nula: 'Chave nula na origem' }
+const ROTULO_QUARENTENA: Record<string, string> = { chave_nula: 'Chave nula na origem', sil_resposta_inesperada: 'Sequencia pulada (resposta inesperada da API SIL)' }
 function Valor({ v }: { v: unknown }) {
   if (v === OCULTO) return <span className="mascara">•••<span className="sr-only"> oculto</span></span>
   if (typeof v === 'string' && UUID.test(v)) return <Uuid v={v} />
