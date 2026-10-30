@@ -283,6 +283,14 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
+def _recusa_pausada(db: Session, u: Usuario, req: Request, conector: str, acao: str, evento: str) -> None:
+    """CT26 v2: agenda com ativo=false -> 409 antes de qualquer execução; `forcar` não muda. Auditado, sem PII."""
+    motivo = ccomp.motivo_pausada_agenda(db, conector, acao)
+    if motivo:
+        audita(db, u.email, evento, f"conector:{conector}", {"motivo": "agenda_pausada"}, _ip(req))
+        raise HTTPException(409, motivo)
+
+
 # Rotas fixas da SIL antes de /conectores/{conector}/amostra (a ordem decide o casamento).
 @api.post("/conectores/sil/amostra", status_code=202)
 def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
@@ -291,6 +299,7 @@ def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session 
     from app.connectors.sil.cliente import SilDesabilitado
     from app.services import amostra_sil as sil
     audita(db, u.email, "amostra_sil_solicitada", "conector:sil", ip=_ip(req))
+    _recusa_pausada(db, u, req, "sil", "amostra", "amostra_sil_recusada")
     try:
         ex = sil.iniciar_amostra(db, u.email)
     except SilDesabilitado as exc:
@@ -326,6 +335,7 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     GET /conectores/{conector}/amostra/{id}. 404/409 continuam imediatos (validação e trava #20 antes do 202)."""
     conector = _id_conector(db, conector)
     audita(db, u.email, "amostra_conector_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "amostra", "amostra_conector_recusada")
     try:
         ex = cc.iniciar_amostra(db, u.email, conector)
     except cc.ConectorDesconhecido:
@@ -366,6 +376,7 @@ def amostra_aprovar(conector: str, eid: int, req: Request, u: Usuario = Depends(
     conector = _id_conector(db, conector)
     if conector not in cc.CONECTORES:
         _404()
+    _recusa_pausada(db, u, req, conector, "amostra", "amostra_aprovacao_recusada")
     try:
         return ccomp.aprovar_amostra(db, u.email, conector, eid, _ip(req))
     except ccomp.AprovacaoRecusada as exc:
@@ -573,6 +584,7 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     """Carga completa real (CC3): background, lotes com checkpoint, cancelável. Só admin (CC5), auditada (CC4)."""
     conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "completa", "carga_completa_negada")
     try:
         ex = ccomp.iniciar(db, u.email, conector)
     except ccomp.Bloqueado as exc:
@@ -598,6 +610,7 @@ def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(a
     """CC7: carga interrompida com a leitura concluída retoma só prata e ouro a partir da bronze (sem reler a origem)."""
     conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_retomar_camadas_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "completa", "carga_completa_negada")
     try:
         ex = ccomp.iniciar(db, u.email, conector, somente_camadas=True)
     except ccomp.Bloqueado as exc:
@@ -1235,6 +1248,8 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     from app.services import carga_gestaoescolar as cge
     if modo not in ("amostra", "completa", "incremental"):
         _404()
+    # CT26 R1: agenda da educação com ativo=false -> 409 antes de tudo (sem execução, sem ler a origem, forcar intacto)
+    _recusa_pausada(db, u, req, "educacao", "amostra" if modo == "amostra" else "completa", "gestaoescolar_negado")
     cfg = ConfigGE.do_ambiente(get_settings())
     janela_ignorada = fora_da_janela = False
     try:
