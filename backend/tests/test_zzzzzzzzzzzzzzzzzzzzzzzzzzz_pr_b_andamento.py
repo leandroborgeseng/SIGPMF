@@ -54,9 +54,10 @@ def test_migracao_0035_colunas_e_idempotente(banco):
     assert inspect(eng).has_table("execucao_subetapas", schema="controle")
     # idempotente: com as colunas já criadas, rodar a 0035 de novo não falha
     command.stamp(alembic_cfg(), "0033")
-    command.upgrade(alembic_cfg(), "head")
+    command.upgrade(alembic_cfg(), "0035")  # alvo explícito: a head avança com migrações novas (0036)
     with eng.connect() as c:
         assert c.execute(text("select version_num from controle.alembic_version")).scalar() == "0035"
+    command.upgrade(alembic_cfg(), "head")
     eng.dispose()
 
 
