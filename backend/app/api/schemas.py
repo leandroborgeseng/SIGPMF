@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
 class LoginIn(BaseModel):
@@ -62,12 +62,14 @@ class InterromperIn(BaseModel):
 
 
 class AgendaIn(BaseModel):
-    """AG1: alteração de um agendamento (admin, auditada). Campos ausentes ficam como estão."""
+    """AG1: alteração de um agendamento (admin, auditada). Campos ausentes ficam como estão.
+    D1 (#58): campo desconhecido -> 422 (extra=forbid); forcar só aceita bool de verdade (StrictBool: "true"/1 -> 422)."""
+    model_config = ConfigDict(extra="forbid")
     horario: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     ativo: bool | None = None
     ordem: int | None = Field(None, ge=0, le=100)
     # Só false: limpa um "Executar agora" pendente (auditado). true continua só pelo POST executar-agora.
-    forcar: bool | None = None
+    forcar: StrictBool | None = None
 
     @model_validator(mode="after")
     def _forcar_so_false(self):

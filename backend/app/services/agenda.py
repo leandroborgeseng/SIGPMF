@@ -601,7 +601,8 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
         db.rollback()
         raise AgendaTravada(MOTIVO_SIL_TRAVADA)
     ag = _agendamento(db, conector, travar=True)
-    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}
+    # D3 (#58): valores reais lidos (linha travada) antes de qualquer mudança, forcar incluso
+    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
     if horario is not None:
         if not HORARIO.match(horario):
             raise AgendaInvalida("Horário deve ser HH:MM (00:00 a 23:59).")
@@ -624,7 +625,8 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
-           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}})
+           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem,
+                                       "forcar": bool(ag.forcar)}})
     if forcar_cancelado:
         audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
                {"motivo": "forcar_cancelado_desligado", "conector": conector})
@@ -642,7 +644,7 @@ def _audita_forcar_limpo(db: Session, usuario: str, conector: str, antes: bool) 
 def limpar_forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     """Limpa um "Executar agora" pendente (forcar=false). Idempotente e sempre auditado (valor anterior incluso).
     Não usa a trava amostra:SIL: limpar nunca é bloqueado por carga ou reset em andamento."""
-    ag = _agendamento(db, conector)
+    ag = _agendamento(db, conector, travar=True)  # D3: lê o valor real (FOR UPDATE) antes de mudar
     antes = bool(ag.forcar)
     db.execute(update(Agendamento).where(Agendamento.conector == conector)
                .values(forcar=False, atualizado_por=usuario, atualizado_em=datetime.now(UTC)))
