@@ -84,10 +84,15 @@ def base(db):
     _carrega(db, _fixtures(), ex_id)
     assert rodada(db) == "recomposicao"
     yield ex_id
-    db.rollback()
+    db.rollback()  # limpa tudo o que este teste gravou (bronze e derivados) para não vazar para outros testes
     db.execute(delete(CamadasPendencia))
-    db.execute(delete(CamadasMarca))
+    db.execute(delete(CamadasMarca))  # inclui a marca '_ultima_versao'
+    db.execute(text("DELETE FROM controle.logs WHERE execucao_id = :e"), {"e": ex_id})
+    db.execute(delete(RegistroBronze).where(RegistroBronze.execucao_id == ex_id))
+    db.execute(delete(UltimaVersao))  # refaz do zero (idempotente): versões anteriores das chaves voltam a valer
     db.commit()
+    uv.sincroniza(db)
+    rodada(db, recompor=True)
 
 
 def _novo_trib_e_fatos(db, ex_id, rodada_n: int):
