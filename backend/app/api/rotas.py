@@ -1248,6 +1248,8 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     from app.services import carga_gestaoescolar as cge
     if modo not in ("amostra", "completa", "incremental"):
         _404()
+    # CT26 R1: agenda da educação com ativo=false -> 409 antes de tudo (sem execução, sem ler a origem, forcar intacto)
+    _recusa_pausada(db, u, req, "educacao", "amostra" if modo == "amostra" else "completa", "gestaoescolar_negado")
     cfg = ConfigGE.do_ambiente(get_settings())
     janela_ignorada = fora_da_janela = False
     try:
