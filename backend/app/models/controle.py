@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +73,12 @@ class Execucao(Base):
     modo: Mapped[str | None] = mapped_column(String(20))
     # SEI7 (0022): ambiente de onde a execução leu ("oficial" ou "homologacao"); nulo nos conectores sem essa noção
     ambiente_origem: Mapped[str | None] = mapped_column(String(20))
+    # PR-B (0035): subetapa em texto fixo (sem dado pessoal), contador da subetapa e último sinal de vida
+    subetapa: Mapped[str | None] = mapped_column(String(200))
+    subetapa_contador: Mapped[int | None] = mapped_column(BigInteger)
+    subetapa_total: Mapped[int | None] = mapped_column(BigInteger)
+    subetapa_iniciada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ultimo_sinal_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def registra_erro(self, exc: BaseException) -> None:
         from app.services.diagnostico import categoria
@@ -310,3 +316,17 @@ class DominioSecretaria(Base):
     obs: Mapped[str | None] = mapped_column(Text)
     atualizado_por: Mapped[str | None] = mapped_column(String(200))
     atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecucaoSubetapa(Base):
+    """Log das subetapas de uma execução (PR-B, 0035): só nome de etapa/subetapa e contagens (CT19)."""
+    __tablename__ = "execucao_subetapas"
+    __table_args__ = S
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    execucao_id: Mapped[int] = mapped_column(ForeignKey("controle.execucoes.id", ondelete="CASCADE"))
+    etapa: Mapped[str] = mapped_column(String(20))
+    subetapa: Mapped[str] = mapped_column(String(200))
+    contador: Mapped[int | None] = mapped_column(BigInteger)
+    total: Mapped[int | None] = mapped_column(BigInteger)
+    iniciada_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finalizada_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

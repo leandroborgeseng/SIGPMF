@@ -69,7 +69,18 @@ def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | 
     cuja transação só confirma no fim."""
     with get_engine().begin() as c:
         c.execute(update(Execucao).where(Execucao.id == ex_id).values(
-            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC)))
+            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC),
+            ultimo_sinal_em=datetime.now(UTC),
+            **({"subetapa_contador": processadas, "subetapa_total": total} if etapa == "leitura" else {})))
+
+
+def _subetapa_leitura(ex_id: int, tabela: str, lidas: int | None, total: int | None) -> None:
+    """CT16: subetapa da leitura em texto (só o nome da tabela) com o contador da tabela atual; nunca derruba a carga."""
+    from app.services import subetapa as sub
+    try:
+        sub.marca(ex_id, "leitura", f"Leitura: lendo {tabela} na origem", lidas, total)
+    except Exception:  # noqa: BLE001
+        log.warning("subetapa da leitura não gravada (execução %s)", ex_id)
 
 
 class PrataInconsistente(RuntimeError):
@@ -522,6 +533,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
                 # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
                 sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
+                _subetapa_leitura(ex.id, t, cp.posicao, cp.total_origem)
                 brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
                 linhas = [linha_json(r, cols) for r in brutas]
                 if brutas:
@@ -608,13 +620,22 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
         # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
         # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
-        sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
+        from app.services import subetapa as sub
+        with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s mesmo dentro de uma consulta longa
+            med = sub.MedicaoComSinal(ex.id)
+            sres = processamento.reconstruir(
+                db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
+                medicao=med)
         confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
         _log_separado(ex.id, "prata", t0, sres)
         sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
         _log_separado(ex.id, "ouro", None, None)
         t1 = time.monotonic()
-        gres = visao.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot))
+        sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+        with sub.Pulso(ex.id):
+            gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
+                                                                  sub.sinal(ex.id, n, tot)))
+        sub.finaliza(ex.id)
         _log_separado(ex.id, "ouro", t1, gres)
         ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
@@ -811,6 +832,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga incremental pausada: {disco}")
                 sinal_de_vida(ex.id, "leitura", ex.processadas_etapa, None)
+                _subetapa_leitura(ex.id, t, ex.processadas_etapa, None)
                 brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
                           else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
                 linhas = [linha_json(r, cols) for r in brutas]

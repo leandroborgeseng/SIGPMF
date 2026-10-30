@@ -260,9 +260,14 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
                 tv.sinal_de_vida(ex.id)
             tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: uma reconstrução por vez (trava de transação)
             tv.sinal_de_vida(ex.id, "prata", 0, None)
-            sres = processamento.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "prata", n, t))
-            tv.sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-            gres = visao.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "ouro", n, t))
+            from app.services import subetapa as sub
+            with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s, inclusive em consulta longa
+                med = sub.MedicaoComSinal(ex.id)
+                sres = processamento.reconstruir(db, progresso=med.progresso, medicao=med)
+            sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+            with sub.Pulso(ex.id):
+                gres = visao.reconstruir(db, progresso=sub.progresso_ouro(ex.id))
+            sub.finaliza(ex.id)
             for k, v in tot.items():
                 setattr(ex, k, v)
             ex.status = "sucesso" if (tot["novos"] or tot["atualizados"]) else "sem_novidades"

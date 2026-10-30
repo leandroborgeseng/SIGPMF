@@ -1232,3 +1232,12 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
         detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela
     audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", detalhe, _ip(req))
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}
+
+
+# ---------- Tela de Conectores e Cargas (PR-B: CT5–CT12, CT16–CT22) ----------
+@api.get("/cargas/andamento")
+def cargas_andamento(db: Session = Depends(get_db)):
+    """Status, etapa, subetapa, contador, último sinal, histórico (30) e log (10 subetapas) por fonte.
+    Só lê o Postgres (controle), nunca a origem; só contagens e nomes de etapa/tabela (CT12/CT19)."""
+    from app.services import andamento
+    return andamento.tela(db)
