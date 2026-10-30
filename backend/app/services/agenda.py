@@ -594,7 +594,9 @@ class AgendaTravada(RuntimeError):
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
               ordem: int | None = None, forcar: bool | None = None) -> Agendamento:
     if forcar is False and horario is None and ativo is None and ordem is None:
-        return limpar_forcar(db, conector, usuario)  # nunca passa pela trava amostra:SIL (AgendaTravada)
+        return limpar_forcar(db, conector, usuario)
+    if horario is None and ativo is None and ordem is None and forcar is None:  # #61 R2: {} / {"forcar": null}
+        return _agendamento(db, conector)  # nada a mudar: 200, sem tocar a linha e sem auditoria  # nunca passa pela trava amostra:SIL (AgendaTravada)
     # B1: antes da trava da linha (o reset segura a linha FOR UPDATE e a trava); try = sem esperar
     if ativo and conector == "sil" and not db.execute(
             text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_TRAVA_SIL}).scalar():
@@ -622,6 +624,10 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
     if forcar is False:
         forcar_limpo = ag.forcar
         ag.forcar = False
+    depois = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
+    if depois == antes:  # #61 R2: valores iguais aos atuais -> nada muda, nada é auditado
+        db.rollback()
+        return _agendamento(db, conector)
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",

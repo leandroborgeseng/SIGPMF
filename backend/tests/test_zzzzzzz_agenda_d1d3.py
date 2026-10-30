@@ -84,3 +84,47 @@ def test_d3_ordem_e_horario_sem_forcar_mantem_forcar_no_antes_e_depois(client, t
     d = _ultima(db, "agenda_alterada").detalhe
     assert d["antes"]["ordem"] == 1 and d["depois"]["ordem"] == 7
     assert d["antes"]["forcar"] is True and d["depois"]["forcar"] is True
+
+
+# ---------- #61 ciclo 2 ----------
+def _n_auditoria(db):
+    from sqlalchemy import func
+    db.expire_all()
+    return db.scalar(select(func.count()).select_from(Auditoria).where(Auditoria.alvo == "agendamento:saude"))
+
+
+@pytest.mark.parametrize("valor", ["yes", "true", "false", "no", "1", "0", 1, 0, "", [], {}])
+def test_r1_ativo_strictbool_422_sem_mudar_sem_auditar(client, tokens, db, saude, valor):
+    saude(ativo=True)
+    antes, n = _linha(db), _n_auditoria(db)
+    r = client.put(URL, json={"ativo": valor}, headers=tokens["admin"])
+    assert r.status_code == 422, r.text
+    assert _linha(db) == antes and _n_auditoria(db) == n
+
+
+@pytest.mark.parametrize("ativo_atual", [True, False])
+def test_r1_ativo_bool_de_verdade_continua_valendo(client, tokens, db, saude, ativo_atual):
+    saude(ativo=ativo_atual)
+    assert client.put(URL, json={"ativo": not ativo_atual}, headers=tokens["admin"]).status_code == 200
+    assert _linha(db)[1] is (not ativo_atual)
+    assert _ultima(db, "agenda_alterada") is not None
+
+
+@pytest.mark.parametrize("corpo", [{}, {"forcar": None}, {"horario": None, "ativo": None, "ordem": None},
+                                   {"horario": "01:00"}, {"ordem": 1}, {"ativo": True},
+                                   {"horario": "01:00", "ordem": 1, "ativo": True}])
+def test_r2_put_sem_mudanca_200_sem_auditoria(client, tokens, db, saude, corpo):
+    saude(ativo=True)
+    antes, n = _linha(db), _n_auditoria(db)
+    r = client.put(URL, json=corpo, headers=tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert _linha(db) == antes and _n_auditoria(db) == n
+
+
+def test_r2_mudanca_real_continua_auditada(client, tokens, db, saude):
+    saude(ativo=True)
+    n = _n_auditoria(db)
+    assert client.put(URL, json={"horario": "02:30", "ativo": True}, headers=tokens["admin"]).status_code == 200
+    assert _linha(db)[0] == "02:30" and _n_auditoria(db) == n + 1
+    a = _ultima(db, "agenda_alterada")
+    assert a.detalhe["antes"]["horario"] == "01:00" and a.detalhe["depois"]["horario"] == "02:30"

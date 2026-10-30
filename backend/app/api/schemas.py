@@ -66,7 +66,7 @@ class AgendaIn(BaseModel):
     D1 (#58): campo desconhecido -> 422 (extra=forbid); forcar só aceita bool de verdade (StrictBool: "true"/1 -> 422)."""
     model_config = ConfigDict(extra="forbid")
     horario: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
-    ativo: bool | None = None
+    ativo: StrictBool | None = None  # #61 R1: "yes"/"true"/1/0 -> 422
     ordem: int | None = Field(None, ge=0, le=100)
     # Só false: limpa um "Executar agora" pendente (auditado). true continua só pelo POST executar-agora.
     forcar: StrictBool | None = None
