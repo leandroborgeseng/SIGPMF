@@ -215,14 +215,6 @@ def test_sincroniza_idempotente_e_em_lotes(db, base):
     assert depois == antes
 
 
-def test_d4_hash_conteudo_preenchido_na_carga_nova(db, base):
-    regs = [{"Matricula": "ZZT0000003", "Nome": "ZZTESTE HASH", "dt_ultimaatual": "2026-01-01 00:00:00"}]
-    ingestao.ingere(db, "SAUDE", "pacientes", "Matricula", "dt_ultimaatual", regs, base)
-    db.commit()
-    r = db.scalar(select(RegistroBronze).where(RegistroBronze.id_origem == "ZZT0000003"))
-    assert r.hash_conteudo == ingestao.hash_registro(regs[0]) == r.hash  # sem rowversion: o mesmo do hash atual
-
-
 def test_d6b_ultimas_versoes_em_ordem_de_id(db, base):
     ids = [r.id for r, _ in pr._ultimas_versoes(db)]
     assert ids == sorted(ids) and len(ids) == len(set(ids))  # ordem final por id (desempate do idx.melhor)

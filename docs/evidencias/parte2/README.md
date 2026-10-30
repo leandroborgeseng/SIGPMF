@@ -20,6 +20,5 @@ nos dois: as pessoas são 1,6% da bronze). Na 200k, o delta de uma rodada (2.000
 depois (Bitmap em ix_ultima_versao_registro). O ganho da ultima_versao está na correção, não no tempo: versão em
 quarentena ou de homologação não gera delta nem substitui a vigente. A produção fica com a DevOps.
 
-D4: o `hash` atual é sha256 do JSON de `dados` com chaves ordenadas (`bronze.ingestao.hash_registro`). Só não é
-conteúdo puro em dois casos: com `rowversion` configurado (vira sha256("rowversion:"+rv); hoje nenhuma tabela usa) e em
-homologação (prefixo do ambiente). `hash_conteudo` (nulo, sem backfill) segue o ajuste do TL das 08h57.
+D4: o `hash` atual é sha256 do JSON de `dados` com chaves ordenadas (`bronze.ingestao.hash_registro`): só conteúdo
+(rowversion existe no código mas nenhuma tabela usa). Sem coluna nova (decisão do TL 11h56).

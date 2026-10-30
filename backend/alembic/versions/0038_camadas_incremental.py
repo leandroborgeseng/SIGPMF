@@ -13,8 +13,8 @@
   atualiza a tabela. O incremental lê registro_id > marca d'água.
 - Índices (CREATE INDEX CONCURRENTLY IF NOT EXISTS, lock_timeout, padrão do #59): ultima_versao por
   (sistema, tabela, registro_id) para ler o delta; bronze IPTU pelo CODI normalizado (posses e imóvel de um CODI); prata por contribuinte e matrícula.
-bronze.registros.hash_conteudo (D4, ajuste do TL 08h57): nulo aceito, preenchido só nas próximas cargas (sha256 do
-JSON de `dados`, mesmo quando a origem usa rowversion), SEM backfill. ADD COLUMN nulo sem default: só metadado.
+Sem `hash_conteudo` (D4, decisão final do TL 30/10 11h56): o `hash` atual (sha256 do JSON de `dados` com chaves
+ordenadas, bronze.ingestao.hash_registro) já é só do conteúdo; nenhuma tabela usa rowversion.
 A detecção de mudança continua no `hash` atual. D6: predicado único quarentena IS NULL AND ambiente_origem='producao'.
 
 Cadeia: 0035 -> 0037 -> 0036 -> 0038. down_revision = '0036' (#59).
@@ -116,8 +116,6 @@ def upgrade() -> None:
             sa.Column("chave", sa.String(250), primary_key=True),
             sa.Column("criado_em", sa.DateTime(timezone=True), server_default=sa.func.now()),
             schema="controle")
-    if "hash_conteudo" not in {c["name"] for c in insp.get_columns("registros", schema="bronze")}:
-        op.add_column("registros", sa.Column("hash_conteudo", sa.String(64)), schema="bronze")  # D4: sem backfill
     cols = {c["name"] for c in insp.get_columns("execucoes", schema="controle")}
     if "camadas_modo" not in cols:
         op.add_column("execucoes", sa.Column("camadas_modo", sa.String(20)), schema="controle")
@@ -145,7 +143,6 @@ def downgrade() -> None:
             op.execute(f"DROP INDEX {_concorrente()}IF EXISTS {schema}.{nome}")
     op.execute("ALTER TABLE controle.execucoes DROP COLUMN IF EXISTS camadas_contagens")
     op.execute("ALTER TABLE controle.execucoes DROP COLUMN IF EXISTS camadas_modo")
-    op.execute("ALTER TABLE bronze.registros DROP COLUMN IF EXISTS hash_conteudo")
     op.execute("DROP TABLE IF EXISTS controle.camadas_pendencias")
     op.execute("DROP TABLE IF EXISTS bronze.ultima_versao")
     op.execute("DROP TABLE IF EXISTS controle.camadas_marca")

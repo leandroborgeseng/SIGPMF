@@ -65,7 +65,6 @@ def ingere(db: Session, sistema: str, tabela: str, chave: str | tuple, campo_dat
                 h = hashlib.sha256(f"{amb}:{h}".encode()).hexdigest()
             linhas[(_id(chave, r), h)] = {
                 "sistema_origem": sistema, "tabela": tabela, "id_origem": _id(chave, r), "dados": r, "hash": h,
-                "hash_conteudo": hash_registro(r),
                 "execucao_id": execucao_id, "atualizado_origem_em": _data(d),
                 "ambiente_origem": amb}
         ids = [k[0] for k in linhas]
