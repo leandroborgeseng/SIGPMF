@@ -5,8 +5,8 @@
 - silver.enderecos ganha colunas estruturadas: tipo_logradouro, numero, complemento, cidade, uf, codigo_ibge e
   origem_endereco ('geral' | 'outro' | 'nenhum').
 
-down_revision = '0035' (ponta da main em b518060). A 0036 é do #59 (ainda não mergeado): quem entrar por último
-ajusta o down_revision para manter uma única ponta.
+Cadeia: 0035 -> 0037 -> 0036. down_revision = '0035'. A 0037 entrou na main pelo #62 (2ae4703); a 0036 (#59,
+índice da última versão na bronze) vem depois dela e é a head única.
 
 Revision ID: 0037
 Revises: 0035

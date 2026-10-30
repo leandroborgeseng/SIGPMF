@@ -3,7 +3,7 @@
 Aditiva e idempotente: CREATE INDEX CONCURRENTLY IF NOT EXISTS fora da transação (autocommit_block), sem travar
 escrita na bronze. Downgrade: DROP INDEX CONCURRENTLY IF EXISTS.
 
-down_revision = '0037' (ponta da main depois do #57, b518060).
+Cadeia: 0035 -> 0037 -> 0036 (head única). down_revision = '0037': a 0037 (#62, 2ae4703) entrou antes na main.
 
 Revision ID: 0036
 Revises: 0037
