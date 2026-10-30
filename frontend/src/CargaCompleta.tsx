@@ -23,9 +23,9 @@ export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
 ]
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
-  camadas: { bronze: number; prata: number; pendencias: number; gerados_prata?: number }
+  camadas: { bronze: number | null; prata: number | null; pendencias: number | null; gerados_prata?: number | null }
   reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string }> | null
-  quarentena?: number
+  quarentena?: number | null
 }
 type LinhaQuarentena = { id: number; tabela: string; motivo: string; campos_nulos: string[]; referencia: string; extraido_em: string | null }
 type Estimativa = { tabelas: Record<string, number>; total: number }
