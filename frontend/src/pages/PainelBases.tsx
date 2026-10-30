@@ -3,7 +3,7 @@ import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
 
-export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
+export type Contagens = { bronze: number | null; prata: number | null; ouro: number | null; pendentes: number | null }  // null = cache frio (#56)
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
 export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null }
 export type Base = {
@@ -37,9 +37,9 @@ const ROTULO_MODO: Record<Modo, string> = { amostra: 'Puxar amostra', completa: 
 
 /** Contagem com concordância: 1 → singular; 0 ou ≥ 2 → plural. */
 export const plural = (n: number, um: string, varios: string) => `${new Intl.NumberFormat('pt-BR').format(n)} ${n === 1 ? um : varios}`
-export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
-export function perda(de: number, para: number): number | null {
-  if (de <= 0 || para >= de) return null
+export const milhar = (n: number | null | undefined) => (n == null ? '—' : new Intl.NumberFormat('pt-BR').format(n))
+export function perda(de: number | null, para: number | null): number | null {
+  if (de == null || para == null || de <= 0 || para >= de) return null
   const p = Math.round(((de - para) / de) * 100)
   return p > 0 ? p : null  // nunca "−0%"
 }
@@ -79,8 +79,9 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
     if (filtro === 'erro') return b.com_erro
     return b.status === filtro
   }), [bases, filtro, busca])
-  const tot = useMemo(() => visiveis.reduce((a, b) => ({
-    bronze: a.bronze + b.contagens.bronze, prata: a.prata + b.contagens.prata, ouro: a.ouro + b.contagens.ouro,
+  const soma = (a: number | null, v: number | null) => (a == null || v == null ? null : a + v)  // null (cache frio) mostra "—"
+  const tot = useMemo(() => visiveis.reduce<{ bronze: number | null; prata: number | null; ouro: number | null }>((a, b) => ({
+    bronze: soma(a.bronze, b.contagens.bronze), prata: soma(a.prata, b.contagens.prata), ouro: soma(a.ouro, b.contagens.ouro),
   }), { bronze: 0, prata: 0, ouro: 0 }), [visiveis])
   const ultima = useMemo(() => visiveis.map((b) => b.ultima_carga?.iniciado_em).filter(Boolean).sort().pop() ?? null, [visiveis])
 
@@ -173,7 +174,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
 function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void }) {
   const st = STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' }
   const c = b.contagens
-  const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
+  const n = (v: number | null) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
   const rodandoAlgo = rodando !== null
   const ocupado = rodandoAlgo || !habilitada

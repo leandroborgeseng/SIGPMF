@@ -751,7 +751,9 @@ def situacao(db: Session, conector: str) -> dict:
     from app.services import contagens_cache
     camadas, atualizando = contagens_cache.obter(db, f"completa:{sistema}", lambda s: contagens_card(s, sistema))
     sem_retrato = camadas is None
-    camadas = camadas or {"camadas": {"bronze": 0, "prata": 0, "pendencias": 0, "gerados_prata": 0}, "quarentena": 0}
+    # cache frio: null (a tela mostra "—"), nunca 0 — zero parece perda de dados (TL #56)
+    camadas = camadas or {"camadas": {"bronze": None, "prata": None, "pendencias": None, "gerados_prata": None},
+                          "quarentena": None}
     return {
         "conector": conector, "liberada": motivo is None, "motivo": motivo, "execucao": execucao,
         "camadas": camadas["camadas"], "contagens_atualizando": atualizando or sem_retrato,

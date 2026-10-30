@@ -111,7 +111,7 @@ def test_retrato_velho_responde_rapido_e_marca_atualizando(client, tokens, monke
     assert r.json()["totais"] == antes["totais"]
 
 
-def test_sem_retrato_e_calculo_lento_devolve_zeros_sem_travar(client, tokens, monkeypatch):
+def test_sem_retrato_e_calculo_lento_devolve_null_sem_travar(client, tokens, monkeypatch):
     from app.services import indicadores as ind
     real = ind.contagens_por_sistema
     monkeypatch.setattr(ind, "contagens_por_sistema", lambda db: (time.sleep(2), real(db))[1])
@@ -121,7 +121,10 @@ def test_sem_retrato_e_calculo_lento_devolve_zeros_sem_travar(client, tokens, mo
     r = client.get("/api/conectores", headers=tokens["admin"])
     assert r.status_code == 200 and time.perf_counter() - t < 1.0
     assert r.json()["contagens_atualizando"] is True
-    assert r.json()["totais"] == {"bronze": 0, "prata": 0, "ouro": 0, "pendentes": 0}
+    j = r.json()
+    assert j["totais"] == {"bronze": None, "prata": None, "ouro": None, "pendentes": None}  # nunca 0 com cache frio
+    assert j["bases"] and all(b["contagens"] == {"bronze": None, "prata": None, "ouro": None, "pendentes": None}
+                              for b in j["bases"])
 
 
 def test_recalculo_com_erro_nao_vaza_mensagem(client, tokens, monkeypatch):
@@ -160,3 +163,60 @@ def test_cache_recalcula_quando_execucao_muda(db):
         assert v3 == 2
     finally:
         os.environ.pop("CONECTORES_CACHE_S", None)
+
+
+def test_cache_frio_completa_devolve_null_e_atualizando(client, tokens, monkeypatch):
+    """/saude/completa sem retrato: camadas e quarentena null (nunca 0) + contagens_atualizando=true."""
+    from app.services import carga_completa as cc
+    real = cc.contagens_card
+    monkeypatch.setattr(cc, "contagens_card", lambda db, s: (time.sleep(2), real(db, s))[1])
+    monkeypatch.setenv("CONECTORES_CACHE_S", "60")
+    monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", "0.2")
+    j = client.get("/api/conectores/saude/completa", headers=tokens["admin"]).json()
+    assert j["contagens_atualizando"] is True
+    assert j["camadas"] == {"bronze": None, "prata": None, "pendencias": None, "gerados_prata": None}
+    assert j["quarentena"] is None
+
+
+def test_cache_quente_devolve_numeros(client, tokens, monkeypatch):
+    """Retrato pronto: contagens numéricas (ZZTESTE sintético) e atualizando=false, nas duas rotas."""
+    monkeypatch.setenv("CONECTORES_CACHE_S", "60")
+    h = tokens["admin"]
+    for _ in range(2):
+        j = client.get("/api/conectores", headers=h).json()
+    assert j["contagens_atualizando"] is False
+    assert all(isinstance(v, int) for v in j["totais"].values())
+    assert all(isinstance(v, int) for b in j["bases"] for v in b["contagens"].values())
+    for _ in range(2):
+        c = client.get("/api/conectores/saude/completa", headers=h).json()
+    assert c["contagens_atualizando"] is False
+    assert all(isinstance(v, int) for v in c["camadas"].values()) and isinstance(c["quarentena"], int)
+
+
+def test_health_traz_migracao(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    from sqlalchemy import text
+
+    from app.core.db import SessionLocal
+    with SessionLocal() as s:
+        try:
+            esperado = s.execute(text("select version_num from alembic_version")).scalar()
+        except Exception:  # noqa: BLE001 - banco de teste sem alembic_version
+            esperado = None
+    assert "migracao" in r.json() and r.json()["migracao"] == esperado
+
+
+def test_health_migracao_falha_vira_null_sem_vazar(client, monkeypatch):
+    from app.api import rotas
+
+    # falha real na leitura: tabela inexistente simulada no SQL
+    orig = rotas.text
+
+    def text_falso(sql):
+        return orig("select version_num from zzteste_tabela_inexistente") if "alembic_version" in sql else orig(sql)
+    monkeypatch.setattr(rotas, "text", text_falso)
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json()["db"] == "ok"
+    assert r.json()["migracao"] is None
+    assert "zzteste_tabela_inexistente" not in r.text and "ZZTESTE" not in r.text
