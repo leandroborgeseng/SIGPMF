@@ -133,4 +133,16 @@ describe('amostra obrigatória no card (PR-A)', () => {
     expect(within(c).getByText('Amostra aprovada')).toBeInTheDocument()
     expect(within(c).queryByRole('button', { name: /Aprovar amostra/ })).toBeNull()
   })
+
+  it('CT15/UXP9: card da base mostra o tipo real da última execução e o aviso do teto', async () => {
+    const ult = { id: 9, tipo: 'enriquecimento_sil', tipo_texto: 'Amostra', status: 'sucesso', iniciado_em: '2026-10-30T00:20:00Z', finalizado_em: null,
+      lidos: 49, mensagem: null, texto_limite: 'Amostra: 49 linhas (parou no limite de 1 lote). Não é o total da origem.' }
+    mock((url) => url === '/api/conectores' ? [200, { conectores: [], execucoes: [], carga_habilitada: true,
+      bases: BASES.map((b) => b.conector_id === 'sil' ? { ...b, ultima_carga: ult } : b) }] : null)
+    montar()
+    const c = await cartao('API SIL')
+    expect(within(c).getByText(/Última carga: .* · Amostra · sucesso/)).toBeInTheDocument()
+    expect(within(c).getByText('Amostra: 49 linhas (parou no limite de 1 lote). Não é o total da origem.')).toBeInTheDocument()
+    expect(within(c).queryByText(/· Carga completa ·/)).toBeNull()
+  })
 })

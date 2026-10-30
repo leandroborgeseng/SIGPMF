@@ -137,7 +137,7 @@ export default function AgendaCargas({ ehAdmin }: { ehAdmin: boolean }) {
                 </td>
                 <td data-rotulo="Próxima">
                   <div className="agenda-ultima">
-                    <span>{i.forcar ? 'Em até 1 minuto' : i.proxima_em && d.habilitada ? curta(i.proxima_em) : '—'}</span>
+                    <span>{!i.ativo || !d.habilitada ? 'Agenda desligada' : i.forcar ? 'Em até 1 minuto' : i.proxima_em ? curta(i.proxima_em) : '—'}</span>
                     {i.ativo && i.proximo_modo && <span className="agenda-modo">{MODO[i.proximo_modo] ?? i.proximo_modo}</span>}
                   </div>
                 </td>

@@ -16,6 +16,7 @@ from app.connectors.sqlserver.politicas import politica
 from app.core.config import get_settings
 from app.models.camadas import CorrelacaoPendente, DadoGold, RegistroBronze, Vinculo
 from app.models.controle import BaseCatalogo, Execucao
+from app.services.tipo_execucao import texto_limite, tipo_texto
 
 
 def _por_sistema(db: Session, stmt) -> dict[str, int]:
@@ -81,7 +82,8 @@ def indicadores(db: Session) -> list[dict]:
             "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
                           "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)},
             "ultima_carga": None if ult is None else {
-                "id": ult.id, "tipo": ult.tipo, "status": ult.status, "iniciado_em": ult.iniciado_em,
+                "id": ult.id, "tipo": ult.tipo, "tipo_texto": tipo_texto(ult), "texto_limite": texto_limite(ult),
+                "status": ult.status, "iniciado_em": ult.iniciado_em,
                 "finalizado_em": ult.finalizado_em, "lidos": ult.lidos, "novos": ult.novos,
                 "atualizados": ult.atualizados, "ignorados": ult.ignorados, "mensagem": ult.mensagem,
                 "erro": ult.erro_publico()},

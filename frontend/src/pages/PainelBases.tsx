@@ -6,7 +6,8 @@ import PainelAmostra, { type ResumoAmostra } from '../PainelAmostra'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
-export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null }
+export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null
+  tipo_texto?: string; texto_limite?: string | null }
 export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
@@ -192,7 +193,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
       {bl && <AvisoBloqueio bl={bl} nome={b.nome} conector={b.conector_id ?? String(b.id)} ehAdmin={ehAdmin} onFim={onFim} />}
-      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
+      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${u.tipo_texto ?? TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
+      {u?.texto_limite && <p className="aviso-ambar" role="status">{u.texto_limite}</p>}
       {u?.status === 'origem_vazia' && <p className="aviso-ambar" role="status">{MSG_ORIGEM_VAZIA}</p>}
       {u?.status === 'falha' && u.erro && (
         <div className="motivo-falha">
