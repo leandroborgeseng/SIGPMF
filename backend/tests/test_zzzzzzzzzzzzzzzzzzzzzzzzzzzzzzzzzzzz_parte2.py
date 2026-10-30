@@ -208,3 +208,11 @@ def test_sincroniza_idempotente_e_em_lotes(db, base):
     depois = sorted(db.execute(select(UltimaVersao.sistema_origem, UltimaVersao.tabela, UltimaVersao.id_origem,
                                       UltimaVersao.registro_id)).all())
     assert depois == antes
+
+
+def test_d4_hash_conteudo_preenchido_na_carga_nova(db, base):
+    regs = [{"Matricula": "ZZT0000003", "Nome": "ZZTESTE HASH", "dt_ultimaatual": "2026-01-01 00:00:00"}]
+    ingestao.ingere(db, "SAUDE", "pacientes", "Matricula", "dt_ultimaatual", regs, base)
+    db.commit()
+    r = db.scalar(select(RegistroBronze).where(RegistroBronze.id_origem == "ZZT0000003"))
+    assert r.hash_conteudo == ingestao.hash_registro(regs[0]) == r.hash  # sem rowversion: o mesmo do hash atual

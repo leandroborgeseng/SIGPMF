@@ -40,6 +40,8 @@ class RegistroBronze(Base):
     quarentena_campos: Mapped[list | None] = mapped_column(JSONType)
     # 0019: de qual ambiente da origem veio a linha (SIL: producao|sandbox). A prata da SIL só lê 'producao'.
     ambiente_origem: Mapped[str] = mapped_column(String(20), default="producao", server_default="producao")
+    # 0038 (D4): sha256 só do conteúdo (`dados`), nulo nas linhas antigas (sem backfill); detecção segue no `hash`
+    hash_conteudo: Mapped[str | None] = mapped_column(String(64))
 
 
 class UltimaVersao(Base):
