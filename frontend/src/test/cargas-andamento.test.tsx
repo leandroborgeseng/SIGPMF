@@ -87,6 +87,22 @@ describe('tela de cargas (CT5, CT9, CT10, CT20, CT21, CT22)', () => {
     expect(within(card).getByText(/^Falha ao ler a origem\. Para tentar de novo, use Rodar de novo em Conectores\./)).toBeVisible()
     expect(within(card).getByRole('link', { name: 'Abrir ZZTESTE Fonte em Conectores' })).toHaveAttribute('href', '/conectores#fonte-zzteste')
   })
+  // UX57-1: o texto acompanha a fase com ✕, um caso por fase; o motivo do backend nunca troca a fase
+  it.each([
+    ['leitura', 'Bronze', 'Falha ao ler a origem.'],
+    ['prata', 'Prata', 'Falha ao processar a Prata.'],
+    ['ouro', 'Ouro', 'Falha ao processar o Ouro.'],
+  ])('UX57-1: erro na fase %s cita só %s', async (etapa, fase, texto) => {
+    mock(resp([carga({}, { status: 'erro', etapa, motivo: 'Falha ao ler a origem' })]))
+    render(<Cargas />)
+    const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
+    expect(within(card).getByRole('img', { name: new RegExp(`${fase}, com erro`) })).toHaveTextContent(`${fase} ✕`)
+    const p = within(card).getByText(`${texto} Para tentar de novo, use Rodar de novo em Conectores.`, { exact: false })
+    expect(p).toBeVisible()
+    for (const outro of ['Falha ao ler a origem.', 'Falha ao processar a Prata.', 'Falha ao processar o Ouro.'].filter((t) => t !== texto))
+      expect(p.textContent).not.toContain(outro)
+    expect(within(p).getByRole('link', { name: 'Abrir ZZTESTE Fonte em Conectores' })).toHaveAttribute('href', '/conectores#fonte-zzteste')
+  })
   it('CT21/UXC8: log das subetapas em BRT e histórico de 30', async () => {
     mock(resp([carga()]))
     render(<Cargas />)

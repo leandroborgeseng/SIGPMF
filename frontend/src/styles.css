@@ -456,3 +456,7 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .nao-informado { font-style: italic; color: var(--ink-2); }
 .outros-valores { list-style: none; padding: 0; margin: .4rem 0 0; }
 .outros-valores li { margin-bottom: .4rem; }
+
+/* UX57-3: selo "Execução pendente" e "Cancelar execução pendente" com >= 8 px entre eles (também quebrando em 375 px) */
+.pendente { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pendente > p { flex-basis: 100%; margin: 0; }

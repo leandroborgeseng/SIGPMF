@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import axe from 'axe-core'
@@ -7,7 +9,7 @@ import App from '../App'
 import { salvaSessao } from '../api'
 import { AuthProvider } from '../auth'
 import { NAO_CANCELOU, SEM_SUPORTE_CANCELAR } from '../ExecucaoPendente'
-import { CONFIRMA_PENDENTE } from '../PainelAmostra'
+import { confirmaPendente } from '../PainelAmostra'
 
 // PR-B (TL): execução pendente (forcar=true) no card do conector. Dados mockados ZZTESTE, nada real.
 const Z = { bronze: 0, prata: 0, ouro: 0, pendentes: 0 }
@@ -162,15 +164,43 @@ describe('execução pendente (forcar=true)', () => {
     const c = await cartao('Dívida ativa')
     await within(c).findByText('Execução pendente: carga completa')
     await userEvent.click(within(c).getByRole('button', { name: 'Aprovar amostra de Dívida ativa' }))
-    const d = await screen.findByRole('alertdialog', { name: CONFIRMA_PENDENTE })
+    const d = await screen.findByRole('alertdialog', { name: confirmaPendente('Dívida ativa') })
     expect(within(d).getByRole('button', { name: 'Cancelar' })).toHaveFocus()
     await userEvent.click(within(d).getByRole('button', { name: 'Cancelar' }))
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(aprovou).not.toHaveBeenCalled()
     await userEvent.click(within(c).getByRole('button', { name: 'Aprovar amostra de Dívida ativa' }))
-    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Continuar' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Aprovar e iniciar' }))
     await waitFor(() => expect(aprovou).toHaveBeenCalledTimes(1))
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations.filter((v) => v.impact === 'critical' || v.impact === 'serious')).toEqual([])
+  })
+
+  // ---------- UX57-2 / UX57-3 ----------
+  it('UX57-2: diálogo "Aprovar e iniciar a carga completa de <fonte>?", Cancelar com foco e sem "Continuar"', async () => {
+    mock((url) => (url === '/api/agenda' ? [200, AGENDA] : null))
+    montar()
+    const c = await cartao('Dívida ativa')
+    await within(c).findByText('Execução pendente: carga completa')
+    await userEvent.click(within(c).getByRole('button', { name: 'Aprovar amostra de Dívida ativa' }))
+    const d = await screen.findByRole('alertdialog', { name: 'Aprovar e iniciar a carga completa de Dívida ativa?' })
+    expect(within(d).getAllByRole('button').map((b) => b.textContent)).toEqual(['Cancelar', 'Aprovar e iniciar'])
+    expect(within(d).getByRole('button', { name: 'Cancelar' })).toHaveFocus()
+    expect(screen.queryByText(/Continuar/)).toBeNull()
+  })
+
+  it('UX57-3: selo e "Cancelar execução pendente" num contêiner flex com gap >= 8 px', async () => {
+    mock((url) => (url === '/api/agenda' ? [200, AGENDA] : null))
+    montar()
+    const c = await cartao('Dívida ativa')
+    const selo = await within(c).findByText('Execução pendente: carga completa')
+    const btn = within(c).getByRole('button', { name: 'Cancelar execução pendente de Dívida ativa' })
+    expect(selo.parentElement).toBe(btn.parentElement)
+    expect(selo.parentElement).toHaveClass('pendente')
+    const css = readFileSync(resolve(__dirname, '../styles.css'), 'utf8')
+    const regra = /\.pendente\s*\{([^}]*)\}/.exec(css)?.[1] ?? ''
+    expect(regra).toMatch(/display:\s*flex/)
+    expect(regra).toMatch(/flex-wrap:\s*wrap/)
+    expect(Number(/gap:\s*(\d+)px/.exec(regra)?.[1])).toBeGreaterThanOrEqual(8)
   })
 })

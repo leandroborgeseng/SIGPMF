@@ -31,7 +31,8 @@ export function estadoAmostra(am: ResumoAmostra | null, rodando: boolean): Estad
   return am.aprovada ? 'pronto' : 'aprovar'
 }
 
-export const CONFIRMA_PENDENTE = 'Há uma carga completa pendente. Ela vai começar agora. Continuar?'
+/** UX57-2: pergunta direta com o nome da fonte. */
+export const confirmaPendente = (nome: string) => `Aprovar e iniciar a carga completa de ${nome}?`
 
 export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado, pendente = false, pausada = null }: {
   conector: string; nome: string; limite: number; inicial: ResumoAmostra | null; onMudou: () => void; desabilitado?: boolean
@@ -131,10 +132,10 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
                 <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfirma(false) }}>
                   <div role="alertdialog" aria-modal="true" aria-labelledby={`t-ap-${conector}`} className="dialogo"
                     onKeyDown={(e) => { if (e.key === 'Escape') setConfirma(false) }}>
-                    <p id={`t-ap-${conector}`}>{CONFIRMA_PENDENTE}</p>
+                    <p id={`t-ap-${conector}`}>{confirmaPendente(nome)}</p>
                     <div className="acoes">
                       <button className="btn secundario" autoFocus onClick={() => setConfirma(false)}>Cancelar</button>
-                      <button className="btn" onClick={aprovar}>Continuar</button>
+                      <button className="btn" onClick={aprovar}>Aprovar e iniciar</button>
                     </div>
                   </div>
                 </div>

@@ -61,7 +61,7 @@ function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: numb
       )}
       {a.status === 'erro' && (
         <p className="cg-erro">
-          {textoErro(a.motivo)}{' '}
+          {textoErro(a.etapa)}{' '}
           <Link to={`/conectores#fonte-${c.sistema.toLowerCase()}`}>Abrir {c.fonte} em Conectores</Link>
         </p>
       )}
