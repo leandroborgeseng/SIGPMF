@@ -31,10 +31,13 @@ export function estadoAmostra(am: ResumoAmostra | null, rodando: boolean): Estad
   return am.aprovada ? 'pronto' : 'aprovar'
 }
 
-export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado }: {
+export const CONFIRMA_PENDENTE = 'Há uma carga completa pendente. Ela vai começar agora. Continuar?'
+
+export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado, pendente = false }: {
   conector: string; nome: string; limite: number; inicial: ResumoAmostra | null; onMudou: () => void; desabilitado?: boolean
-  onEstado?: (e: EstadoAmostra) => void
+  onEstado?: (e: EstadoAmostra) => void; pendente?: boolean
 }) {
+  const [confirma, setConfirma] = useState(false)
   const [am, setAm] = useState<ResumoAmostra | null>(inicial)
   const [rodando, setRodando] = useState(false)
   const [aprovando, setAprovando] = useState(false)
@@ -66,6 +69,7 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
   }
   const aprovar = async () => {
     if (!am) return
+    setConfirma(false)
     setAprovando(true); setErro('')
     try {
       setAm(await api<ResumoAmostra>(`/conectores/${conector}/amostra/${am.id}/aprovar`, { method: 'POST' }))
@@ -119,7 +123,19 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
               </div>
             )}
             <p className="acoes">
-              {!am.aprovada && <button className="btn" disabled={aprovando} onClick={aprovar} aria-label={`Aprovar amostra de ${nome}`}>Aprovar amostra</button>}
+              {!am.aprovada && <button className="btn" disabled={aprovando} onClick={pendente ? () => setConfirma(true) : aprovar} aria-label={`Aprovar amostra de ${nome}`}>Aprovar amostra</button>}
+              {confirma && (
+                <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfirma(false) }}>
+                  <div role="alertdialog" aria-modal="true" aria-labelledby={`t-ap-${conector}`} className="dialogo"
+                    onKeyDown={(e) => { if (e.key === 'Escape') setConfirma(false) }}>
+                    <p id={`t-ap-${conector}`}>{CONFIRMA_PENDENTE}</p>
+                    <div className="acoes">
+                      <button className="btn secundario" autoFocus onClick={() => setConfirma(false)}>Cancelar</button>
+                      <button className="btn" onClick={aprovar}>Continuar</button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {' '}<button className={am.aprovada ? 'btn ghost' : 'btn outlined'} disabled={desabilitado} onClick={rodar} aria-label={`Rodar de novo a amostra de ${nome}`}>Rodar de novo</button>
             </p>
           </div>

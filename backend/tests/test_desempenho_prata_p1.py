@@ -144,11 +144,11 @@ def test_migracao_0036_idempotente(banco, monkeypatch):
     cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
     try:
         command.upgrade(cfg, "head")
-        command.stamp(cfg, "0033")
+        command.stamp(cfg, "0035")
         command.upgrade(cfg, "head")  # 2ª execução com o índice já criado
-        command.downgrade(cfg, "0033")
+        command.downgrade(cfg, "0035")
         command.stamp(cfg, "0036")
-        command.downgrade(cfg, "0033")  # 2º downgrade com o índice já removido
+        command.downgrade(cfg, "0035")  # 2º downgrade com o índice já removido
         command.upgrade(cfg, "head")
         eng = create_engine(alvo)
         with eng.connect() as c:

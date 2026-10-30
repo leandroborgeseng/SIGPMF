@@ -74,7 +74,26 @@ def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | 
     cuja transação só confirma no fim."""
     with get_engine().begin() as c:
         c.execute(update(Execucao).where(Execucao.id == ex_id).values(
-            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC)))
+            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC),
+            ultimo_sinal_em=datetime.now(UTC),
+            **({"subetapa_contador": processadas, "subetapa_total": total} if etapa == "leitura" else {})))
+
+
+def _pulso_leitura(ex_id: int):
+    """D1: Pulso (sinal de vida a cada 30 s) durante toda a leitura da origem; encerrado no finally do chamador."""
+    from app.services import subetapa as sub
+    p = sub.Pulso(ex_id)
+    p.__enter__()
+    return p
+
+
+def _subetapa_leitura(ex_id: int, tabela: str, lidas: int | None, total: int | None) -> None:
+    """CT16: subetapa da leitura em texto (só o nome da tabela) com o contador da tabela atual; nunca derruba a carga."""
+    from app.services import subetapa as sub
+    try:
+        sub.marca(ex_id, "leitura", f"Leitura: lendo {tabela} na origem", lidas, total)
+    except Exception:  # noqa: BLE001
+        log.warning("subetapa da leitura não gravada (execução %s)", ex_id)
 
 
 def pedido_cancelar(ex_id: int) -> bool:
@@ -213,6 +232,13 @@ def bronze_do_sistema(db: Session, sistema: str) -> int:
                                 RegistroBronze.ambiente_origem == ambiente_da_origem(sistema))) or 0)
 
 
+def tem_bronze(db: Session, sistema: str) -> bool:
+    """Mesmo critério de bronze_do_sistema(...) > 0, mas com EXISTS (para no 1º registro; não conta milhões)."""
+    return bool(db.scalar(select(select(RegistroBronze.id).where(
+        RegistroBronze.sistema_origem == sistema,
+        RegistroBronze.ambiente_origem == ambiente_da_origem(sistema)).limit(1).exists())))
+
+
 def _ambiente_da_amostra(db: Session, ex: Execucao) -> str:
     """M1: 'sandbox' se a execução registrou 'ambiente=sandbox' (mensagem/log) ou é uma das amostras da homologação
     já conhecidas (25/31, ver 0020); senão 'producao'."""
@@ -242,7 +268,7 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     a = ultima_amostra(db, conector)
     if a is None:
         return SEM_AMOSTRA
-    if a.status not in ("sucesso", "sem_novidades") or bronze_do_sistema(db, sistema) == 0:
+    if a.status not in ("sucesso", "sem_novidades") or not tem_bronze(db, sistema):
         return SEM_AMOSTRA
     if not amostra_aprovada(db, a):
         return AMOSTRA_PENDENTE
@@ -565,6 +591,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     cps = _checkpoints(db, sistema, tabelas)
     db.commit()
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         det = verificar_chaves(leitor, conn, sistema, pol, detalhe=True)  # repetida/NULL acima do limite: falha
         for t, cp in cps.items():
@@ -603,6 +630,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
                 # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
                 sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
+                _subetapa_leitura(ex.id, t, cp.posicao, cp.total_origem)
                 brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
                 linhas = [linha_json(r, cols) for r in brutas]
                 if brutas:
@@ -631,6 +659,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
         avisa_tabelas_vazias(db, ex, sistema, cps)
         db.commit()
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)
 
@@ -689,22 +718,27 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
         # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
         # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
+        from app.services import subetapa as sub
         try:
-            sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot),
-                                             cancelado=lambda: pedido_cancelar(ex.id),
-                                             batimento=lambda: tv.sinal_de_vida(ex.id))
+            with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s mesmo dentro de uma consulta longa
+                med = sub.MedicaoComSinal(ex.id)
+                sres = processamento.reconstruir(
+                    db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
+                    medicao=med, cancelado=lambda: pedido_cancelar(ex.id))
+            confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
+            _log_separado(ex.id, "prata", t0, sres)
+            sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+            _log_separado(ex.id, "ouro", None, None)
+            t1 = time.monotonic()
+            sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+            with sub.Pulso(ex.id):
+                gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
+                                                                      sub.sinal(ex.id, n, tot)),
+                                         cancelado=lambda: pedido_cancelar(ex.id))
         except processamento.CamadasCanceladas:
             return _camadas_canceladas(db, ex, conector)
-        confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
-        _log_separado(ex.id, "prata", t0, sres)
-        sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-        _log_separado(ex.id, "ouro", None, None)
-        t1 = time.monotonic()
-        try:
-            gres = visao.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot),
-                                     cancelado=lambda: pedido_cancelar(ex.id))
-        except processamento.CamadasCanceladas:
-            return _camadas_canceladas(db, ex, conector)
+        finally:
+            sub.finaliza(ex.id)  # fecha a subetapa aberta mesmo se a prata/ouro falhar
         _log_separado(ex.id, "ouro", t1, gres)
         ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
@@ -831,8 +865,23 @@ def situacao(db: Session, conector: str) -> dict:
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
             "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
             "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
+    from app.services import contagens_cache
+    camadas, atualizando = contagens_cache.obter(db, f"completa:{sistema}", lambda s: contagens_card(s, sistema))
+    sem_retrato = camadas is None
+    # cache frio: null (a tela mostra "—"), nunca 0 — zero parece perda de dados (TL #56)
+    camadas = camadas or {"camadas": {"bronze": None, "prata": None, "pendencias": None, "gerados_prata": None},
+                          "quarentena": None}
     return {
         "conector": conector, "liberada": motivo is None, "motivo": motivo, "execucao": execucao,
+        "camadas": camadas["camadas"], "contagens_atualizando": atualizando or sem_retrato,
+        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
+        "quarentena": camadas["quarentena"],
+    }
+
+
+def contagens_card(db: Session, sistema: str) -> dict:
+    """Contagens pesadas do card (só SELECT no Postgres), lidas pelo contagens_cache."""
+    return {
         "camadas": {
             "bronze": bronze_do_sistema(db, sistema),
             "prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema)) or 0),
@@ -842,7 +891,6 @@ def situacao(db: Session, conector: str) -> dict:
             "gerados_prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema))
                                  or 0) + int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
                                      CorrelacaoPendente.sistema == sistema)) or 0)},
-        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
         "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
     }
@@ -876,6 +924,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
     db.commit()
     t_leitura = time.monotonic()
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         for t in tabelas:
             m = MAPEAMENTOS[(sistema, t)]
@@ -901,6 +950,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga incremental pausada: {disco}")
                 sinal_de_vida(ex.id, "leitura", ex.processadas_etapa, None)
+                _subetapa_leitura(ex.id, t, ex.processadas_etapa, None)
                 brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
                           else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
                 linhas = [linha_json(r, cols) for r in brutas]
@@ -924,5 +974,6 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
         ex.tabela_atual = None
         _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, "modo": "incremental"})
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)

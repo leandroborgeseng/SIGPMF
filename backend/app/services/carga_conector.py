@@ -234,13 +234,15 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
         tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
         try:
             lidas = {}
-            for t in tabelas:  # tudo lido antes de gravar
-                try:
-                    cols = pol.colunas_select(t)
-                    lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
-                    tv.sinal_de_vida(ex.id)
-                except Exception as exc:  # noqa: BLE001
-                    raise FalhaLeitura(t, exc) from exc
+            from app.services import subetapa as sub
+            with sub.Pulso(ex.id):  # D1: sinal a cada 30 s mesmo com a origem lenta
+                for t in tabelas:  # tudo lido antes de gravar
+                    try:
+                        cols = pol.colunas_select(t)
+                        lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
+                        tv.sinal_de_vida(ex.id)
+                    except Exception as exc:  # noqa: BLE001
+                        raise FalhaLeitura(t, exc) from exc
             if not any(lidas.values()):  # 0 linhas: nunca "sem_novidades"
                 ex.status, ex.mensagem = ORIGEM_VAZIA, MSG_ORIGEM_VAZIA
                 ex.finalizado_em = datetime.now(UTC)
@@ -260,9 +262,15 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
                 tv.sinal_de_vida(ex.id)
             tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: uma reconstrução por vez (trava de transação)
             tv.sinal_de_vida(ex.id, "prata", 0, None)
-            sres = processamento.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "prata", n, t))
-            tv.sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-            gres = visao.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "ouro", n, t))
+            try:
+                with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s, inclusive em consulta longa
+                    med = sub.MedicaoComSinal(ex.id)
+                    sres = processamento.reconstruir(db, progresso=med.progresso, medicao=med)
+                sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+                with sub.Pulso(ex.id):
+                    gres = visao.reconstruir(db, progresso=sub.progresso_ouro(ex.id))
+            finally:
+                sub.finaliza(ex.id)
             for k, v in tot.items():
                 setattr(ex, k, v)
             ex.status = "sucesso" if (tot["novos"] or tot["atualizados"]) else "sem_novidades"

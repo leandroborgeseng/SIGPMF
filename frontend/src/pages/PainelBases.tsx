@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
+import ExecucaoPendente from '../ExecucaoPendente'
 import PainelAmostra, { estadoAmostra, type EstadoAmostra, type ResumoAmostra, SELO_AMOSTRA } from '../PainelAmostra'
 
-export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
+export type Contagens = { bronze: number | null; prata: number | null; ouro: number | null; pendentes: number | null }  // null = cache frio (#56)
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
 export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null
   tipo_texto?: string; texto_limite?: string | null }
@@ -40,9 +41,9 @@ const ROTULO_MODO: Record<Modo, string> = { amostra: 'Puxar amostra', completa: 
 
 /** Contagem com concordância: 1 → singular; 0 ou ≥ 2 → plural. */
 export const plural = (n: number, um: string, varios: string) => `${new Intl.NumberFormat('pt-BR').format(n)} ${n === 1 ? um : varios}`
-export const milhar = (n: number) => new Intl.NumberFormat('pt-BR').format(n)
-export function perda(de: number, para: number): number | null {
-  if (de <= 0 || para >= de) return null
+export const milhar = (n: number | null | undefined) => (n == null ? '—' : new Intl.NumberFormat('pt-BR').format(n))
+export function perda(de: number | null, para: number | null): number | null {
+  if (de == null || para == null || de <= 0 || para >= de) return null
   const p = Math.round(((de - para) / de) * 100)
   return p > 0 ? p : null  // nunca "−0%"
 }
@@ -67,9 +68,21 @@ const falhaDeAcompanhamento = (e: unknown) => !(e instanceof ApiErro) || e.statu
 class SemAcompanhamento extends Error {}
 export const MSG_ORIGEM_VAZIA = 'Nenhuma linha lida da origem. Verifique a conexão ou o banco configurado.'
 
-export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false }: {
-  bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean; cargaHabilitada?: boolean
+export const ATUALIZANDO_CONTAGENS = 'Atualizando contagens…'
+
+export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaHabilitada = false, contagensAtualizando = false }: {
+  bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean; cargaHabilitada?: boolean; contagensAtualizando?: boolean
 }) {
+  // #56: sem retrato das contagens ainda, a tela diz que está atualizando em vez de mostrar zeros
+  const [pendentes, setPendentes] = useState<Set<string>>(new Set())
+  const lerAgenda = useCallback(() => {
+    api<unknown>('/agenda').then((r) => {
+      const itens = (r as { itens?: { conector: string; forcar?: boolean }[] })?.itens
+      setPendentes(new Set(Array.isArray(itens) ? itens.filter((i) => i.forcar === true).map((i) => i.conector) : []))
+    }).catch(() => setPendentes(new Set()))
+  }, [])
+  useEffect(lerAgenda, [lerAgenda, bases])
+  const tv = (v: number | null) => (contagensAtualizando ? ATUALIZANDO_CONTAGENS : milhar(v))
   const [filtro, setFiltro] = useState<string>('todas')
   const [busca, setBusca] = useState('')
   const [rodando, setRodando] = useState<number | null>(null)
@@ -82,8 +95,9 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
     if (filtro === 'erro') return b.com_erro
     return b.status === filtro
   }), [bases, filtro, busca])
-  const tot = useMemo(() => visiveis.reduce((a, b) => ({
-    bronze: a.bronze + b.contagens.bronze, prata: a.prata + b.contagens.prata, ouro: a.ouro + b.contagens.ouro,
+  const soma = (a: number | null, v: number | null) => (a == null || v == null ? null : a + v)  // null (cache frio) mostra "—"
+  const tot = useMemo(() => visiveis.reduce<{ bronze: number | null; prata: number | null; ouro: number | null }>((a, b) => ({
+    bronze: soma(a.bronze, b.contagens.bronze), prata: soma(a.prata, b.contagens.prata), ouro: soma(a.ouro, b.contagens.ouro),
   }), { bronze: 0, prata: 0, ouro: 0 }), [visiveis])
   const ultima = useMemo(() => visiveis.map((b) => b.ultima_carga?.iniciado_em).filter(Boolean).sort().pop() ?? null, [visiveis])
 
@@ -140,9 +154,9 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
           <>
             <p className="subtitulo">{plural(todas.length, 'base cadastrada', 'bases cadastradas')} · {plural(conta('implementado'), 'pronta', 'prontas')} · {plural(conta('mapeado'), 'mapeada', 'mapeadas')} · {plural(conta('triado'), 'triada', 'triadas')} · {plural(conta('excluido'), 'descartada', 'descartadas')}</p>
             <ul className="totais" aria-label="Totais por camada das bases visíveis">
-              <li className="cartao"><span className="cartao-rotulo">Bronze</span> <span className="cartao-valor">{milhar(tot.bronze)}</span></li>
-              <li className="cartao"><span className="cartao-rotulo">Prata</span> <span className="cartao-valor">{milhar(tot.prata)}</span></li>
-              <li className="cartao"><span className="cartao-rotulo">Ouro (cidadãos únicos)</span> <span className="cartao-valor">{milhar(tot.ouro)}</span></li>
+              <li className="cartao"><span className="cartao-rotulo">Bronze</span> <span className="cartao-valor">{tv(tot.bronze)}</span></li>
+              <li className="cartao"><span className="cartao-rotulo">Prata</span> <span className="cartao-valor">{tv(tot.prata)}</span></li>
+              <li className="cartao"><span className="cartao-rotulo">Ouro (cidadãos únicos)</span> <span className="cartao-valor">{tv(tot.ouro)}</span></li>
             </ul>
             <p>Última carga: {ultima ? dataHoraBR(ultima) : 'Nunca carregado'}</p>
             <div className="filtros" role="group" aria-label="Filtrar bases">
@@ -164,7 +178,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
             )}
             {visiveis.length === 0 ? <p className="vazio">Nenhuma base neste filtro.</p> : (
               <ul className="lista-cartoes bases" aria-label="Bases">
-                {visiveis.map((b) => <CartaoBase key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} onFim={onRecarregar} />)}
+                {visiveis.map((b) => <CartaoBase atualizando={contagensAtualizando} pendente={!!b.conector_id && pendentes.has(b.conector_id)} onAgenda={lerAgenda} key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} onFim={onRecarregar} />)}
               </ul>
             )}
           </>
@@ -173,14 +187,14 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
   )
 }
 
-function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void }) {
+function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizando = false, pendente = false, onAgenda }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void; atualizando?: boolean; pendente?: boolean; onAgenda?: () => void }) {
   const seloAmostra = b.tem_conector && b.exige_amostra === true && !!b.conector_id
   const exige = ehAdmin && seloAmostra
   const [estAm, setEstAm] = useState<EstadoAmostra>(estadoAmostra(b.amostra ?? null, false))
   // M1: fonte que exige amostra: o selo segue o estado da amostra; o verde só depois da aprovação
   const st = seloAmostra ? SELO_AMOSTRA[estAm] : (STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' })
   const c = b.contagens
-  const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
+  const n = (v: number | null) => (!b.tem_conector ? '—' : atualizando ? ATUALIZANDO_CONTAGENS : milhar(v))
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
   const rodandoAlgo = rodando !== null
   const ocupado = rodandoAlgo || !habilitada
@@ -189,7 +203,7 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
   const bl = b.bloqueio ?? null
   const travada = bl !== null && !bl.parada  // viva e com atividade recente: não dá para puxar outra
   return (
-    <li className="cartao base" aria-labelledby={`b-${b.id}`}>
+    <li className="cartao base" aria-labelledby={`b-${b.id}`} id={b.conector_id ? `fonte-${b.conector_id}` : undefined}>
       <h3 id={`b-${b.id}`}>{b.nome} <span className="sutil">· {GRUPO[b.grupo] ?? b.grupo}{b.prioridade ? ` · fila ${b.prioridade}` : ''}</span></h3>
       <p>
         <span className={`selo ${st.classe}`}><i aria-hidden="true" />{st.rotulo}</span>
@@ -228,10 +242,11 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
+      {b.conector_id && ehAdmin && <ExecucaoPendente conector={b.conector_id} nome={b.nome} pendente={pendente} onMudou={() => onAgenda?.()} />}
       {exige && b.conector_id && (
         <div className="acoes" id={`acoes-${b.conector_id}`}>
           <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
-            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} />
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} pendente={pendente} />
           {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
           <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
             motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />

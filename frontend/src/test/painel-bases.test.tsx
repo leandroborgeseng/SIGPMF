@@ -167,6 +167,15 @@ describe('painel de bases', () => {
     expect(within(c).getByText(/Sem lista de colunas aprovada/)).toBeInTheDocument()
   })
 
+  it('#56: contagens_atualizando mostra "Atualizando contagens…" em vez de zeros', async () => {
+    mock(() => [200, { ...RESP, contagens_atualizando: true }])
+    montar('operador')
+    await cartao('Saude')
+    const totais = screen.getByRole('list', { name: 'Totais por camada das bases visíveis' })
+    expect(within(totais).getAllByText('Atualizando contagens…')).toHaveLength(3)
+    expect(within(totais).queryByText('0')).toBeNull()
+  })
+
   it('produção: botão de carga demo também desabilitado', async () => {
     mock(() => [200, { ...RESP, carga_habilitada: false }])
     montar('operador')

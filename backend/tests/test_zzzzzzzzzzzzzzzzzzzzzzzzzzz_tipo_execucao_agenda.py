@@ -116,6 +116,13 @@ def test_sil_amostra_lotes_vem_da_env_com_padrao_20(monkeypatch):
         assert amostra_sil.lotes_por_execucao() == esperado
 
 
+def test_d1_sil_amostra_lotes_nan_e_inf_viram_padrao_20(monkeypatch):
+    """D1 (QA): nan/inf passavam pelo float() e quebravam no int(); agora valem o padrão (20)."""
+    for v in ("nan", "NaN", "inf", "-inf", "Infinity"):
+        monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", v)
+        assert amostra_sil.lotes_por_execucao() == 20, v
+
+
 def test_sil_amostra_com_20_lotes_para_no_teto_de_1000_linhas(cliente, monkeypatch):  # noqa: F811
     c, estado, _ = cliente
     monkeypatch.delenv("SIL_AMOSTRA_MAX_LOTES", raising=False)

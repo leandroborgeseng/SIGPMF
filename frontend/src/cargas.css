@@ -1,0 +1,24 @@
+/* PR-B: tela de conectores e cargas (UXC1–UXC13). Mobile first: em 375 px os cards empilham (UXC9). */
+.cg-lista { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 900px) { .cg-lista { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cg-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cg-topo h2 { margin: 0 0 6px; font-size: 1.05rem; }
+.cg-selos { display: flex; flex-wrap: wrap; gap: 6px; }
+.cg-agora p { margin: 4px 0; }
+.cg-subetapa { overflow-wrap: anywhere; }
+.cg-nota { color: var(--muted); font-size: 13px; }
+.cg-sem-resultado { font-weight: 600; color: var(--brand-hover); }
+.cg-erro { color: var(--danger-ink); background: var(--danger-bg); border: 1px solid var(--danger-line); border-radius: 8px; padding: .4rem .7rem; }
+.cg-fatos { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px 12px; margin: 0; }
+.cg-fatos dt { font-size: 12px; color: var(--muted); } .cg-fatos dd { margin: 0; font-weight: 600; }
+.cg-log { padding-left: 1.2rem; font-size: 13px; }
+.cg-tabela-wrap { overflow-x: auto; }
+.cg-tabela { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cg-tabela th, .cg-tabela td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.cg-cabecalho { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
+.cg-cabecalho h1 { margin: 0; }
+.cg-fases { margin: 0; font-weight: 600; font-size: 14px; }
+/* UX M4: a barra inferior fixa (64 px) não cobre o fim do último card */
+@media (max-width: 1023px) { .cg { padding-bottom: calc(64px + 16px + env(safe-area-inset-bottom)); } }
+.cg-fase-apagada { color: var(--muted); opacity: .6; }
+.cg-fase-erro { color: var(--danger-ink); }

@@ -14,6 +14,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/dashboard', rotulo: 'Dashboard das cargas', curto: 'Dashboard' },
     { to: '/monitor', rotulo: 'Monitor de cargas', curto: 'Monitor' },
     { to: '/conectores', rotulo: 'Conectores', curto: 'Conectores' },
+    { to: '/cargas', rotulo: 'Andamento das cargas', curto: 'Cargas' },
     { to: '/simulador', rotulo: 'Simulador do Cidadão', curto: 'Simulador' },
     { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
     { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },

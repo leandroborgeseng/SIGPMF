@@ -476,7 +476,7 @@ NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a pr�
     ("POST", "/api/conectores/{conector}/completa/cancelar"), ("GET", "/api/sistema/recursos"),
     ("POST", "/api/conectores/iss/municipes/executar"), ("GET", "/api/execucoes/{eid}/logs"), ("GET", "/api/indicadores"),
     ("GET", "/api/politicas"), ("POST", "/api/politicas/retencao/executar"), ("POST", "/api/usuarios"), ("GET", "/api/auditoria"),
-    ("GET", "/api/fontes/progresso"), ("GET", "/api/agenda"), ("PUT", "/api/agenda/{conector}"),
+    ("GET", "/api/fontes/progresso"), ("GET", "/api/cargas/andamento"), ("GET", "/api/agenda"), ("PUT", "/api/agenda/{conector}"),
     ("POST", "/api/agenda/{conector}/executar-agora"), ("GET", "/api/educacao/releitura-deploy"),
     ("POST", "/api/educacao/conector/cancelar"), ("POST", "/api/educacao/conector/execucoes/{eid:int}/marcar-falha"),
     ("POST", "/api/educacao/conector/{modo}"), ("GET", "/api/health"), ("POST", "/api/auth/login"),
