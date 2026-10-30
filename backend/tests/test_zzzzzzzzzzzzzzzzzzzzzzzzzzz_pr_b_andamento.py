@@ -160,3 +160,16 @@ def test_endpoint_nao_toca_origem(limpo, monkeypatch):
     t0 = time.monotonic()
     andamento.tela(limpo)
     assert not chamado.is_set() and time.monotonic() - t0 < 5
+
+
+def test_pii_cpf_e_cns_formatados():
+    for ruim in ("CPF 123-456-789-09", "CPF 123.456.789.09", "CNS 700.0000.0000.0005", "CNS 700-0000-0000-0005",
+                 "700000000000005"):
+        with pytest.raises(sub.TextoInseguro):
+            sub.texto_seguro(ruim)
+    assert sub.texto_seguro("Prata: varredura de 6.012.000 linhas") == "Prata: varredura de 6.012.000 linhas"
+
+
+def test_d2_concluida_vira_etapa_concluida(limpo):
+    _ex(limpo, status="sucesso", etapa="ouro", finalizado_em=AGORA)
+    assert _carga(andamento.tela(limpo))["atual"]["etapa"] == "concluida"

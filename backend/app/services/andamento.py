@@ -101,7 +101,8 @@ def _execucao(ex: Execucao, agora: datetime) -> dict:
     sinal = _utc(ex.ultimo_sinal_em) or _utc(ex.atualizado_em) or _utc(ex.iniciado_em)
     fim = _utc(ex.finalizado_em)
     return {
-        "id": ex.id, "tipo": _tipo(ex), "status": st, "etapa": ex.etapa,
+        "id": ex.id, "tipo": _tipo(ex), "status": st,
+        "etapa": "concluida" if st == "concluida" else ex.etapa,  # D2: terminou -> as 3 fases com ✓
         "iniciado_em": _iso(ex.iniciado_em), "finalizado_em": _iso(fim),
         "duracao_s": round(((fim or agora) - _utc(ex.iniciado_em)).total_seconds(), 1) if ex.iniciado_em else None,
         "lidos": ex.lidos or 0, "gravados": (ex.novos or 0) + (ex.atualizados or 0), "quarentena": ex.pendentes or 0,

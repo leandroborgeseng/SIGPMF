@@ -79,6 +79,14 @@ def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | 
             **({"subetapa_contador": processadas, "subetapa_total": total} if etapa == "leitura" else {})))
 
 
+def _pulso_leitura(ex_id: int):
+    """D1: Pulso (sinal de vida a cada 30 s) durante toda a leitura da origem; encerrado no finally do chamador."""
+    from app.services import subetapa as sub
+    p = sub.Pulso(ex_id)
+    p.__enter__()
+    return p
+
+
 def _subetapa_leitura(ex_id: int, tabela: str, lidas: int | None, total: int | None) -> None:
     """CT16: subetapa da leitura em texto (só o nome da tabela) com o contador da tabela atual; nunca derruba a carga."""
     from app.services import subetapa as sub
@@ -565,6 +573,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     cps = _checkpoints(db, sistema, tabelas)
     db.commit()
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         det = verificar_chaves(leitor, conn, sistema, pol, detalhe=True)  # repetida/NULL acima do limite: falha
         for t, cp in cps.items():
@@ -632,6 +641,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
         avisa_tabelas_vazias(db, ex, sistema, cps)
         db.commit()
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)
 
@@ -691,21 +701,23 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
         # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
         from app.services import subetapa as sub
-        with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s mesmo dentro de uma consulta longa
-            med = sub.MedicaoComSinal(ex.id)
-            sres = processamento.reconstruir(
-                db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
-                medicao=med)
-        confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
-        _log_separado(ex.id, "prata", t0, sres)
-        sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-        _log_separado(ex.id, "ouro", None, None)
-        t1 = time.monotonic()
-        sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
-        with sub.Pulso(ex.id):
-            gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
-                                                                  sub.sinal(ex.id, n, tot)))
-        sub.finaliza(ex.id)
+        try:
+            with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s mesmo dentro de uma consulta longa
+                med = sub.MedicaoComSinal(ex.id)
+                sres = processamento.reconstruir(
+                    db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
+                    medicao=med)
+            confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
+            _log_separado(ex.id, "prata", t0, sres)
+            sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+            _log_separado(ex.id, "ouro", None, None)
+            t1 = time.monotonic()
+            sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+            with sub.Pulso(ex.id):
+                gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
+                                                                      sub.sinal(ex.id, n, tot)))
+        finally:
+            sub.finaliza(ex.id)  # fecha a subetapa aberta mesmo se a prata/ouro falhar
         _log_separado(ex.id, "ouro", t1, gres)
         ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
@@ -889,6 +901,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
     db.commit()
     t_leitura = time.monotonic()
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         for t in tabelas:
             m = MAPEAMENTOS[(sistema, t)]
@@ -938,5 +951,6 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
         ex.tabela_atual = None
         _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, "modo": "incremental"})
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)

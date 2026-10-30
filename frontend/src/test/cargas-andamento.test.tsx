@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { MemoryRouter } from 'react-router-dom'
 import CargasPagina from '../pages/Cargas'
-import { ariaFase, textoFases, estimativa, sinalDeVida, textoProgresso, type Carga, type Execucao, type RespAndamento } from '../cargas'
+import { ariaFase, partesFases, textoFases, estimativa, sinalDeVida, textoProgresso, type Carga, type Execucao, type RespAndamento } from '../cargas'
 import { salvaSessao } from '../api'
 
 const AGORA = new Date('2026-10-29T23:00:00Z') // 20:00 BRT
@@ -108,10 +108,12 @@ describe('tela de cargas (CT5, CT9, CT10, CT20, CT21, CT22)', () => {
 
 describe('ciclo 2 (TL fases, UX M1–M4)', () => {
   it('TL: 3 fases com ✓ nas concluídas e ● na atual; leitura = "Bronze · lendo origem"', () => {
-    expect(textoFases('prata')).toBe('✓ Bronze · Prata ● · Ouro')
-    expect(textoFases('ouro')).toBe('✓ Bronze · ✓ Prata · Ouro ●')
+    expect(textoFases('prata')).toBe('Bronze ✓ · Prata ● · Ouro')
+    expect(textoFases('ouro')).toBe('Bronze ✓ · Prata ✓ · Ouro ●')
     expect(textoFases('leitura')).toBe('Bronze · lendo origem ● · Prata · Ouro')
     expect(textoFases('bronze')).toBe('Bronze ● · Prata · Ouro')
+    expect(textoFases('prata', 'erro')).toBe('Bronze ✓ · Prata ✕ · Ouro')
+    expect(partesFases('prata', 'erro').map((p) => p.apagada)).toEqual([false, false, true])
     expect(ariaFase('prata')).toBe('Fase 2 de 3: Prata')
     expect(ariaFase('leitura')).toBe('Fase 1 de 3: Bronze · lendo origem')
   })
@@ -119,9 +121,26 @@ describe('ciclo 2 (TL fases, UX M1–M4)', () => {
     mock(resp([carga()]))
     render(<Cargas />)
     const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
-    expect(within(card).getByRole('img', { name: 'Fase 2 de 3: Prata' })).toHaveTextContent('✓ Bronze · Prata ● · Ouro')
+    expect(within(card).getByRole('img', { name: 'Fase 2 de 3: Prata' })).toHaveTextContent('Bronze ✓ · Prata ● · Ouro')
     expect(within(card).queryByText(/Etapa \d de/)).toBeNull()
     expect(within(card).queryAllByText(/Fase \d de 3/)).toHaveLength(0)
+  })
+  it('D2: carga concluída mostra as 3 fases com ✓', async () => {
+    expect(textoFases('ouro', 'concluida')).toBe('Bronze ✓ · Prata ✓ · Ouro ✓')
+    mock(resp([carga({}, { status: 'concluida', etapa: 'ouro', finalizado_em: iso(60) })]))
+    render(<Cargas />)
+    const card = await screen.findByRole('article', { name: 'ZZTESTE Fonte' })
+    expect(within(card).getByRole('img', { name: 'Fases concluídas: Bronze, Prata e Ouro' })).toHaveTextContent('Bronze ✓ · Prata ✓ · Ouro ✓')
+    expect(within(card).getByText(/^Concluída em 29\/10\/2026 19:59 \(BRT\) · 30 min$/)).toBeVisible()
+    expect(within(card).queryByText(/●/)).toBeNull()
+  })
+  it('erro: fase com ✕ e as seguintes apagadas; H1 igual ao menu', async () => {
+    mock(resp([carga({}, { status: 'erro', etapa: 'prata', motivo: 'Falha ao ler a origem' })]))
+    render(<Cargas />)
+    expect(await screen.findByRole('heading', { level: 1, name: 'Andamento das cargas' })).toBeVisible()
+    const card = screen.getByRole('article', { name: 'ZZTESTE Fonte' })
+    expect(within(card).getByRole('img', { name: 'Fase 2 de 3: Prata, com erro' })).toHaveTextContent('Bronze ✓ · Prata ✕ · Ouro')
+    expect(within(card).getByText(/Ouro/, { selector: '.cg-fase-apagada' })).toBeInTheDocument()
   })
   it('M2: rótulos "nesta execução"', async () => {
     mock(resp([carga()]))

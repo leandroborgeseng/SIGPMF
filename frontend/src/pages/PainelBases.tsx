@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
+import ExecucaoPendente from '../ExecucaoPendente'
 import PainelAmostra, { estadoAmostra, type EstadoAmostra, type ResumoAmostra, SELO_AMOSTRA } from '../PainelAmostra'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
@@ -73,6 +74,14 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
   bases: Base[] | null; erro: boolean; onRecarregar: () => void; ehAdmin: boolean; cargaHabilitada?: boolean; contagensAtualizando?: boolean
 }) {
   // #56: sem retrato das contagens ainda, a tela diz que está atualizando em vez de mostrar zeros
+  const [pendentes, setPendentes] = useState<Set<string>>(new Set())
+  const lerAgenda = useCallback(() => {
+    api<unknown>('/agenda').then((r) => {
+      const itens = (r as { itens?: { conector: string; forcar?: boolean }[] })?.itens
+      setPendentes(new Set(Array.isArray(itens) ? itens.filter((i) => i.forcar === true).map((i) => i.conector) : []))
+    }).catch(() => setPendentes(new Set()))
+  }, [])
+  useEffect(lerAgenda, [lerAgenda, bases])
   const tv = (v: number) => (contagensAtualizando ? ATUALIZANDO_CONTAGENS : milhar(v))
   const [filtro, setFiltro] = useState<string>('todas')
   const [busca, setBusca] = useState('')
@@ -168,7 +177,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
             )}
             {visiveis.length === 0 ? <p className="vazio">Nenhuma base neste filtro.</p> : (
               <ul className="lista-cartoes bases" aria-label="Bases">
-                {visiveis.map((b) => <CartaoBase atualizando={contagensAtualizando} key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} onFim={onRecarregar} />)}
+                {visiveis.map((b) => <CartaoBase atualizando={contagensAtualizando} pendente={!!b.conector_id && pendentes.has(b.conector_id)} onAgenda={lerAgenda} key={b.id} b={b} ehAdmin={ehAdmin} habilitada={cargaHabilitada} rodando={rodando} onAcao={pedir} onFim={onRecarregar} />)}
               </ul>
             )}
           </>
@@ -177,7 +186,7 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
   )
 }
 
-function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizando = false }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void; atualizando?: boolean }) {
+function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizando = false, pendente = false, onAgenda }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void; atualizando?: boolean; pendente?: boolean; onAgenda?: () => void }) {
   const seloAmostra = b.tem_conector && b.exige_amostra === true && !!b.conector_id
   const exige = ehAdmin && seloAmostra
   const [estAm, setEstAm] = useState<EstadoAmostra>(estadoAmostra(b.amostra ?? null, false))
@@ -232,10 +241,11 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizand
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
+      {pendente && b.conector_id && ehAdmin && <ExecucaoPendente conector={b.conector_id} nome={b.nome} onMudou={() => onAgenda?.()} />}
       {exige && b.conector_id && (
         <div className="acoes" id={`acoes-${b.conector_id}`}>
           <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
-            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} />
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} pendente={pendente} />
           {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
           <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
             motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />

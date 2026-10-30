@@ -68,10 +68,24 @@ export function ariaFase(etapa: string | null): string {
   const i = indiceFase(etapa)
   return `Fase ${i + 1} de ${FASES.length}: ${rotuloFase(etapa, i)}`
 }
-/** "✓ Bronze · Prata ● · Ouro": ✓ nas concluídas, ● na atual. */
-export function textoFases(etapa: string | null): string {
-  const atual = indiceFase(etapa)
-  return FASES.map((_, i) => (i < atual ? `✓ ${FASES[i]}` : i === atual ? `${rotuloFase(etapa, i)} ●` : FASES[i])).join(' · ')
+export type ParteFase = { nome: string; marca: '✓' | '●' | '✕' | ''; apagada: boolean }
+/** "Bronze ✓ · Prata ● · Ouro"; concluída: todas ✓ e sem atual; erro: a fase da falha com ✕ e as seguintes apagadas. */
+export function partesFases(etapa: string | null, status?: string): ParteFase[] {
+  const atual = status === 'concluida' ? FASES.length : indiceFase(etapa)
+  return FASES.map((_, i) => {
+    const nome = i === atual && status !== 'erro' ? rotuloFase(etapa, i) : FASES[i]
+    if (i < atual) return { nome, marca: '✓', apagada: false }
+    if (i === atual) return status === 'erro' ? { nome, marca: '✕', apagada: false } : { nome, marca: '●', apagada: false }
+    return { nome, marca: '', apagada: status === 'erro' }
+  })
+}
+export function textoFases(etapa: string | null, status?: string): string {
+  return partesFases(etapa, status).map((p) => (p.marca ? `${p.nome} ${p.marca}` : p.nome)).join(' · ')
+}
+export function ariaFases(etapa: string | null, status?: string): string {
+  if (status === 'concluida' || etapa === 'concluida') return 'Fases concluídas: Bronze, Prata e Ouro'
+  const i = indiceFase(etapa)
+  return status === 'erro' ? `Fase ${i + 1} de ${FASES.length}: ${FASES[i]}, com erro` : ariaFase(etapa)
 }
 export function textoErro(motivo: string | null): string {
   return `${(motivo ?? 'A carga falhou').replace(/\.$/, '')}. Para tentar de novo, use Rodar de novo em Conectores.`

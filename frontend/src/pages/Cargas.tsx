@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import {
-  ATUALIZA_MS, STATUS, ariaFase, dataHoraBRT, duracao, estimativa, horaBRT, num, segundosDesde,
-  semResultadosAinda, sinalDeVida, textoErro, textoFases, textoProgresso, type Carga, type RespAndamento, type Status,
+  ATUALIZA_MS, STATUS, ariaFases, partesFases, dataHoraBRT, duracao, estimativa, horaBRT, num, segundosDesde,
+  semResultadosAinda, sinalDeVida, textoErro, textoProgresso, type Carga, type RespAndamento, type Status,
 } from '../cargas'
 import '../cargas.css'
 
@@ -13,8 +13,17 @@ function Selo({ status }: { status: Status }) {
   return <span className={`selo ${s.classe}`}><span aria-hidden="true">{s.icone}</span> {s.texto}</span>
 }
 
-function Fases({ etapa }: { etapa: string | null }) {
-  return <p className="cg-fases" role="img" aria-label={ariaFase(etapa)}>{textoFases(etapa)}</p>
+function Fases({ etapa, status }: { etapa: string | null; status: string }) {
+  const partes = partesFases(etapa, status)
+  return (
+    <p className="cg-fases" role="img" aria-label={ariaFases(etapa, status)}>
+      {partes.map((p, i) => (
+        <span key={p.nome} className={p.apagada ? 'cg-fase-apagada' : p.marca === '✕' ? 'cg-fase-erro' : undefined}>
+          {i > 0 ? ' · ' : ''}{p.nome}{p.marca ? ` ${p.marca}` : ''}
+        </span>
+      ))}
+    </p>
+  )
 }
 
 function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: number }) {
@@ -28,13 +37,15 @@ function CardCarga({ c, agora, limite }: { c: Carga; agora: number; limite: numb
       <header className="cg-topo">
         <h2>{c.fonte}</h2>
         <div className="cg-selos">
-          <Selo status={a.status} />
+          {a.status === 'concluida' && a.finalizado_em
+            ? <span className="selo sucesso"><span aria-hidden="true">✓</span> Concluída em {dataHoraBRT(a.finalizado_em).replace(' BRT', ' (BRT)')} · {duracao(a.duracao_s)}</span>
+            : <Selo status={a.status} />}
           <span className="selo neutro">{a.tipo}</span>
           {c.agenda_ativa === false && <span className="selo atencao">Agenda desligada</span>}
           {vida?.travada && <span className="selo atencao" role="status"><span aria-hidden="true">⚠</span> Possível travamento</span>}
         </div>
       </header>
-      <Fases etapa={a.etapa} />
+      <Fases etapa={a.etapa} status={a.status} />
       {rodando && (
         <div className="cg-agora">
           <p className="cg-subetapa"><strong>{a.subetapa ?? 'Preparando a etapa'}</strong></p>
@@ -121,7 +132,7 @@ export default function Cargas() {
   return (
     <section className="cg" lang="pt-BR">
       <header className="cg-cabecalho">
-        <h1>Conectores e cargas</h1>
+        <h1>Andamento das cargas</h1>
         <p className="cg-nota">Atualizado há {desde} s · atualiza sozinho a cada 10 s</p>
         <label>Status{' '}
           <select value={filtro} onChange={(e) => setFiltro(e.target.value as '' | Status)}>

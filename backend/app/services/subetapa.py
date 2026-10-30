@@ -43,7 +43,8 @@ SEQ_PRATA = (
 TEXTO_OURO = "Ouro: consolidando cidadãos e vínculos"
 TEXTO_LEITURA = "Leitura: lendo tabelas da origem e gravando na bronze"
 
-_PROIBIDO = re.compile(r"\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{15}|@|\d{11}")
+# CPF (com . ou - em qualquer posição), CNS (15 dígitos, com ou sem separadores) e e-mail
+_PROIBIDO = re.compile(r"\d{3}[.\-]?\d{3}[.\-]?\d{3}[.\-]?\d{2}|\d{3}[.\-]?\d{4}[.\-]?\d{4}[.\-]?\d{4}|@")
 
 
 class TextoInseguro(ValueError):
@@ -105,8 +106,8 @@ def finaliza(ex_id: int) -> None:
 class Pulso:
     """Context manager: thread que grava o sinal de vida a cada `intervalo` s (consultas longas, CT16/CT17)."""
 
-    def __init__(self, ex_id: int, intervalo: float = INTERVALO_S):
-        self.ex_id, self.intervalo = ex_id, intervalo
+    def __init__(self, ex_id: int, intervalo: float | None = None):
+        self.ex_id, self.intervalo = ex_id, intervalo if intervalo is not None else INTERVALO_S
         self._parar = threading.Event()
         self._t: threading.Thread | None = None
 
