@@ -39,6 +39,8 @@ class Api:
         r = self.respostas.pop(0) if self.respostas else (200, {"empresas": []})
         if isinstance(r, Exception):
             raise r
+        if r[1] is None:  # corpo literal `null`
+            return httpx.Response(r[0], content=b"null", headers={"Content-Type": "application/json"})
         return httpx.Response(r[0], json=r[1])
 
 
@@ -63,7 +65,7 @@ def test_logger_sil_info_vai_para_stdout(monkeypatch):
     from app import main
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
-    for nome in ("sigpmf.conector.sil", "sigpmf.sil"):  # refaz o handler apontando para o stdout simulado
+    for nome in ("sigpmf.conector.sil", "sigpmf.sil", "sigpmf.carga_completa"):  # refaz o handler apontando para o stdout simulado
         lg = logging.getLogger(nome)
         for h in [h for h in lg.handlers if getattr(h, "_sigpmf_stdout", False)]:
             lg.removeHandler(h)
@@ -75,13 +77,15 @@ def test_logger_sil_info_vai_para_stdout(monkeypatch):
         assert sum(getattr(h, "_sigpmf_stdout", False) for h in lg.handlers) == 1
         lg.info("SIL GET /franca/empresa/consultarlote -> 200 em 5 ms (tentativa 1)")
         logging.getLogger("sigpmf.sil").info("SIL: zz info")
+        logging.getLogger("sigpmf.carga_completa").warning("zz fechamento ErroSil")
         out = buf.getvalue()
+        assert "WARNING sigpmf.carga_completa zz fechamento ErroSil" in out
         assert "INFO sigpmf.conector.sil SIL GET /franca/empresa/consultarlote -> 200" in out
         assert "INFO sigpmf.sil SIL: zz info" in out
         assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
         assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
     finally:
-        for nome in ("sigpmf.conector.sil", "sigpmf.sil"):
+        for nome in ("sigpmf.conector.sil", "sigpmf.sil", "sigpmf.carga_completa"):
             lg = logging.getLogger(nome)
             for h in [h for h in lg.handlers if getattr(h, "_sigpmf_stdout", False)]:
                 lg.removeHandler(h)
@@ -113,7 +117,8 @@ def test_erro_sil_leva_status_tentativa_sequencia(resposta, classe, status):
         con.lote_empresas(s, 77)
     c = contexto_erro_sil(e.value)
     esperado_tent = 1 if status == 400 else 3  # 400 não repete; 5xx/timeout: 1 + tentativas(2)
-    assert c == {"classe": classe.__name__, "status": status, "tentativa": esperado_tent, "sequencia": 77}
+    assert c == {"classe": classe.__name__, "status": status, "tentativa": esperado_tent, "repeticao": None,
+                 "sequencia": 77}
 
 
 def test_401_duas_vezes_vira_falha_credencial_com_contexto():
@@ -121,7 +126,8 @@ def test_401_duas_vezes_vira_falha_credencial_com_contexto():
     con = _con(api)
     with pytest.raises(FalhaCredencial) as e:
         con.lote_empresas(con.abrir(), 5)
-    assert contexto_erro_sil(e.value) == {"classe": "FalhaCredencial", "status": 401, "tentativa": 1, "sequencia": 5}
+    assert contexto_erro_sil(e.value) == {"classe": "FalhaCredencial", "status": 401, "tentativa": 1,
+                                             "repeticao": None, "sequencia": 5}
 
 
 # ------------------------------------------------------------------ (3) 200 inesperado: WARNING sem valores + 1 repetição
@@ -133,7 +139,8 @@ def test_200_inesperado_repete_uma_vez_e_falha_com_warning_sem_valores(caplog):
         con.lote_empresas(con.abrir(), 42)
     assert api.sequencias == [42, 42]  # mesma Sequencia, só uma repetição
     assert str(e.value) == "Resposta inesperada da API SIL em empresa/consultarlote."
-    assert contexto_erro_sil(e.value) == {"classe": "ErroSil", "status": 200, "tentativa": 1, "sequencia": 42}
+    assert contexto_erro_sil(e.value) == {"classe": "ErroSil", "status": 200, "tentativa": 1, "repeticao": 2,
+                                          "sequencia": 42}
     avisos = [r.getMessage() for r in caplog.records if r.name == "sigpmf.sil" and r.levelno == logging.WARNING]
     assert len(avisos) == 2
     for m in avisos:
@@ -195,7 +202,7 @@ def test_carga_que_falha_por_erro_sil_grava_detalhe_no_log_da_execucao(db, sil_f
     det = [lg for lg in logs if lg.mensagem.startswith("Detalhe do erro da API SIL:")]
     assert len(det) == 1 and det[0].nivel == "WARN"
     m = det[0].mensagem
-    assert "classe=ErroSil" in m and "status=200" in m and "tentativa=1" in m and "sequencia=" in m
+    assert "classe=ErroSil" in m and "status=200" in m and "tentativa=1" in m and "repeticao=2" in m and "sequencia=" in m
     for lg in logs:
         assert CCM_SECRETO not in lg.mensagem and TOKEN not in lg.mensagem and SECRET not in lg.mensagem
     avisos = [r.getMessage() for r in caplog.records
@@ -211,3 +218,40 @@ def test_falha_que_nao_e_erro_sil_nao_grava_detalhe(db, monkeypatch):
     db.commit()
     assert not db.scalars(select(Log).where(Log.execucao_id == ex.id,
                                            Log.mensagem.like("Detalhe do erro da API SIL%"))).all()
+
+
+def test_null_duas_vezes_vira_erro_sil_e_nao_fim(caplog):
+    api = Api([(200, None), (200, None)])
+    con = _con(api)
+    with caplog.at_level(logging.WARNING, logger="sigpmf.sil"), pytest.raises(ErroSil) as e:
+        con.lote_empresas(con.abrir(), 7)
+    assert api.sequencias == [7, 7]
+    assert contexto_erro_sil(e.value)["repeticao"] == 2
+    assert len([r for r in caplog.records if "tipo_json=NoneType" in r.getMessage()]) == 2
+
+
+def test_404_continua_sendo_fim_da_sequencia():
+    api = Api([(404, {"e": "zz"})])
+    con = _con(api)
+    assert con.lote_empresas(con.abrir(), 7) == [] and api.sequencias == [7]
+
+
+class ApiTexto(Api):
+    def __call__(self, req):
+        if req.url.path.endswith("/api/authenticate"):
+            return httpx.Response(200, json={"access_token": TOKEN, "expires_in": 600})
+        self.sequencias.append(int(req.url.params["Sequencia"]))
+        return httpx.Response(200, content=self.respostas.pop(0), headers={"Content-Type": "text/html"})
+
+
+@pytest.mark.parametrize("corpos", [[b"", b""], [b"<html>zz " + CCM_SECRETO.encode() + b"</html>", b"<html/>"]])
+def test_200_nao_json_repete_uma_vez_e_falha_com_warning(caplog, corpos):
+    api = ApiTexto(corpos)
+    con = _con(api)
+    with caplog.at_level(logging.WARNING, logger="sigpmf.sil"), pytest.raises(ErroSil) as e:
+        con.lote_empresas(con.abrir(), 8)
+    assert api.sequencias == [8, 8]
+    assert contexto_erro_sil(e.value) == {"classe": "ErroSil", "status": 200, "tentativa": 1, "repeticao": 2,
+                                          "sequencia": 8}
+    avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(avisos) == 2 and all("tipo_json=nao_json" in m and CCM_SECRETO not in m for m in avisos)

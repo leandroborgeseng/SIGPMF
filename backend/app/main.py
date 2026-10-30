@@ -35,9 +35,11 @@ def configurar_logs() -> logging.Logger:
     # SIL (TL 30/10): sem handler, o INFO de sigpmf.conector.sil / sigpmf.sil caía no lastResort do logging (só
     # WARNING+), e a 349 falhou sem nenhuma linha. Os loggers do SIL só registram método, caminho sem query, status,
     # tentativa e Sequencia; httpx/httpcore seguem em WARNING (logariam a URL com a query).
-    for nome in ("sigpmf.conector.sil", "sigpmf.sil"):
+    # sigpmf.carga_completa: WARNING (fechamento da execução por ErroSil) também sai no stdout.
+    for nome, nivel in (("sigpmf.conector.sil", logging.INFO), ("sigpmf.sil", logging.INFO),
+                        ("sigpmf.carga_completa", logging.WARNING)):
         lg = logging.getLogger(nome)
-        lg.setLevel(logging.INFO)
+        lg.setLevel(nivel)
         lg.propagate = False
         if not any(getattr(h, "_sigpmf_stdout", False) for h in lg.handlers):
             h = logging.StreamHandler(sys.stdout)

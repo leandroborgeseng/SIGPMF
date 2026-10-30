@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from app.connectors.sil.cliente import ClienteSil, ErroSil, SilDesabilitado
+from app.connectors.sil.cliente import NAO_LOCALIZADO, ClienteSil, ErroSil, RespostaNaoJson, SilDesabilitado
 from app.connectors.sil.config import ConfigSil
 
 __all__ = ["ConfigSil", "ErroSil", "SilConnector", "achata_empresa"]
@@ -26,6 +26,7 @@ __all__ = ["ConfigSil", "ErroSil", "SilConnector", "achata_empresa"]
 log = logging.getLogger("sigpmf.sil")
 
 LOTE_API = 50
+_NAO_JSON = object()
 CAMINHO_LOTE = "/franca/empresa/consultarlote"
 TABELA_EMPRESAS = "Empresas"
 COLUNAS_EMPRESAS = ("Ccm", "CNPJCPF", "Nome", "PossuiDebito", "Endereco", "Bairro", "CEP", "Complemento",
@@ -104,8 +105,11 @@ class SilConnector:
 
     # ------------------------------------------------------------------ empresas
     def _get_lote(self, s: _Sessao, sequencia: int) -> Any:
+        """NAO_LOCALIZADO no 404; _NAO_JSON num 200 sem JSON; senão o JSON (inclusive None para `null`)."""
         try:
-            return s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)})  # allowlist + token + retry no ClienteSil
+            return s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)}, sentinela_404=True)
+        except RespostaNaoJson:
+            return _NAO_JSON
         except ErroSil as exc:
             if exc.sequencia is None:
                 exc.sequencia = int(sequencia)
@@ -115,20 +119,21 @@ class SilConnector:
         j = self._get_lote(s, sequencia)
         s.lotes += 1
         for repeticao in (1, 2):
-            if j is None:  # 404: fim da sequência
+            if j is NAO_LOCALIZADO:  # 404: fim da sequência
                 return []
-            itens = _empresas(j)
+            itens = None if j is _NAO_JSON else _empresas(j)
             if itens is not None or (isinstance(j, dict) and not j):
                 break
-            # 200 com corpo fora do formato: só Sequencia, tipo do JSON e NOMES das chaves de topo (nunca valores).
+            # 200 inesperado (null, não-JSON, formato errado): só Sequencia, tipo e NOMES das chaves de topo.
+            tipo = "nao_json" if j is _NAO_JSON else type(j).__name__
             chaves = sorted(str(k) for k in j)[:20] if isinstance(j, dict) else []
             log.warning("SIL: resposta inesperada em consultarlote: Sequencia=%d status=200 tipo_json=%s chaves=%s "
-                        "(repetição %d de 2)", int(sequencia), type(j).__name__, chaves, repeticao)
+                        "(repetição %d de 2)", int(sequencia), tipo, chaves, repeticao)
             if repeticao == 1:  # TL 30/10: repete a mesma Sequencia uma vez antes de falhar
                 j = self._get_lote(s, sequencia)
                 continue
             exc = ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
-            exc.status, exc.sequencia = 200, int(sequencia)
+            exc.status, exc.sequencia, exc.repeticao = 200, int(sequencia), 2
             exc.tentativa = getattr(s.cliente, "ultima_tentativa", None)
             raise exc
         if itens is None:  # {}: comportamento de sempre (fim)

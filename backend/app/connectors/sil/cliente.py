@@ -56,12 +56,14 @@ class ErroSil(RuntimeError):
     status: int | None = None
     tentativa: int | None = None
     sequencia: int | None = None
+    repeticao: int | None = None  # repetição da mesma Sequencia no lote (1..2) quando houve
 
 
 def contexto_erro_sil(exc: BaseException) -> dict:
     """Só campos seguros para log/auditoria: classe, status HTTP, tentativa e Sequencia."""
     return {"classe": type(exc).__name__, "status": getattr(exc, "status", None),
-            "tentativa": getattr(exc, "tentativa", None), "sequencia": getattr(exc, "sequencia", None)}
+            "tentativa": getattr(exc, "tentativa", None), "repeticao": getattr(exc, "repeticao", None),
+            "sequencia": getattr(exc, "sequencia", None)}
 
 
 def descreve_erro_sil(exc: BaseException) -> str:
@@ -109,6 +111,13 @@ class FalhaSil(ErroSil):
     def __init__(self, motivo: str, status: int | None = None):
         super().__init__(motivo)
         self.motivo, self.status = motivo, status
+
+
+class RespostaNaoJson(FalhaSil):
+    """200 cujo corpo não é JSON (vazio, HTML...). Nunca carrega o corpo."""
+
+
+NAO_LOCALIZADO = object()  # sentinela do 404 quando o chamador pede (get(..., sentinela_404=True))
 
 
 class FalhaRede(FalhaSil):
@@ -295,11 +304,11 @@ class ClienteSil:
                 pass
         return base
 
-    def get(self, caminho: str, params: dict[str, Any]) -> Any | None:
+    def get(self, caminho: str, params: dict[str, Any], sentinela_404: bool = False) -> Any | None:
         """GET permitido. 404 -> None (não localizado). 401 renova o token uma vez; o segundo vira FalhaCredencial.
         Um ErroSil sai com `status` e `tentativa` da última requisição preenchidos (diagnóstico sem PII)."""
         try:
-            return self._get(caminho, params)
+            return self._get(caminho, params, sentinela_404)
         except ErroSil as exc:
             if exc.status is None:
                 exc.status = self.ultimo_status
@@ -307,7 +316,7 @@ class ClienteSil:
                 exc.tentativa = self.ultima_tentativa
             raise
 
-    def _get(self, caminho: str, params: dict[str, Any]) -> Any | None:
+    def _get(self, caminho: str, params: dict[str, Any], sentinela_404: bool = False) -> Any | None:
         c = checa_operacao("GET", caminho)
         for renovou in (False, True):
             token = self._garante_token(forcar=renovou)
@@ -318,11 +327,11 @@ class ClienteSil:
                     raise FalhaCredencial("SIL recusou o token renovado (401 duas vezes)")
                 continue
             if r.status_code == 404:
-                return None
+                return NAO_LOCALIZADO if sentinela_404 else None
             if r.status_code != 200:
                 raise FalhaSil(f"SIL respondeu {r.status_code}", r.status_code)
             try:
                 return r.json()
             except ValueError:
-                raise FalhaSil("resposta da SIL não é JSON") from None
+                raise RespostaNaoJson("resposta da SIL não é JSON", 200) from None
         raise FalhaCredencial("SIL recusou o token")  # pragma: no cover
