@@ -66,3 +66,11 @@ class AgendaIn(BaseModel):
     horario: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     ativo: bool | None = None
     ordem: int | None = Field(None, ge=0, le=100)
+    # Só false: limpa um "Executar agora" pendente (auditado). true continua só pelo POST executar-agora.
+    forcar: bool | None = None
+
+    @model_validator(mode="after")
+    def _forcar_so_false(self):
+        if self.forcar is True:
+            raise ValueError("forcar só aceita false (limpar execução pendente); use \"Executar agora\" para forçar.")
+        return self
