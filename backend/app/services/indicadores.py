@@ -53,7 +53,8 @@ def contagem_bronze(db: Session) -> dict[str, int]:
                         .group_by(RegistroBronze.sistema_origem))
 
 
-def indicadores(db: Session) -> list[dict]:
+def contagens_por_sistema(db: Session) -> dict[str, dict[str, int]]:
+    """As agregações pesadas (milhões de linhas). Só SELECT no Postgres; a rota lê isto pelo contagens_cache."""
     bronze = contagem_bronze(db)
     prata = _por_sistema(db, select(Vinculo.sistema, func.count()).group_by(Vinculo.sistema))
     ouro = _por_sistema(db, select(DadoGold.sistema, func.count(func.distinct(DadoGold.cidadao_id))).group_by(DadoGold.sistema))
@@ -62,6 +63,16 @@ def indicadores(db: Session) -> list[dict]:
     prata["ISS"] = prata.get("ISS", 0) + int(db.scalar(select(func.count()).select_from(Municipe)) or 0)
     pend = _por_sistema(db, select(CorrelacaoPendente.sistema, func.count())
                         .where(CorrelacaoPendente.status == "pendente").group_by(CorrelacaoPendente.sistema))
+    return {"bronze": bronze, "prata": prata, "ouro": ouro, "pendentes": pend}
+
+
+def indicadores(db: Session, contagens: dict[str, dict[str, int]] | None = None, frio: bool = False) -> list[dict]:
+    """contagens=None calcula na hora (lento em produção); a rota /conectores passa o retrato do cache.
+    frio=True (cache sem retrato): contagens saem null, nunca 0 — zero parece perda de dados (TL #56)."""
+    if contagens is None and not frio:
+        contagens = contagens_por_sistema(db)
+    contagens = contagens or {}
+    bronze, prata, ouro, pend = (contagens.get(k, {}) for k in ("bronze", "prata", "ouro", "pendentes"))
     execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
     out = []
     bases = db.scalars(select(BaseCatalogo).order_by(BaseCatalogo.prioridade.is_(None), BaseCatalogo.prioridade, BaseCatalogo.nome))
@@ -79,8 +90,9 @@ def indicadores(db: Session) -> list[dict]:
             "bloqueio": _bloqueio(db, b),
             "com_erro": ult is not None and ult.status == "falha",
             "origem_vazia": ult is not None and ult.status == "origem_vazia",
-            "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
-                          "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)},
+            "contagens": ({k: None for k in ("bronze", "prata", "ouro", "pendentes")} if frio else
+                          {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
+                           "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)}),
             "ultima_carga": None if ult is None else {
                 "id": ult.id, "tipo": ult.tipo, "tipo_texto": tipo_texto(ult), "texto_limite": texto_limite(ult),
                 "status": ult.status, "iniciado_em": ult.iniciado_em,
@@ -115,5 +127,10 @@ def _completa(db: Session, b: BaseCatalogo) -> dict:
             "amostra_limite": int(get_settings().amostra_limite)}
 
 
-def totais(bases: list[dict]) -> dict[str, int]:
-    return {k: sum(b["contagens"][k] for b in bases) for k in ("bronze", "prata", "ouro", "pendentes")}
+def totais(bases: list[dict]) -> dict[str, int | None]:
+    """Total null se alguma base estiver sem contagem (cache frio)."""
+    out: dict[str, int | None] = {}
+    for k in ("bronze", "prata", "ouro", "pendentes"):
+        vals = [b["contagens"][k] for b in bases]
+        out[k] = None if any(v is None for v in vals) else sum(vals)
+    return out

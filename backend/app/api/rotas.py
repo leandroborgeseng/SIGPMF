@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -80,13 +81,27 @@ def _menor_cid(db: Session, cid: str) -> bool:
     return _menor(c.data_nascimento if c else None)
 
 
+_log_health = logging.getLogger(__name__)
+
+
 @publico.get("/health")
 def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("select 1"))
-        return {"status": "ok", "db": "ok", "versao": VERSION}
     except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=503, content={"status": "erro", "db": "down", "versao": VERSION})
+        return JSONResponse(status_code=503, content={"status": "erro", "db": "down", "versao": VERSION, "migracao": None})
+    return {"status": "ok", "db": "ok", "versao": VERSION, "migracao": _migracao(db)}
+
+
+def _migracao(db: Session) -> str | None:
+    """version_num do alembic (só o id da revisão, sem dado sensível). Falha -> None; nunca derruba o health."""
+    try:
+        with db.begin_nested():
+            v = db.execute(text("select version_num from controle.alembic_version limit 1")).scalar()
+        return str(v) if v is not None else None
+    except Exception as exc:  # noqa: BLE001 - só a classe no log, nada na resposta
+        _log_health.warning("health: migracao ilegivel (%s)", type(exc).__name__)
+        return None
 
 
 @publico.post("/auth/login")
@@ -201,8 +216,11 @@ def _404():
 @api.get("/conectores")
 def conectores(db: Session = Depends(get_db)):
     """Um conector por sistema do catálogo, com status e última execução."""
-    cfg = ConfigSqlServer.do_ambiente(get_settings())
-    bases = indicadores(db)
+    from app.services import contagens_cache
+    from app.services.indicadores import contagens_por_sistema
+    cfg = ConfigSqlServer.do_ambiente(get_settings())  # só lê variáveis de ambiente; não conecta na origem
+    cont, atualizando = contagens_cache.obter(db, "conectores", contagens_por_sistema)
+    bases = indicadores(db, cont, frio=cont is None)
     execs = list(db.scalars(select(Execucao).order_by(Execucao.id.desc()).limit(50)))
     lista = []
     for s, tabs in [(x["codigo"], x) for x in lista_sistemas(db)]:
@@ -212,7 +230,8 @@ def conectores(db: Session = Depends(get_db)):
                       "credencial": "Configurada via variável de ambiente" if cfg.resumo_publico()["configurado"] else "Não configurada",
                       "amostra_limite": cfg.amostra_limite, **_banco_origem(s, db)})
     return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]], "bases": bases,
-            "totais": totais(bases), "carga_habilitada": carga_habilitada()}
+            "totais": totais(bases), "carga_habilitada": carga_habilitada(),
+            "contagens_atualizando": atualizando or cont is None}
 
 
 def _id_conector(db: Session, conector: str) -> str:

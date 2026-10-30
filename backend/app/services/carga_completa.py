@@ -195,6 +195,13 @@ def bronze_do_sistema(db: Session, sistema: str) -> int:
                                 RegistroBronze.ambiente_origem == ambiente_da_origem(sistema))) or 0)
 
 
+def tem_bronze(db: Session, sistema: str) -> bool:
+    """Mesmo critério de bronze_do_sistema(...) > 0, mas com EXISTS (para no 1º registro; não conta milhões)."""
+    return bool(db.scalar(select(select(RegistroBronze.id).where(
+        RegistroBronze.sistema_origem == sistema,
+        RegistroBronze.ambiente_origem == ambiente_da_origem(sistema)).limit(1).exists())))
+
+
 def _ambiente_da_amostra(db: Session, ex: Execucao) -> str:
     """M1: 'sandbox' se a execução registrou 'ambiente=sandbox' (mensagem/log) ou é uma das amostras da homologação
     já conhecidas (25/31, ver 0020); senão 'producao'."""
@@ -224,7 +231,7 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     a = ultima_amostra(db, conector)
     if a is None:
         return SEM_AMOSTRA
-    if a.status not in ("sucesso", "sem_novidades") or bronze_do_sistema(db, sistema) == 0:
+    if a.status not in ("sucesso", "sem_novidades") or not tem_bronze(db, sistema):
         return SEM_AMOSTRA
     if not amostra_aprovada(db, a):
         return AMOSTRA_PENDENTE
@@ -804,8 +811,23 @@ def situacao(db: Session, conector: str) -> dict:
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
             "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
             "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
+    from app.services import contagens_cache
+    camadas, atualizando = contagens_cache.obter(db, f"completa:{sistema}", lambda s: contagens_card(s, sistema))
+    sem_retrato = camadas is None
+    # cache frio: null (a tela mostra "—"), nunca 0 — zero parece perda de dados (TL #56)
+    camadas = camadas or {"camadas": {"bronze": None, "prata": None, "pendencias": None, "gerados_prata": None},
+                          "quarentena": None}
     return {
         "conector": conector, "liberada": motivo is None, "motivo": motivo, "execucao": execucao,
+        "camadas": camadas["camadas"], "contagens_atualizando": atualizando or sem_retrato,
+        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
+        "quarentena": camadas["quarentena"],
+    }
+
+
+def contagens_card(db: Session, sistema: str) -> dict:
+    """Contagens pesadas do card (só SELECT no Postgres), lidas pelo contagens_cache."""
+    return {
         "camadas": {
             "bronze": bronze_do_sistema(db, sistema),
             "prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema)) or 0),
@@ -815,7 +837,6 @@ def situacao(db: Session, conector: str) -> dict:
             "gerados_prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema))
                                  or 0) + int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
                                      CorrelacaoPendente.sistema == sistema)) or 0)},
-        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
         "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
     }
