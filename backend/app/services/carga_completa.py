@@ -52,7 +52,14 @@ NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida":
          "sil": "API SIL"}
 
 
-SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
+SEM_AMOSTRA = ('Rode a amostra e confira o resultado antes da carga completa: clique em "Rodar amostra" '
+               'no card desta fonte, em Conectores > Bases de origem.')
+AMOSTRA_PENDENTE = ('A amostra terminou e falta aprová-la: confira o resultado e clique em "Aprovar amostra" '
+                    'no card desta fonte, em Conectores > Bases de origem.')
+# PR-A (CT2/CT3): a amostra disparada a partir desta versão grava aprovacao="manual" na auditoria de início e só
+# libera a carga completa depois de "Aprovar amostra". Amostra concluída antes (sem a marca) segue valendo (CT3).
+ACAO_INICIO = ("amostra_conector_iniciada", "amostra_sil_iniciada")
+ACAO_APROVADA = "amostra_aprovada"
 ETAPAS = ("leitura", "prata", "ouro", "concluida")
 NOME_ETAPA = {"leitura": "Lendo da origem", "prata": "Tratando (prata)", "ouro": "Unificando cidadãos (ouro)",
               "concluida": "Concluída"}
@@ -216,16 +223,74 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     if conector not in CONECTORES_COMPLETA:
         return "Carga completa ainda não disponível para este conector"
     sistema = _sistema(conector)
-    tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
-    # CC12: amostra órfã (em andamento/interrompida) não apaga a última amostra concluída
-    q = (select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
-                                Execucao.status.not_in(("em_andamento", "interrompida"))).order_by(Execucao.id.desc()))
-    a = next((e for e in db.scalars(q.limit(50)) if _amostra_no_ambiente(db, e)), None)
+    a = ultima_amostra(db, conector)
     if a is None:
         return SEM_AMOSTRA
     if a.status not in ("sucesso", "sem_novidades") or bronze_do_sistema(db, sistema) == 0:
         return SEM_AMOSTRA
+    if not amostra_aprovada(db, a):
+        return AMOSTRA_PENDENTE
     return None
+
+
+def ultima_amostra(db: Session, conector: str) -> Execucao | None:
+    """Última amostra concluída do conector no ambiente em uso (órfã em andamento/interrompida não conta, CC12)."""
+    if conector not in cc.CONECTORES:
+        return None
+    sistema = cc.CONECTORES[conector][0]
+    tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
+    q = (select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
+                                Execucao.status.not_in(("em_andamento", "interrompida"))).order_by(Execucao.id.desc()))
+    return next((e for e in db.scalars(q.limit(50)) if _amostra_no_ambiente(db, e)), None)
+
+
+def _auditoria(db: Session, acao: str | tuple[str, ...], ex: Execucao):
+    from app.models.controle import Auditoria
+    acoes = (acao,) if isinstance(acao, str) else acao
+    return db.scalars(select(Auditoria).where(Auditoria.acao.in_(acoes), Auditoria.alvo == f"execucao:{ex.id}")
+                      .order_by(Auditoria.id.desc()).limit(1)).first()
+
+
+def exige_aprovacao(db: Session, ex: Execucao) -> bool:
+    ini = _auditoria(db, ACAO_INICIO, ex)
+    return ini is not None and (ini.detalhe or {}).get("aprovacao") == "manual"
+
+
+def amostra_aprovada(db: Session, ex: Execucao) -> bool:
+    """CT2/CT3: aprovada se teve "Aprovar amostra" ou se é de antes da aprovação manual (registro sem a marca)."""
+    if ex.status not in ("sucesso", "sem_novidades"):
+        return False
+    return not exige_aprovacao(db, ex) or _auditoria(db, ACAO_APROVADA, ex) is not None
+
+
+def resumo_amostra(db: Session, conector: str) -> dict | None:
+    """Resultado da última amostra para o card (UXA3): só contagens e motivo público, sem dado pessoal."""
+    a = ultima_amostra(db, conector)
+    if a is None:
+        return None
+    return {"id": a.id, "status": a.status, "finalizado_em": a.finalizado_em, "lidos": a.lidos,
+            "gravados": (a.novos or 0) + (a.atualizados or 0), "com_erro": a.ignorados or 0,
+            "motivo": (a.erro_publico() or {}).get("motivo") if a.status == "falha" else None,
+            "aprovada": amostra_aprovada(db, a)}
+
+
+class AprovacaoRecusada(RuntimeError):
+    pass
+
+
+def aprovar_amostra(db: Session, usuario: str, conector: str, eid: int, ip: str | None) -> dict:
+    """CT2/CT4: só a última amostra concluída com sucesso do conector; auditado com quem, quando (criado_em) e SHA."""
+    import os
+    a = ultima_amostra(db, conector)
+    if a is None or a.id != eid:
+        raise AprovacaoRecusada("Só dá para aprovar a última amostra desta fonte. Rode a amostra de novo.")
+    if a.status not in ("sucesso", "sem_novidades"):
+        raise AprovacaoRecusada("A amostra falhou e não pode ser aprovada. Corrija e rode de novo.")
+    if not amostra_aprovada(db, a):
+        sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("SOURCE_COMMIT") or os.environ.get("GIT_SHA") or "-"
+        audita(db, usuario, ACAO_APROVADA, f"execucao:{a.id}",
+               {"conector": conector, "lidos": a.lidos, "com_erro": a.ignorados or 0, "sha": sha}, ip)
+    return resumo_amostra(db, conector)
 
 
 def leitor_padrao(conector: str, db: Session):

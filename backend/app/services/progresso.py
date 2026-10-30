@@ -35,7 +35,7 @@ MOTIVOS = {
     "fora_janela": "Fora da janela noturna",
     "sei_token": "Token do SEI não configurado",
     "sei_reclassificacao": "Reclassificação incremental pendente",
-    "sem_amostra": "Falta rodar a amostra com sucesso",
+    "sem_amostra": "Falta a amostra aprovada: clique em \"Rodar amostra\" no card da fonte, em Bases de origem",
     "falha_origem": "Falha ao ler a origem",
     "falha": "A carga falhou; o checkpoint ficou no último lote gravado",
     "cancelada": "Cancelada por um administrador; o que já foi gravado fica",

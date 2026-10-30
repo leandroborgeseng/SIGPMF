@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.connectors.sqlserver.politicas import politica
+from app.core.config import get_settings
 from app.models.camadas import CorrelacaoPendente, DadoGold, RegistroBronze, Vinculo
 from app.models.controle import BaseCatalogo, Execucao
 
@@ -108,7 +109,8 @@ def _completa(db: Session, b: BaseCatalogo) -> dict:
     motivo = ccomp.motivo_bloqueio(db, b.conjunto)
     rodando = ccomp.ativa(db, ccomp._sistema(b.conjunto)) is not None  # CC7.4: card esconde números parciais
     return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo,
-            "completa_em_andamento": rodando}
+            "completa_em_andamento": rodando, "exige_amostra": True, "amostra": ccomp.resumo_amostra(db, b.conjunto),
+            "amostra_limite": int(get_settings().amostra_limite)}
 
 
 def totais(bases: list[dict]) -> dict[str, int]:

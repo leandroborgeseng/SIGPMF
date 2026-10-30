@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
+import PainelAmostra, { type ResumoAmostra } from '../PainelAmostra'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
@@ -11,6 +12,7 @@ export type Base = {
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
   completa_disponivel?: boolean; completa_liberada?: boolean; completa_motivo?: string | null
   completa_em_andamento?: boolean
+  exige_amostra?: boolean; amostra?: ResumoAmostra | null; amostra_limite?: number
   bloqueio?: Bloqueio | null
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
@@ -220,7 +222,20 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
-      {ehAdmin && b.tem_conector && (
+      {ehAdmin && b.tem_conector && b.exige_amostra && b.conector_id && (
+        <div className="acoes" id={`acoes-${b.conector_id}`}>
+          <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} />
+          {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
+          <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
+            motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />
+          <details className="menu-acoes">
+            <summary>Mais ações de {b.nome}</summary>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
+          </details>
+        </div>
+      )}
+      {ehAdmin && b.tem_conector && !(b.exige_amostra && b.conector_id) && (
         <div className="acoes">
           <button className="btn" disabled={rodandoAlgo || !b.pode_carregar || travada} aria-label={`Puxar amostra de ${b.nome}`}
             aria-describedby={travada ? `motivo-trava-${b.id}` : undefined} onClick={() => onAcao(b, 'amostra')}>

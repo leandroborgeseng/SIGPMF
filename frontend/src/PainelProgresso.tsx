@@ -75,7 +75,8 @@ function Card({ f }: { f: FonteProgresso }) {
             : <p>Aviso: {alerta.texto ?? alerta.codigo}</p>}
         </div>
       )}
-      {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}</p>}
+      {f.motivo && <p className="pp-motivo">Motivo: {f.motivo}
+        {f.motivo_codigo === 'sem_amostra' && <> · <a href={`#acoes-${f.id}`}>Ir para Rodar amostra</a></>}</p>}
       {f.falta && <p className="pp-motivo">Não liberada — falta: {f.falta.join(' / ')}</p>}
       {!p && f.ultima_execucao && <p className="sutil">Última execução ({f.ultima_execucao.modo}): {n(f.ultima_execucao.lidas)} linhas processadas</p>}
       {f.tabelas.length > 0 && (

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from './api'
 
-const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério' }
+const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério', iptu: 'IPTU', divida: 'Dívida ativa', financeiro: 'Financeiro', sil: 'API SIL' }
 const milhar = (n: number | null | undefined) => (n == null ? '—' : new Intl.NumberFormat('pt-BR').format(n))
 
 export type ExecCompleta = {
@@ -167,9 +167,9 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
     <div className="carga-completa">
       {!rodando && (
         <span className="com-dica">
-          <button className="btn outlined" disabled={!ok || enviando} aria-label={`Puxar carga completa de ${nome}`}
+          <button className="btn outlined" disabled={!ok || enviando} aria-label={`Executar carga completa de ${nome}`}
             aria-describedby={!ok && porque ? idMotivo : undefined} title={!ok && porque ? porque : undefined} onClick={abrir}>
-            Carga completa
+            Executar carga completa
           </button>
           {!ok && porque && <span id={idMotivo} className="sutil motivo-desabilitado"> {porque}</span>}
         </span>
