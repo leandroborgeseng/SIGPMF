@@ -37,6 +37,22 @@ SELECT :sis, :tab, lpad(k::text, 14, '0'),
        md5('f' || k::text || ':' || :v), :ex, timestamptz '2026-01-01', NULL, 'producao'
   FROM generate_series(1, :n) k WHERE :v = 0 OR k % 100 = :v
 """
+# D5: o resto da fonte IPTU (posses do mesmo CODI) e o Financeiro_Exercicio (medido à parte)
+GERA_POSSES = """
+INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id, quarentena, ambiente_origem)
+SELECT 'IPTU', 'Cadastro_Possuidor', lpad(k::text, 14, '0') || '|ZZ' || k,
+       jsonb_build_object('CODI', lpad(k::text, 14, '0'), 'CPF_CNPJ', 'ZZ' || k, 'Data_Inclusao', '2020-01-01 00:00:00',
+                          'Data_Baixa', NULL, 'Tipo_Posse', 1),
+       md5('o' || k), :ex, NULL, 'producao' FROM generate_series(1, :n) k
+"""
+GERA_FIN = """
+INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id, quarentena, ambiente_origem)
+SELECT 'FINANCEIRO', 'Financeiro_Exercicio', '2026|001|' || k || '|00|0000|0|1|0',
+       jsonb_build_object('Exercicio', 2026, 'Tributo', '001', 'Nr_Carne', k, 'Sequencia', '00', 'Referencia', '0000',
+                          'Renovacao', 0, 'Parcela', 1, 'Duplicidade', 0, 'Contribuinte', lpad((k % :codis + 1)::text, 14, '0'),
+                          'Receita', '001', 'Data_Vencimento', '2026-03-10 00:00:00', 'Valor', 100.0, 'Valor_Pago', 0.0),
+       md5('n' || k), :ex, NULL, 'producao' FROM generate_series(1, :n) k
+"""
 # D6: chaves de homologação (padrão das marcadas pela 0020: SIL sandbox), nunca entram na prata
 GERA_SANDBOX = """
 INSERT INTO bronze.registros (sistema_origem, tabela, id_origem, dados, hash, execucao_id, quarentena, ambiente_origem)
@@ -151,6 +167,12 @@ def principal(a):
         c.execute(text(GERA_PESSOAS), {"ex": ex, "n": a.pessoas})
         c.execute(text(GERA_FATOS), {"sis": sis, "tab": tab, "n": a.fatos, "v": 0, "ex": ex})
         c.execute(text(GERA_SANDBOX), {"ex": ex, "n": a.sandbox})
+        if a.posses:
+            c.execute(text(GERA_POSSES), {"ex": ex, "n": a.posses})
+        if a.financeiro:
+            c.execute(text(GERA_FIN), {"ex": ex, "n": a.financeiro, "codis": max(a.fatos, 1)})
+        res["por_tabela"] = {f"{s_}.{t_}": n for s_, t_, n in c.execute(text(
+            "SELECT sistema_origem, tabela, count(*) FROM bronze.registros GROUP BY 1, 2 ORDER BY 1, 2"))}
         res["gera_bronze_s"] = round(time.perf_counter() - t, 1)
         res["bronze_linhas"] = c.execute(text("SELECT count(*) FROM bronze.registros")).scalar()
     eng.dispose()
@@ -180,6 +202,8 @@ if __name__ == "__main__":
     p.add_argument("--sandbox", type=int, default=500)
     p.add_argument("--tabela", default="IPTU.dbo.Cadastro", help="sistema.[schema.]tabela da fonte grande (PI10)")
     p.add_argument("--rodadas", type=int, default=2)
+    p.add_argument("--posses", type=int, default=0, help="linhas de IPTU.Cadastro_Possuidor (D5: fonte IPTU inteira)")
+    p.add_argument("--financeiro", type=int, default=0, help="linhas de FINANCEIRO.Financeiro_Exercicio (D5: à parte)")
     p.add_argument("--v", type=int, default=1)
     p.add_argument("--fase")
     p.add_argument("--saida", default="evidencia_parte2.json")
