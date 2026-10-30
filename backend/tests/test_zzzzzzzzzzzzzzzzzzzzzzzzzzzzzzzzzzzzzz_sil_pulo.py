@@ -22,8 +22,8 @@ from app.services import carga_completa as ccomp
 SECRET = "zz-segredo-sintetico-pulo"
 HOST = "sandbox.zzpulo.invalid"
 TOKEN = "ZZTOKEN-PULO"
-VALOR_SECRETO = "ZZTESTE-12345678000199"
-RUIM = (200, {"erro": VALOR_SECRETO, "cnpj": VALOR_SECRETO})
+VALOR_PII = "ZZTESTE-PII-00"
+RUIM = (200, {"erro": VALOR_PII, "cnpj": VALOR_PII})
 FIM = (404, {"e": "zz"})
 
 
@@ -133,7 +133,7 @@ def test_ruim_boa_ruim_pula_duas_e_conclui_no_404(db, ambiente, caplog):
     assert sorted(r.dados["Ccm"] for r in _boas(db)) == [2, 3]
     assert _cp(db).concluida is True
     for m in [r.getMessage() for r in caplog.records]:
-        assert VALOR_SECRETO not in m
+        assert VALOR_PII not in m
 
 
 def test_limite_customizado_e_lote_bom_zera_contagem(db, ambiente):
@@ -154,15 +154,15 @@ def test_pulo_grava_quarentena_sem_valores_log_warn_e_contador(db, ambiente):
     assert r.quarentena == "sil_resposta_inesperada" and r.id_origem == "sil_resposta_inesperada:2"
     assert r.dados == {"Sequencia": 2, "status": 200, "tipo_json": "dict", "chaves": ["cnpj", "erro"]}
     assert r.quarentena_campos == ["cnpj", "erro"] and r.execucao_id == ex.id
-    assert VALOR_SECRETO not in json.dumps(r.dados)
+    assert VALOR_PII not in json.dumps(r.dados)
     warns = [lg for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id)) if "pulada" in lg.mensagem]
     assert len(warns) == 1 and warns[0].nivel == "WARN" and "Sequencia=2" in warns[0].mensagem
-    assert VALOR_SECRETO not in warns[0].mensagem
+    assert VALOR_PII not in warns[0].mensagem
     # contador da tela (card da carga completa e "Ver detalhes da quarentena") == linhas da quarentena
     assert ccomp.contagens_card(db, "SIL")["quarentena"] == len(q) == 1
     det = ccomp.quarentena(db, "sil")
     assert len(det) == 1 and det[0]["motivo"].startswith("Sequencia pulada") and det[0]["campos_nulos"] == ["cnpj", "erro"]
-    assert VALOR_SECRETO not in json.dumps(det, default=str)
+    assert VALOR_PII not in json.dumps(det, default=str)
 
 
 def test_reexecutar_mesmo_pulo_nao_duplica_quarentena(db, ambiente):
