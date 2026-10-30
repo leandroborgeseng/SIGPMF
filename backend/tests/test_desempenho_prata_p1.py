@@ -303,3 +303,38 @@ def test_migracao_0036_drop_do_invalido_com_transacao_aberta(banco, monkeypatch)
         with adm.connect() as c:
             c.execute(text(f'DROP DATABASE IF EXISTS "{nome}" WITH (FORCE)'))
         adm.dispose()
+
+
+@pytest.mark.parametrize("valor", ["2147483647", "99999999999", "2147483647s", "99999999999min", "601s", "11min",
+                                   "600001", "0000000000000000000099999999999"])
+def test_lock_timeout_acima_do_teto_vira_10min(monkeypatch, caplog, valor):
+    m = _mod_0036()
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", valor)
+    with caplog.at_level("WARNING"):
+        assert m._lock_timeout() == "10min"
+    msgs = [r.getMessage() for r in caplog.records]
+    assert msgs and all("teto" in x for x in msgs)
+    assert all(x.replace("SIGPMF_INDICE_LOCK_TIMEOUT", "").find(valor.lstrip("0")) < 0 for x in msgs)
+
+
+@pytest.mark.parametrize(("valor", "esperado"), [("600s", "600s"), ("10min", "10min"), ("600000", "600000ms"),
+                                                  ("30s", "30s")])
+def test_lock_timeout_no_teto_fica(monkeypatch, caplog, valor, esperado):
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", valor)
+    with caplog.at_level("WARNING"):
+        assert _mod_0036()._lock_timeout() == esperado
+    assert not caplog.records
+
+
+def test_lock_timeout_padrao_sem_env(monkeypatch):
+    monkeypatch.delenv("SIGPMF_INDICE_LOCK_TIMEOUT", raising=False)
+    assert _mod_0036()._lock_timeout() == "30s"
+
+
+def test_lock_timeout_teto_aceito_pelo_postgres(db, monkeypatch):
+    """O valor devolvido no pior caso é aceito pelo SET (sem DataError) e não é espera infinita."""
+    monkeypatch.setenv("SIGPMF_INDICE_LOCK_TIMEOUT", "99999999999")
+    lt = _mod_0036()._lock_timeout()
+    db.execute(text(f"SET LOCAL lock_timeout = '{lt}'"))
+    assert db.execute(text("SHOW lock_timeout")).scalar() == "10min"
+    db.rollback()
