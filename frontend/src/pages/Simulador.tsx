@@ -3,11 +3,13 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
+import OrigemDado from '../OrigemDado'
 import { AcessosCidadao, ImpostosCidadao, LinhaDoTempoCidadao, ResumoPortal, SaudeCidadao, useDadosFicha } from '../FichaPortal'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
 type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
-type Ficha = { cidadao_id: string; nome: string | null; cpf: string | null; cns?: string | null; sistemas: string[] | null; dados: Dado[] | null; enderecos: { valor: string | null; fonte: string | null; atualizado_em: string | null; mais_recente: boolean }[] | null }
+type Ficha = { cidadao_id: string; nome: string | null; cpf: string | null; cns?: string | null; sistemas: string[] | null; dados: Dado[] | null; enderecos: EnderecoFicha[] | null }
+type EnderecoFicha = { valor: string | null; linhas?: string[]; fonte: string | null; atualizado_em: string | null; mais_recente: boolean; origem_endereco?: string | null }
 
 const DOMINIO: Record<string, string> = { identificacao: 'Identificação', endereco: 'Endereço', saude: 'Saúde', cemiterio: 'Cemitério' }
 const CAMPO: Record<string, string> = { nome: 'Nome', data_nascimento: 'Data de nascimento', nome_mae: 'Nome da mãe', endereco: 'Endereço', cadastro: 'Cadastro' }
@@ -115,13 +117,16 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
       {Object.keys(grupos).length === 0 && <p className="vazio">—</p>}
       {Object.entries(grupos).map(([dom, itens]) => (
         <section key={dom} aria-labelledby={`d-${dom}`}>
-          <h3 id={`d-${dom}`}>{DOMINIO[dom] ?? dom}</h3>
+          {/* EN9/UXO9: o rótulo aparece uma vez só (domínio com o mesmo nome do único campo não repete o título) */}
+          {!rotuloUnico(dom, itens) && <h3 id={`d-${dom}`}>{DOMINIO[dom] ?? dom}</h3>}
           <dl>
             {itens.map((d) => (
               <div key={`${d.campo}-${d.fonte}`} className="campo">
-                <dt>{CAMPO[d.campo] ?? d.campo}</dt>
-                <dd>{d.campo === 'data_nascimento' || d.campo === 'data_obito' ? dataBR(d.valor) : (d.valor || '—')} — Fonte: {d.fonte || '—'} · Atualizado em {dataBR(d.atualizado_em)}
-                  {d.campo === 'endereco' && enderecos.length > 1 && <div className="nota">Há outras versões em outras fontes</div>}
+                <dt id={rotuloUnico(dom, itens) ? `d-${dom}` : undefined}>{CAMPO[d.campo] ?? d.campo}</dt>
+                <dd>
+                  <ValorCampo d={d} />
+                  <OrigemDado fonte={d.fonte} atualizadoEm={d.atualizado_em} />
+                  {d.campo === 'endereco' && <OutrosValores itens={outrosEnderecos(enderecos, d)} />}
                 </dd>
               </div>
             ))}
@@ -181,6 +186,55 @@ function DialogoRevelar({ id, fechar, aoRevelar }: { id: string; fechar: () => v
           <button className="btn" onClick={revelar} disabled={motivo.trim().length < MOTIVO_MIN}>Revelar</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+const rotuloUnico = (dom: string, itens: Dado[]) => itens.length === 1 && (CAMPO[itens[0].campo] ?? itens[0].campo) === DOMINIO[dom]
+
+/** UXO1/UXO6/EN8: valor em destaque; endereço em 2 linhas; sem dado, "Não informado na origem" em itálico. */
+function ValorCampo({ d }: { d: Dado }) {
+  if (!d.valor) return <span className="campo-valor nao-informado">Não informado na origem</span>
+  if (d.campo === 'data_nascimento' || d.campo === 'data_obito') return <span className="campo-valor">{dataBR(d.valor)}</span>
+  return <span className="campo-valor">{d.valor.split('\n').map((l, i) => <Linha key={i} texto={l} />)}</span>
+}
+
+/** R1/UXO6: textos fixos de ausência (rua/bairro sem referência ou não informados) em itálico e cor secundária. */
+const AUSENCIA = /^(Rua não informada na origem|Rua cadastrada na origem \(referência não carregada\)|Bairro cadastrado na origem \(referência não carregada\))/
+function Linha({ texto }: { texto: string }) {
+  return <span className="linha">{texto.split(' · ').map((p, i) => (
+    <span key={i}>{i > 0 && ' · '}{AUSENCIA.test(p) ? <span className="nao-informado">{p}</span> : p}</span>))}</span>
+}
+
+function outrosEnderecos(ends: EnderecoFicha[], d: Dado): EnderecoFicha[] {
+  let pulou = false  // o valor exibido (mesma fonte e texto) sai da lista uma vez
+  return ends.filter((e) => {
+    if (!pulou && e.fonte === d.fonte && e.valor === d.valor) { pulou = true; return false }
+    return true
+  })
+}
+
+/** UXO5: "Ver outros N valores" abre a lista de valor + chip por fonte. */
+function OutrosValores({ itens }: { itens: EnderecoFicha[] }) {
+  const [aberto, setAberto] = useState(false)
+  if (itens.length === 0) return null
+  const n = itens.length
+  return (
+    <div>
+      <button className="btn-link" aria-expanded={aberto} onClick={() => setAberto(!aberto)}>
+        {aberto ? 'Ocultar outros valores' : `Ver ${n === 1 ? 'outro valor' : `outros ${n} valores`}`}
+      </button>
+      {aberto && (
+        <ul className="outros-valores">
+          {itens.map((e, i) => (
+            <li key={i}>
+              {e.valor ? <span className="campo-valor">{(e.linhas?.length ? e.linhas : e.valor.split('\n')).map((l, j) => <Linha key={j} texto={l} />)}</span>
+                : <span className="campo-valor nao-informado">Não informado na origem</span>}
+              <OrigemDado fonte={e.fonte} atualizadoEm={e.atualizado_em} />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
