@@ -534,6 +534,17 @@ def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str, extra: dict
             "total_origem": ex.total_origem, **_origem_sil(ex), **(extra or {})})
 
 
+def _registra_erro_sil(db: Session, ex: Execucao, exc: BaseException) -> None:
+    """ErroSil encerrando a carga: WARNING no stdout e linha em controle.logs com classe, status HTTP, tentativa e
+    Sequencia. Nunca CCM/CNPJ, query, URL, token ou corpo."""
+    from app.connectors.sil.cliente import ErroSil, descreve_erro_sil
+    if not isinstance(exc, ErroSil):
+        return
+    det = descreve_erro_sil(exc)
+    log.warning("SIL: execução %s encerrada por ErroSil: %s", ex.id, det)
+    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"Detalhe do erro da API SIL: {det}"))
+
+
 def _origem_sil(ex: Execucao) -> dict:
     if ex.sistema != "SIL":
         return {}
@@ -569,6 +580,7 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.status = "falha"
             ex.registra_erro(exc)
             ex.tabela_atual = None
+            _registra_erro_sil(db, ex, exc)
             motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente) else ex.erro_publico()["motivo"]
             _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
