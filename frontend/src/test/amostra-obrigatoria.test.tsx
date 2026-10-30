@@ -9,8 +9,8 @@ import { AuthProvider } from '../auth'
 
 // PR-A (UXA1–UXA5, CT1–CT3, CT13, CT14). Dados mockados ZZTESTE, nada real.
 const Z = { bronze: 0, prata: 0, ouro: 0, pendentes: 0 }
-const SEM = 'Rode a amostra e confira o resultado antes da carga completa: clique em "Rodar amostra" no card desta fonte, em Conectores > Bases de origem.'
-const PEND = 'A amostra terminou e falta aprová-la: confira o resultado e clique em "Aprovar amostra" no card desta fonte, em Conectores > Bases de origem.'
+const SEM = 'Rode a amostra acima e aprove o resultado para liberar a carga completa.'
+const PEND = 'Confira o resultado e clique em Aprovar amostra para liberar a carga completa.'
 const base = (id: number, nome: string, conector: string, o: object = {}) => ({
   id, nome, descricao: 'ZZTESTE', grupo: 'painel_cidadao', triagem: 'schema', prioridade: id, status: 'implementado', conector_id: conector,
   tem_conector: true, pode_carregar: true, motivo_bloqueio: null, tem_amostra: false, com_erro: false, contagens: Z, ultima_carga: null,
@@ -71,7 +71,7 @@ describe('amostra obrigatória no card (PR-A)', () => {
     const c = await cartao('Dívida ativa')
     expect(within(c).getByRole('button', { name: 'Rodar amostra (1.000 linhas) de Dívida ativa' })).toHaveTextContent('Rodar amostra (1.000 linhas)')
     expect(within(c).getByRole('button', { name: 'Executar carga completa de Dívida ativa' })).toBeDisabled()
-    expect(within(c).getByText(/clique em "Rodar amostra" no card desta fonte/)).toBeInTheDocument()
+    expect(within(c).getByText(/Rode a amostra acima e aprove o resultado para liberar a carga completa\./)).toBeInTheDocument()
   })
 
   it('UXA2/UXA3/CT2: roda, mostra linhas e erros, "Ver erros", aprova e libera', async () => {
@@ -96,11 +96,11 @@ describe('amostra obrigatória no card (PR-A)', () => {
     const ocupado = within(c).getByRole('button', { name: 'Rodando amostra de Dívida ativa…' })
     expect(ocupado).toBeDisabled()
     expect(ocupado).toHaveAttribute('aria-busy', 'true')
-    await screen.findByText(/clique em "Aprovar amostra" no card desta fonte/, {}, { timeout: 5000 })
+    await screen.findByText(/clique em Aprovar amostra para liberar a carga completa/, {}, { timeout: 5000 })
     await screen.findByText(/Amostra concluída: 1.000 linhas lidas, 3 com erro/, {}, { timeout: 5000 })
     expect(await screen.findByText(/Amostra concluída: 1.000 linhas lidas, 3 com erro/)).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Rodar de novo a amostra de Dívida ativa' }, { timeout: 5000 })).toBeEnabled()
-    expect(screen.getByText(/clique em "Aprovar amostra" no card desta fonte/)).toBeInTheDocument()
+    expect(screen.getByText(/clique em Aprovar amostra para liberar a carga completa/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Ver erros da amostra de Dívida ativa' }))
     expect(await screen.findByText(/chave nula/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Aprovar amostra de Dívida ativa' }))
@@ -144,5 +144,61 @@ describe('amostra obrigatória no card (PR-A)', () => {
     expect(within(c).getByText(/Última carga: .* · Amostra · sucesso/)).toBeInTheDocument()
     expect(within(c).getByText('Amostra: 49 linhas (parou no limite de 1 lote). Não é o total da origem.')).toBeInTheDocument()
     expect(within(c).queryByText(/· Carga completa ·/)).toBeNull()
+  })
+
+  it('M1: selo segue o estado da amostra e o verde só aparece depois da aprovação', async () => {
+    let falhou = false
+    mock((url, init) => {
+      if (url === '/api/conectores/sil/amostra' && init?.method === 'POST') { falhou = true; return [202, { id: 9, status: 'falha', em_andamento: false, lidos: 0, ignorados: 0, mensagem: null, erro: { motivo: 'ZZTESTE' } }] }
+      if (url === '/api/conectores') return [200, { conectores: [], execucoes: [], carga_habilitada: true, bases: [
+        ...BASES.map((b) => b.conector_id === 'sil' && falhou ? { ...b, amostra: { ...AM_OK, id: 9, status: 'falha', motivo: 'ZZTESTE' } } : b),
+        base(5, 'Cemiterio', 'cemiterio', { amostra: AM_OK, completa_motivo: PEND })] }]
+      return null
+    })
+    montar()
+    const selo = (c: HTMLElement) => c.querySelector('.selo') as HTMLElement
+    expect(selo(await cartao('Dívida ativa'))).toHaveTextContent(/^Aguardando amostra$/)
+    expect(selo(await cartao('Cemiterio'))).toHaveTextContent(/^Amostra para aprovar$/)
+    expect(selo(await cartao('IPTU'))).toHaveTextContent(/^Pronto para carga$/)
+    expect(screen.queryByText(/^Pronto$/)).toBeNull()
+    await userEvent.click(within(await cartao('API SIL')).getByRole('button', { name: /Rodar amostra .* de API SIL/ }))
+    await waitFor(async () => expect(selo(await cartao('API SIL'))).toHaveTextContent(/^Amostra falhou$/))
+  })
+
+  it('M1: durante a amostra o selo é "Rodando amostra"', async () => {
+    mock((url, init) => {
+      if (url === '/api/conectores/divida/amostra' && init?.method === 'POST') return [202, { id: 77, status: 'em_andamento', em_andamento: true, lidos: 0, ignorados: 0, mensagem: null }]
+      if (url === '/api/conectores/divida/amostra/77') return [200, { id: 77, status: 'em_andamento', em_andamento: true, lidos: 0, ignorados: 0, mensagem: null }]
+      return null
+    })
+    montar()
+    const c = await cartao('Dívida ativa')
+    await userEvent.click(within(c).getByRole('button', { name: /Rodar amostra .* de Dívida ativa/ }))
+    expect(c.querySelector('.selo')).toHaveTextContent(/^Rodando amostra$/)
+  })
+
+  it('M2: motivo abaixo do botão, em largura total, ligado por aria-describedby', async () => {
+    mock(() => null)
+    montar()
+    const c = await cartao('Dívida ativa')
+    const b = within(c).getByRole('button', { name: 'Executar carga completa de Dívida ativa' })
+    const id = b.getAttribute('aria-describedby') as string
+    const m = document.getElementById(id) as HTMLElement
+    expect(m.tagName).toBe('P')
+    expect(m).toHaveTextContent('Rode a amostra acima e aprove o resultado para liberar a carga completa.')
+    expect(m.textContent).not.toMatch(/Conectores > Bases de origem/)
+    expect(b.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('M3: aprovada, "Executar carga completa" é o primário e "Rodar de novo" é terciário', async () => {
+    mock((url) => /iptu\/completa$/.test(url) ? [200, { conector: 'iptu', liberada: true, motivo: null, execucao: null, camadas: { bronze: 0, prata: 0, pendencias: 0 }, reconciliacao: null }] : null)
+    montar()
+    const c = await cartao('IPTU')
+    const exec = await within(c).findByRole('button', { name: 'Executar carga completa de IPTU' })
+    await waitFor(() => expect(exec).toBeEnabled())
+    expect(exec.className).toBe('btn')
+    const de = within(c).getByRole('button', { name: 'Rodar de novo a amostra de IPTU' })
+    expect(de).toHaveClass('ghost')
+    expect(de).not.toHaveClass('outlined')
   })
 })

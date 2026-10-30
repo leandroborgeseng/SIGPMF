@@ -444,3 +444,5 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 .btn-link { background: none; border: 0; padding: 0; color: var(--link, #0b5cad); text-decoration: underline; cursor: pointer; font: inherit; min-height: 24px; }
 .lista-erros { margin: .3rem 0; padding-left: 1.1rem; font-size: .9em; overflow-wrap: anywhere; }
+.carga-completa .com-dica { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; width: 100%; }
+.carga-completa .com-dica .motivo-desabilitado { margin: 0; width: 100%; }

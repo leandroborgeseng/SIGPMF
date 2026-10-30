@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
-import PainelAmostra, { type ResumoAmostra } from '../PainelAmostra'
+import PainelAmostra, { estadoAmostra, type EstadoAmostra, type ResumoAmostra, SELO_AMOSTRA } from '../PainelAmostra'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
@@ -174,7 +174,11 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
 }
 
 function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void }) {
-  const st = STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' }
+  const seloAmostra = b.tem_conector && b.exige_amostra === true && !!b.conector_id
+  const exige = ehAdmin && seloAmostra
+  const [estAm, setEstAm] = useState<EstadoAmostra>(estadoAmostra(b.amostra ?? null, false))
+  // M1: fonte que exige amostra: o selo segue o estado da amostra; o verde só depois da aprovação
+  const st = seloAmostra ? SELO_AMOSTRA[estAm] : (STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' })
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
@@ -224,10 +228,10 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
-      {ehAdmin && b.tem_conector && b.exige_amostra && b.conector_id && (
+      {exige && b.conector_id && (
         <div className="acoes" id={`acoes-${b.conector_id}`}>
           <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
-            onMudou={onFim} desabilitado={rodandoAlgo || travada} />
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} />
           {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
           <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
             motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />

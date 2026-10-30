@@ -15,8 +15,25 @@ const linhas = (n: number) => `${milhar(n)} ${n === 1 ? 'linha' : 'linhas'}`
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export const rotuloRodar = (limite: number) => `Rodar amostra (${milhar(limite)} linhas)`
 
-export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false }: {
+/** M1: estado do selo do card, nesta ordem. "Pronto para carga" só depois da aprovação. */
+export type EstadoAmostra = 'aguardando' | 'rodando' | 'falhou' | 'aprovar' | 'pronto'
+export const SELO_AMOSTRA: Record<EstadoAmostra, { rotulo: string; classe: string }> = {
+  aguardando: { rotulo: 'Aguardando amostra', classe: 'neutro' },
+  rodando: { rotulo: 'Rodando amostra', classe: 'em_andamento' },
+  falhou: { rotulo: 'Amostra falhou', classe: 'falha' },
+  aprovar: { rotulo: 'Amostra para aprovar', classe: 'atencao' },
+  pronto: { rotulo: 'Pronto para carga', classe: 'pronto' },
+}
+export function estadoAmostra(am: ResumoAmostra | null, rodando: boolean): EstadoAmostra {
+  if (rodando) return 'rodando'
+  if (!am) return 'aguardando'
+  if (am.status === 'falha') return 'falhou'
+  return am.aprovada ? 'pronto' : 'aprovar'
+}
+
+export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado }: {
   conector: string; nome: string; limite: number; inicial: ResumoAmostra | null; onMudou: () => void; desabilitado?: boolean
+  onEstado?: (e: EstadoAmostra) => void
 }) {
   const [am, setAm] = useState<ResumoAmostra | null>(inicial)
   const [rodando, setRodando] = useState(false)
@@ -69,6 +86,8 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
     }
   }
 
+  const estado = estadoAmostra(am, rodando)
+  useEffect(() => { onEstado?.(estado) }, [estado, onEstado])
   const falhou = am?.status === 'falha'
   const ok = am !== null && !falhou
   const idRes = `amostra-res-${conector}`
@@ -101,7 +120,7 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
             )}
             <p className="acoes">
               {!am.aprovada && <button className="btn" disabled={aprovando} onClick={aprovar} aria-label={`Aprovar amostra de ${nome}`}>Aprovar amostra</button>}
-              {' '}<button className="btn outlined" disabled={desabilitado} onClick={rodar} aria-label={`Rodar de novo a amostra de ${nome}`}>Rodar de novo</button>
+              {' '}<button className={am.aprovada ? 'btn ghost' : 'btn outlined'} disabled={desabilitado} onClick={rodar} aria-label={`Rodar de novo a amostra de ${nome}`}>Rodar de novo</button>
             </p>
           </div>
         )}

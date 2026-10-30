@@ -47,21 +47,21 @@ def test_ct14_nenhuma_fonte_exige_amostra_sem_jeito_de_roda_la(client, tokens):
         assert b["conector_id"] in cc.CONECTORES, b["nome"]
         assert b["amostra_limite"] >= 1
         if not b["completa_liberada"]:
-            assert '"Rodar amostra"' in b["completa_motivo"] or '"Aprovar amostra"' in b["completa_motivo"], b["nome"]
+            assert b["completa_motivo"] in (ccomp.SEM_AMOSTRA, ccomp.AMOSTRA_PENDENTE), b["nome"]
 
 
 def test_ct1_ct13_sem_amostra_motivo_diz_onde_clicar(client, tokens, db):
     for conector in ("divida", "financeiro", "sil"):
         if ccomp.ultima_amostra(db, conector) is None:
             m = ccomp.motivo_bloqueio(db, conector)
-            assert m == ccomp.SEM_AMOSTRA and '"Rodar amostra"' in m and "Conectores > Bases de origem" in m
+            assert m == ccomp.SEM_AMOSTRA == "Rode a amostra acima e aprove o resultado para liberar a carga completa."
 
 
 def test_ct2_amostra_nova_so_libera_depois_de_aprovar(client, tokens, db):
     ex = _amostra_manual(db)
     assert ccomp.motivo_bloqueio(db, "cemiterio") == ccomp.AMOSTRA_PENDENTE
     b = _base(client, tokens, "cemiterio")
-    assert b["completa_liberada"] is False and '"Aprovar amostra"' in b["completa_motivo"]
+    assert b["completa_liberada"] is False and b["completa_motivo"] == ccomp.AMOSTRA_PENDENTE and "Aprovar amostra" in b["completa_motivo"]
     assert b["amostra"]["id"] == ex.id and b["amostra"]["aprovada"] is False and b["amostra"]["lidos"] == ex.lidos
     assert {"lidos", "gravados", "com_erro", "status"} <= set(b["amostra"])
     # operador não aprova

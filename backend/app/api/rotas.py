@@ -280,7 +280,7 @@ def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session 
     except sil.Conflito as exc:
         audita(db, u.email, "amostra_sil_conflito", "conector:sil", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.LOTES_POR_EXECUCAO,
+    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.lotes_por_execucao(),
                                                                      "aprovacao": "manual"},
            _ip(req))
     db.expire_all()  # disparo síncrono nos testes: devolve o estado final

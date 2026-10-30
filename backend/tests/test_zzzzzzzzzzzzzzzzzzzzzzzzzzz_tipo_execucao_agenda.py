@@ -96,3 +96,29 @@ def test_agenda_ligada_segue_com_proxima(limpo, monkeypatch):
     limpo.commit()
     r = pg.fonte(limpo, pg.Fonte("sil", "SIL", (SIS,), (SIS,), None, "zzteste"), AGORA)
     assert r["status"] == "aguardando" and r["aguardando_em_brt"] == "02:30"
+
+
+# ---------- SIL: lotes da amostra por env (SIL_AMOSTRA_MAX_LOTES, padrão 20), teto de 1.000 linhas ----------
+from app.connectors.sil import carga as sil_carga  # noqa: E402
+from app.connectors.sil.endpoints import endpoint as sil_endpoint  # noqa: E402
+from app.services import amostra_sil  # noqa: E402
+from tests.test_zzzzzz_conector_sil import cliente, mock  # noqa: E402,F401  (fixtures sintéticas ZZTESTE)
+
+
+def test_sil_amostra_lotes_vem_da_env_com_padrao_20(monkeypatch):
+    monkeypatch.delenv("SIL_AMOSTRA_MAX_LOTES", raising=False)
+    monkeypatch.setenv("SIL_CONSULTARLOTE_MAX_LOTES", "1")  # não interfere na amostra
+    assert amostra_sil.lotes_por_execucao() == 20
+    monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "3")
+    assert amostra_sil.lotes_por_execucao() == 3
+    for v, esperado in (("0", 1), ("999", 100), ("x", 20)):
+        monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", v)
+        assert amostra_sil.lotes_por_execucao() == esperado
+
+
+def test_sil_amostra_com_20_lotes_para_no_teto_de_1000_linhas(cliente, monkeypatch):  # noqa: F811
+    c, estado, _ = cliente
+    monkeypatch.delenv("SIL_AMOSTRA_MAX_LOTES", raising=False)
+    r = sil_carga.paginar_lote(c, sil_endpoint(amostra_sil.ENDPOINT_AMOSTRA), max_lotes=amostra_sil.lotes_por_execucao())
+    assert len(r["registros"]) == 1000 and r["contagem"]["fim"] == "limite"
+    assert r["contagem"]["lotes"] < 20

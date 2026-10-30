@@ -52,10 +52,8 @@ NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida":
          "sil": "API SIL"}
 
 
-SEM_AMOSTRA = ('Rode a amostra e confira o resultado antes da carga completa: clique em "Rodar amostra" '
-               'no card desta fonte, em Conectores > Bases de origem.')
-AMOSTRA_PENDENTE = ('A amostra terminou e falta aprová-la: confira o resultado e clique em "Aprovar amostra" '
-                    'no card desta fonte, em Conectores > Bases de origem.')
+SEM_AMOSTRA = "Rode a amostra acima e aprove o resultado para liberar a carga completa."
+AMOSTRA_PENDENTE = "Confira o resultado e clique em Aprovar amostra para liberar a carga completa."
 # PR-A (CT2/CT3): a amostra disparada a partir desta versão grava aprovacao="manual" na auditoria de início e só
 # libera a carga completa depois de "Aprovar amostra". Amostra concluída antes (sem a marca) segue valendo (CT3).
 ACAO_INICIO = ("amostra_conector_iniciada", "amostra_sil_iniciada")

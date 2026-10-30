@@ -146,7 +146,7 @@ def test_cc1_bloqueada_sem_amostra_ok_e_liberada_depois(client, tokens, origem, 
     db.commit()
     assert ccomp.motivo_bloqueio(db, "cemiterio") == ccomp.SEM_AMOSTRA
     r = client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"])
-    assert r.status_code == 409 and '"Rodar amostra"' in r.json()["detail"]  # CT13: diz onde clicar
+    assert r.status_code == 409 and r.json()["detail"] == ccomp.SEM_AMOSTRA  # CT13/M2: diz o que fazer
     _amostra(db, "cemiterio")
     assert ccomp.motivo_bloqueio(db, "cemiterio") is None
     s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()

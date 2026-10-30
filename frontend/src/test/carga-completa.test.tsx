@@ -51,7 +51,7 @@ describe('carga completa (CC1-CC6)', () => {
     const c = await cartao()
     const b2 = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
     await waitFor(() => expect(b2).toBeDisabled())
-    expect(b2).toHaveAttribute('title', motivo)
+    expect(document.getElementById(b2.getAttribute('aria-describedby') as string)).toHaveTextContent(motivo)  // M2: aria-describedby
     expect(b2).toHaveAccessibleDescription(motivo)
     expect(within(c).getByText(motivo)).toBeVisible()
   })

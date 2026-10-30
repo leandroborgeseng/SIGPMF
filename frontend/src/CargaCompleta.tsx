@@ -166,13 +166,14 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   return (
     <div className="carga-completa">
       {!rodando && (
-        <span className="com-dica">
-          <button className="btn outlined" disabled={!ok || enviando} aria-label={`Executar carga completa de ${nome}`}
-            aria-describedby={!ok && porque ? idMotivo : undefined} title={!ok && porque ? porque : undefined} onClick={abrir}>
+        <div className="com-dica">
+          {/* M3: liberada, a carga completa é a ação principal (primário); M2: motivo abaixo, em largura total */}
+          <button className={ok ? 'btn' : 'btn outlined'} disabled={!ok || enviando} aria-label={`Executar carga completa de ${nome}`}
+            aria-describedby={!ok && porque ? idMotivo : undefined} onClick={abrir}>
             Executar carga completa
           </button>
-          {!ok && porque && <span id={idMotivo} className="sutil motivo-desabilitado"> {porque}</span>}
-        </span>
+          {!ok && porque && <p id={idMotivo} className="sutil motivo-desabilitado">{porque}</p>}
+        </div>
       )}
 
       {confRetomar && (
