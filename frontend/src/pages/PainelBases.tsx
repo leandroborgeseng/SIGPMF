@@ -16,6 +16,7 @@ export type Base = {
   completa_em_andamento?: boolean
   exige_amostra?: boolean; amostra?: ResumoAmostra | null; amostra_limite?: number
   bloqueio?: Bloqueio | null
+  agenda_pausada?: boolean; agenda_pausada_motivo?: string | null
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
 /** CC12: execução (amostra ou completa) que segura o conector. */
@@ -246,7 +247,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizand
       {exige && b.conector_id && (
         <div className="acoes" id={`acoes-${b.conector_id}`}>
           <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
-            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} pendente={pendente} />
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} pendente={pendente}
+            pausada={b.agenda_pausada ? (b.agenda_pausada_motivo ?? null) : null} />
           {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
           <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
             motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />
@@ -258,11 +260,12 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim, atualizand
       )}
       {ehAdmin && b.tem_conector && !(b.exige_amostra && b.conector_id) && (
         <div className="acoes">
-          <button className="btn" disabled={rodandoAlgo || !b.pode_carregar || travada} aria-label={`Puxar amostra de ${b.nome}`}
+          <button className="btn" disabled={rodandoAlgo || !b.pode_carregar || travada || b.agenda_pausada === true} aria-label={`Puxar amostra de ${b.nome}`}
             aria-describedby={travada ? `motivo-trava-${b.id}` : undefined} onClick={() => onAcao(b, 'amostra')}>
             {rodando === b.id ? 'Carregando…' : 'Puxar amostra'}
           </button>
           {!b.pode_carregar && <span className="sutil"> {b.motivo_bloqueio}</span>}
+          {b.pode_carregar && b.agenda_pausada && <p className="sutil motivo-pausada">{b.agenda_pausada_motivo}</p>}
           {b.pode_carregar && travada && bl && (
             <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>
           )}

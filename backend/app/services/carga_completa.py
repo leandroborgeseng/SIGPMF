@@ -187,6 +187,20 @@ class Bloqueado(RuntimeError):
     """Carga completa não liberada (motivo é seguro para a UI)."""
 
 
+PAUSADA_NA_AGENDA = "Fonte pausada na agenda. Reative antes de rodar a carga completa."
+PAUSADA_NA_AGENDA_AMOSTRA = "Fonte pausada na agenda. Reative antes de rodar a amostra."
+
+
+def motivo_pausada_agenda(db: Session, conector: str, acao: str = "completa") -> str | None:
+    """CT26 v2: item da agenda com ativo=false bloqueia a carga completa e toda rota de amostra (pedir, aprovar,
+    rodar). Só lê a agenda: nada é criado e `forcar` não muda. Sem item na agenda, nada muda."""
+    from app.models.controle import Agendamento
+    ativo = db.scalar(select(Agendamento.ativo).where(Agendamento.conector == conector))
+    if ativo is not False:
+        return None
+    return PAUSADA_NA_AGENDA_AMOSTRA if acao == "amostra" else PAUSADA_NA_AGENDA
+
+
 def _sistema(conector: str) -> str:
     if conector not in cc.CONECTORES:
         raise cc.ConectorDesconhecido(conector)
@@ -819,6 +833,8 @@ def situacao(db: Session, conector: str) -> dict:
                    .order_by(Execucao.id.desc()).limit(1))
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     motivo = motivo_bloqueio(db, conector) if conector in cc.CONECTORES else None
+    if motivo is None and (ex is None or ex.status != "em_andamento"):
+        motivo = motivo_pausada_agenda(db, conector)  # CT26: card mostra o motivo e desabilita o botão
     if motivo is None and (ex is None or ex.status != "em_andamento"):
         motivo = recursos.motivo_disco_cheio(exige_leitura=True)
     execucao, sem_progresso = None, False
