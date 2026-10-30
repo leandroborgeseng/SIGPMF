@@ -118,6 +118,8 @@ def fase(a):
     elif a.fase == "explain":
         marca = db.execute(text("SELECT expandido_ate FROM controle.camadas_marca WHERE sistema = :s AND tabela = :t"),
                            {"s": sis, "t": tab}).scalar() or 0
+        # o delta de UMA rodada (1% da tabela): a marca de antes da última rodada, para o plano ter linhas
+        marca = max(0, marca - max(a.fatos // 100, 1))
         p = {"sis": sis, "tab": tab, "marca": marca}
         ex = "EXPLAIN (ANALYZE, BUFFERS) "
         db.execute(text("ANALYZE bronze.registros; ANALYZE bronze.ultima_versao"))
@@ -182,7 +184,7 @@ def principal(a):
         _fase(a, "delta", "--fatos", str(a.fatos), "--v", str(v))
         _fase(a, "sincroniza")
         res[f"incremental_{v}"] = _fase(a, "incremental")
-    res["explain"] = _fase(a, "explain")
+    res["explain"] = _fase(a, "explain", "--fatos", str(a.fatos))
     inc = _fase(a, "snapshot")["snap"]
     res["recomposicao"] = _fase(a, "recompoe")
     rec = _fase(a, "snapshot")["snap"]
