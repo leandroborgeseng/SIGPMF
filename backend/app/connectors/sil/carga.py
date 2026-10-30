@@ -62,10 +62,12 @@ def consultar_lote(cliente: ClienteSil, endpoint: EndpointSil, chaves: Iterable[
 
 def _lotes_configurados() -> int:
     """SIL11 / TL: por padrão UM lote do consultarlote. Mais lotes só com SIL_CONSULTARLOTE_MAX_LOTES explícito."""
+    import logging
     import os
     try:
         return max(1, int(os.environ.get("SIL_CONSULTARLOTE_MAX_LOTES") or 1))
-    except ValueError:
+    except ValueError:  # "nan", "inf", "1.5", texto: int() recusa -> 1 lote (valor nunca vai ao log)
+        logging.getLogger("sigpmf.sil").warning("SIL_CONSULTARLOTE_MAX_LOTES inválida; usando o padrão 1.")
         return 1
 
 

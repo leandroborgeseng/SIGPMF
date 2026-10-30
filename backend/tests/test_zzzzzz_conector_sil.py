@@ -593,3 +593,14 @@ def test_sandbox_rede_nao_cai_para_producao_com_warning_limpo(erro, caplog):
     tudo = " ".join(r.getMessage() for r in caplog.records)
     for proibido in ("zzteste.invalid", "http", SEGREDO_SINTETICO, "zz-id", "ZZTOKEN"):
         assert proibido not in tudo
+
+
+def test_amostra_sil_com_nan_roda_com_padrao(client, tokens, db, sil_env, sil_sincrono, monkeypatch):
+    """SIL_AMOSTRA_MAX_LOTES=nan não derruba a amostra: roda até o padrão de lotes e conclui."""
+    from app.services import amostra_sil as sil
+    monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "nan")
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    j = r.json()
+    assert j["status"] in ("sucesso", "sem_novidades"), j
+    assert 1 <= j["lotes"] <= sil.LOTES_AMOSTRA_PADRAO
