@@ -13,7 +13,8 @@ from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import delete, func, insert, literal_column, select
+from sqlalchemy import Text, delete, func, insert, literal, literal_column, select, true
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -26,26 +27,39 @@ LOTE = 5000
 CODI_SQL = literal_column("left(btrim(bronze.registros.dados->>'CODI'), 22)")
 
 
-def _ultimas(db: Session, sistema: str, tabela: str, chaves=None, codis=None):
-    """Última versão (produção, sem quarentena) de cada id_origem, na ordem de id. `chaves`/`codis` restringem às
-    chaves ou aos CODIs pedidos (Parte 2, recálculo por chave)."""
+LOTE_CHAVES = 500  # chaves/CODIs por consulta no recálculo incremental (sondas de índice, sem cursor no servidor)
+
+
+def _ultimas(db: Session, sistema: str, tabela: str, chaves=None, codis=None, pulso=None):
+    """Última versão (produção, sem quarentena: predicado D6) de cada id_origem, na ordem de id. `chaves`/`codis`
+    restringem às chaves ou aos CODIs pedidos (Parte 2, recálculo por chave).
+
+    D8 (Analista 30/10): o recálculo por CODI fazia `IN (2000 CODIs)` + max(id) GROUP BY num cursor no servidor; a
+    estimativa da expressão do CODI (índice parcial) não era usada, o plano virava Seq Scan da tabela inteira a cada
+    lote e o FETCH FORWARD parava >20 min. Agora: lotes de LOTE_CHAVES, um LATERAL por chave (OFFSET 0 impede o
+    achatamento) que sonda o índice (ix_registros_iptu_codi para CODI, ix_bronze_registros_ultima para id_origem), e a
+    última versão por chave é escolhida aqui. `pulso()` é chamado a cada lote (sinal de vida/cancelamento)."""
     R = RegistroBronze
     w = [R.sistema_origem == sistema, R.tabela == tabela, R.quarentena.is_(None), R.ambiente_origem == "producao"]
-    if chaves is not None:
-        w.append(R.id_origem.in_(list(chaves)))
-    if codis is not None:
-        w.append(CODI_SQL.in_(list(codis)))
-    # Parte 2: a ultima_versao decide QUAIS chaves/CODIs entram (o delta); a versão é lida aqui, pelo mesmo
-    # predicado D6, via índice (CODI ou id_origem) + max(id). Juntar com a ultima_versao fazia o plano varrê-la a
-    # cada lote (medido na bancada).
-    sub = select(func.max(R.id)).where(*w).group_by(R.id_origem)
-    q = select(R.id_origem, R.dados).where(R.id.in_(sub)).order_by(R.id).execution_options(yield_per=LOTE)
-    if codis is None:
+    if chaves is None and codis is None:  # recomposição: max(id) por chave via índice parcial, streaming
+        sub = select(func.max(R.id)).where(*w).group_by(R.id_origem)
+        q = select(R.id_origem, R.dados).where(R.id.in_(sub)).order_by(R.id).execution_options(yield_per=LOTE)
         yield from db.execute(q)
         return
-    alvo = set(codis)
-    for io, d in db.execute(q):
-        if _s(d.get("CODI"), 22) in alvo:
+    valores = sorted({str(v) for v in (codis if codis is not None else chaves) if v is not None})
+    alvo = CODI_SQL if codis is not None else R.id_origem
+    melhor: dict[str, tuple[int, dict]] = {}
+    for i in range(0, len(valores), LOTE_CHAVES):
+        k = func.unnest(literal(valores[i:i + LOTE_CHAVES], ARRAY(Text))).table_valued("v").render_derived(name="k")
+        lat = (select(R.id, R.id_origem, R.dados).where(*w, alvo == k.c.v).offset(0).lateral("r"))
+        for rid, io, d in db.execute(select(lat.c.id, lat.c.id_origem, lat.c.dados).select_from(k).join(lat, true())):
+            if io not in melhor or rid > melhor[io][0]:
+                melhor[io] = (rid, d)
+        if pulso is not None:
+            pulso()
+    alvo_codis = set(codis) if codis is not None else None
+    for io, (_rid, d) in sorted(melhor.items(), key=lambda x: x[1][0]):
+        if alvo_codis is None or _s(d.get("CODI"), 22) in alvo_codis:
             yield io, d
 
 

@@ -316,3 +316,18 @@ def test_pi8_retomar_camadas_segue_do_checkpoint(db, base, monkeypatch, client, 
     monkeypatch.setattr(pr, "reconstruir", original)
     rodada(db, recompor=True)  # = execução sem interrupção
     assert snapshot(db) == inc
+
+
+def test_d8_recalculo_por_codi_em_lotes_com_pulso_e_mesma_versao(db, base, monkeypatch):
+    """D8: leitura por CODI/chave em lotes (sonda de índice), pulso a cada lote, mesma versão do max(id) por chave."""
+    from app.silver import tributario as t
+    codis = {"01111010010100", "02222020020200", "03333030030300"}
+    monkeypatch.setattr(t, "LOTE_CHAVES", 1)
+    batidas = []
+    novo = list(t._ultimas(db, "IPTU", "Cadastro_Possuidor", codis=codis, pulso=lambda: batidas.append(1)))
+    R = RegistroBronze
+    sub = select(func.max(R.id)).where(R.sistema_origem == "IPTU", R.tabela == "Cadastro_Possuidor",
+                                       R.quarentena.is_(None), R.ambiente_origem == "producao",
+                                       t.CODI_SQL.in_(list(codis))).group_by(R.id_origem)
+    antigo = [(io, d) for io, d in db.execute(select(R.id_origem, R.dados).where(R.id.in_(sub)).order_by(R.id))]
+    assert novo == antigo and len(batidas) == 3
