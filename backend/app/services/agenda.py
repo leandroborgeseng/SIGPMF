@@ -592,7 +592,9 @@ class AgendaTravada(RuntimeError):
 
 
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
-              ordem: int | None = None) -> Agendamento:
+              ordem: int | None = None, forcar: bool | None = None) -> Agendamento:
+    if forcar is False and horario is None and ativo is None and ordem is None:
+        return limpar_forcar(db, conector, usuario)  # nunca passa pela trava amostra:SIL (AgendaTravada)
     # B1: antes da trava da linha (o reset segura a linha FOR UPDATE e a trava); try = sem esperar
     if ativo and conector == "sil" and not db.execute(
             text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_TRAVA_SIL}).scalar():
@@ -615,6 +617,10 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
             ag.forcar, forcar_cancelado = False, True
     if ordem is not None:
         ag.ordem = ordem
+    forcar_limpo = None
+    if forcar is False:
+        forcar_limpo = ag.forcar
+        ag.forcar = False
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
@@ -622,6 +628,27 @@ def atualizar(db: Session, conector: str, usuario: str, horario: str | None = No
     if forcar_cancelado:
         audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
                {"motivo": "forcar_cancelado_desligado", "conector": conector})
+    if forcar_limpo is not None:
+        _audita_forcar_limpo(db, usuario, conector, forcar_limpo)
+    return ag
+
+
+def _audita_forcar_limpo(db: Session, usuario: str, conector: str, antes: bool) -> None:
+    audita(db, usuario, "agenda_forcar_limpo", f"agendamento:{conector}",
+           {"conector": conector, "antes": {"forcar": bool(antes)}, "depois": {"forcar": False},
+            "em": datetime.now(UTC).isoformat()})
+
+
+def limpar_forcar(db: Session, conector: str, usuario: str) -> Agendamento:
+    """Limpa um "Executar agora" pendente (forcar=false). Idempotente e sempre auditado (valor anterior incluso).
+    Não usa a trava amostra:SIL: limpar nunca é bloqueado por carga ou reset em andamento."""
+    ag = _agendamento(db, conector)
+    antes = bool(ag.forcar)
+    db.execute(update(Agendamento).where(Agendamento.conector == conector)
+               .values(forcar=False, atualizado_por=usuario, atualizado_em=datetime.now(UTC)))
+    db.commit()
+    db.refresh(ag)
+    _audita_forcar_limpo(db, usuario, conector, antes)
     return ag
 
 
