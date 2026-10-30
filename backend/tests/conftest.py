@@ -114,5 +114,5 @@ def _ct26_agenda_nao_pausa_completa(request, monkeypatch):
         yield
         return
     from app.services import carga_completa as ccomp
-    monkeypatch.setattr(ccomp, "motivo_pausada_agenda", lambda db, conector: None)
+    monkeypatch.setattr(ccomp, "motivo_pausada_agenda", lambda db, conector, acao="completa": None)
     yield

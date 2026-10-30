@@ -188,14 +188,17 @@ class Bloqueado(RuntimeError):
 
 
 PAUSADA_NA_AGENDA = "Fonte pausada na agenda. Reative antes de rodar a carga completa."
+PAUSADA_NA_AGENDA_AMOSTRA = "Fonte pausada na agenda. Reative antes de rodar a amostra."
 
 
-def motivo_pausada_agenda(db: Session, conector: str) -> str | None:
-    """CT26: item da agenda com ativo=false bloqueia a carga completa manual (botão "Carga completa").
-    Sem item na agenda, nada muda. A amostra continua liberada (não passa por aqui)."""
+def motivo_pausada_agenda(db: Session, conector: str, acao: str = "completa") -> str | None:
+    """CT26 v2: item da agenda com ativo=false bloqueia a carga completa e toda rota de amostra (pedir, aprovar,
+    rodar). Só lê a agenda: nada é criado e `forcar` não muda. Sem item na agenda, nada muda."""
     from app.models.controle import Agendamento
     ativo = db.scalar(select(Agendamento.ativo).where(Agendamento.conector == conector))
-    return PAUSADA_NA_AGENDA if ativo is False else None
+    if ativo is not False:
+        return None
+    return PAUSADA_NA_AGENDA_AMOSTRA if acao == "amostra" else PAUSADA_NA_AGENDA
 
 
 def _sistema(conector: str) -> str:

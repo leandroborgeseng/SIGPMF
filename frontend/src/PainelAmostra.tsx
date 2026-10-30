@@ -33,9 +33,11 @@ export function estadoAmostra(am: ResumoAmostra | null, rodando: boolean): Estad
 
 export const CONFIRMA_PENDENTE = 'Há uma carga completa pendente. Ela vai começar agora. Continuar?'
 
-export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado, pendente = false }: {
+export default function PainelAmostra({ conector, nome, limite, inicial, onMudou, desabilitado = false, onEstado, pendente = false, pausada = null }: {
   conector: string; nome: string; limite: number; inicial: ResumoAmostra | null; onMudou: () => void; desabilitado?: boolean
   onEstado?: (e: EstadoAmostra) => void; pendente?: boolean
+  /** CT26c: fonte pausada na agenda (ativo=false): motivo; rodar e aprovar ficam desabilitados */
+  pausada?: string | null
 }) {
   const [confirma, setConfirma] = useState(false)
   const [am, setAm] = useState<ResumoAmostra | null>(inicial)
@@ -98,9 +100,10 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
   return (
     <div className="painel-amostra" aria-labelledby={`t-am-${conector}`}>
       <p id={`t-am-${conector}`} className="sr-only">Amostra de {nome}</p>
+      {pausada && <p className="sutil motivo-pausada" role="status">{pausada}</p>}
       {ok && am.aprovada && <p><span className="selo pronto"><i aria-hidden="true" />Amostra aprovada</span></p>}
       {(!ok || rodando) && (
-        <button className="btn" disabled={rodando || desabilitado} aria-busy={rodando} onClick={rodar}
+        <button className="btn" disabled={rodando || desabilitado || !!pausada} aria-busy={rodando} onClick={rodar}
           aria-label={rodando ? `Rodando amostra de ${nome}…` : `${rotuloRodar(limite)} de ${nome}`}>
           {rodando ? <><span className="spinner" aria-hidden="true" /> Rodando amostra…</> : rotuloRodar(limite)}
         </button>
@@ -123,7 +126,7 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
               </div>
             )}
             <p className="acoes">
-              {!am.aprovada && <button className="btn" disabled={aprovando} onClick={pendente ? () => setConfirma(true) : aprovar} aria-label={`Aprovar amostra de ${nome}`}>Aprovar amostra</button>}
+              {!am.aprovada && <button className="btn" disabled={aprovando || !!pausada} onClick={pendente ? () => setConfirma(true) : aprovar} aria-label={`Aprovar amostra de ${nome}`}>Aprovar amostra</button>}
               {confirma && (
                 <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfirma(false) }}>
                   <div role="alertdialog" aria-modal="true" aria-labelledby={`t-ap-${conector}`} className="dialogo"
@@ -136,7 +139,7 @@ export default function PainelAmostra({ conector, nome, limite, inicial, onMudou
                   </div>
                 </div>
               )}
-              {' '}<button className={am.aprovada ? 'btn ghost' : 'btn outlined'} disabled={desabilitado} onClick={rodar} aria-label={`Rodar de novo a amostra de ${nome}`}>Rodar de novo</button>
+              {' '}<button className={am.aprovada ? 'btn ghost' : 'btn outlined'} disabled={desabilitado || !!pausada} onClick={rodar} aria-label={`Rodar de novo a amostra de ${nome}`}>Rodar de novo</button>
             </p>
           </div>
         )}
