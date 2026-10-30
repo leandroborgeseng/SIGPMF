@@ -22,7 +22,13 @@ from app.models.controle import Execucao, Log
 
 CHAVE_TRAVA = zlib.crc32(b"amostra:SIL")
 ENDPOINT_AMOSTRA = "empresas_lote"
-LOTES_POR_EXECUCAO = 1  # TL: um lote por execução, independentemente de SIL_CONSULTARLOTE_MAX_LOTES
+LOTES_AMOSTRA_PADRAO = 20  # TL 29/10: ~1.000 linhas (lotes de ~50); o teto de 1.000 linhas (LIMITE_LOTE) continua
+
+
+def lotes_por_execucao() -> int:
+    """Lotes da amostra SIL: SIL_AMOSTRA_MAX_LOTES (padrão 20, 1 a 100). Independe de SIL_CONSULTARLOTE_MAX_LOTES."""
+    from app.connectors.sil.config import _num
+    return int(_num("SIL_AMOSTRA_MAX_LOTES", LOTES_AMOSTRA_PADRAO, 1, 100))
 STATUS_SUCESSO = ("sucesso", "sem_novidades")  # demais (falha, interrompida, origem vazia...) -> etapa "falha"
 
 
@@ -88,7 +94,7 @@ def rodar(ex_id: int, usuario: str, nome_endpoint: str, trava, cliente=None) -> 
     db = SessionLocal()
     try:
         ex = carga.executar_enriquecimento(db, usuario, endpoint(nome_endpoint), cliente=cliente,
-                                           execucao_id=ex_id, max_lotes=LOTES_POR_EXECUCAO)
+                                           execucao_id=ex_id, max_lotes=lotes_por_execucao())
         ex.etapa = "concluida" if ex.status in STATUS_SUCESSO else "falha"
         db.commit()
         audita(db, usuario, "amostra_sil_executada", f"execucao:{ex_id}",

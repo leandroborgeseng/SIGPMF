@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.controle import Agendamento, CheckpointCarga, Execucao, Sistema, TabelaCatalogo
+from app.services.tipo_execucao import texto_limite, tipo_texto
 
 FUSO = ZoneInfo("America/Sao_Paulo")
 MIN_LOTES_PREVISAO = 3  # PP5: antes do 3º lote, "calculando…"
@@ -35,7 +36,7 @@ MOTIVOS = {
     "fora_janela": "Fora da janela noturna",
     "sei_token": "Token do SEI não configurado",
     "sei_reclassificacao": "Reclassificação incremental pendente",
-    "sem_amostra": "Falta rodar a amostra com sucesso",
+    "sem_amostra": "Falta a amostra aprovada: clique em \"Rodar amostra\" no card da fonte, em Bases de origem",
     "falha_origem": "Falha ao ler a origem",
     "falha": "A carga falhou; o checkpoint ficou no último lote gravado",
     "cancelada": "Cancelada por um administrador; o que já foi gravado fica",
@@ -150,7 +151,7 @@ def progresso(db: Session, f: Fonte, ex: Execucao, tabelas: list[dict], agora: d
     sinal = _utc(ex.atualizado_em) or ini
     sem_sinal_min = max(0, int((agora - sinal).total_seconds() // 60))
     limite = int(get_settings().ge_orfa_min)
-    return {"execucao_id": ex.id, "modo": "Incremental" if ex.modo == "incremental" else "Carga completa",
+    return {"execucao_id": ex.id, "modo": tipo_texto(ex),
             "lote": lote, "lotes_total": lotes_total, "percentual": pct, "total_origem": total,
             "origem_total": ORIGEM_TOTAL.get(origem) if origem else None, "linhas_processadas": processadas,
             "iniciado_em": ini, "decorrido_s": decorrido, "calculando": calculando,
@@ -213,10 +214,12 @@ def fonte(db: Session, f: Fonte, agora: datetime) -> dict:
         status, motivo = CANCELADA, "cancelada"
     elif ult is not None and ult.status in ("pausada", "interrompida"):
         status, motivo = PAUSADA, _motivo_fim(ult)
-    elif ag is not None and not ag.ativo:
+    elif ag is not None and (not ag.ativo or not get_settings().agenda_habilitada):
+        # desligada (na linha ou no ambiente): nunca "próxima às ..." (antes um "Executar agora" pendente fazia
+        # agenda.proxima() devolver `agora` e a tela mostrava a hora atual como próxima)
         status = PAUSADA
         motivo = "agenda_desligada"
-    elif ag is not None and ag.ativo and get_settings().agenda_habilitada:
+    elif ag is not None:
         from app.services import agenda as agm
         ini, fim = agm.janela(get_settings().agenda_janela)
         status, aguardando_em = AGUARDANDO, agm.proxima(ag, agora, ini, fim)
@@ -228,7 +231,7 @@ def fonte(db: Session, f: Fonte, agora: datetime) -> dict:
     if ult is not None and rodando is None:
         ultima = {"execucao_id": ult.id, "finalizado_em": _utc(ult.finalizado_em), "lidas": int(ult.lidos or 0),
                   "gravadas": int(ult.novos or 0) + int(ult.atualizados or 0), "lotes": int(ult.lotes or 0),
-                  "modo": "Incremental" if ult.modo == "incremental" else "Carga completa",
+                  "modo": tipo_texto(ult), "texto_limite": texto_limite(ult),  # CT15/UXP9: tipo real e teto
                   # #42: aviso de sucesso com tabela vazia ({codigo, tabelas, texto}); None sem aviso ou sem o #42
                   "alerta": _alerta(ult)}
     texto_status = STATUS_TEXTO[status]

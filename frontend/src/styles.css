@@ -435,3 +435,14 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .btn.danger[disabled], .btn.danger[disabled]:hover { background: var(--muted-bg); color: var(--muted); border-color: var(--line); } /* B1 PR-06: desabilitado padrão (AA) */
 /* M2 PR-06: em telas com a barra inferior fixa (64px), o fim da tela de TI não fica escondido atrás dela */
 @media (max-width: 1023px) { .acesso-sec { padding-bottom: calc(64px + 16px + env(safe-area-inset-bottom)); } }
+
+/* PR-A: amostra obrigatória no card (UXA1–UXA5) */
+.painel-amostra { display: flex; flex-direction: column; gap: .4rem; width: 100%; }
+.painel-amostra .resultado-amostra p { margin: .2rem 0; }
+.spinner { display: inline-block; width: .9em; height: .9em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: giro .8s linear infinite; vertical-align: -0.1em; }
+@keyframes giro { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.btn-link { background: none; border: 0; padding: 0; color: var(--link, #0b5cad); text-decoration: underline; cursor: pointer; font: inherit; min-height: 24px; }
+.lista-erros { margin: .3rem 0; padding-left: 1.1rem; font-size: .9em; overflow-wrap: anywhere; }
+.carga-completa .com-dica { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; width: 100%; }
+.carga-completa .com-dica .motivo-desabilitado { margin: 0; width: 100%; }

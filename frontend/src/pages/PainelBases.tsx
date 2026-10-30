@@ -2,15 +2,18 @@ import { useMemo, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import CargaCompleta from '../CargaCompleta'
+import PainelAmostra, { estadoAmostra, type EstadoAmostra, type ResumoAmostra, SELO_AMOSTRA } from '../PainelAmostra'
 
 export type Contagens = { bronze: number; prata: number; ouro: number; pendentes: number }
 export type ErroCarga = { classe: string; numero: number | null; tabela: string | null; objeto: string | null; local: string | null; motivo: string }
-export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null }
+export type UltimaCarga = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; mensagem: string | null; erro?: ErroCarga | null
+  tipo_texto?: string; texto_limite?: string | null }
 export type Base = {
   id: number; nome: string; descricao: string | null; grupo: string; triagem: string; status: string; prioridade: number | null
   tem_conector: boolean; conector_id?: string | null; pode_carregar: boolean; motivo_bloqueio: string | null; tem_amostra: boolean; com_erro: boolean; origem_vazia?: boolean
   completa_disponivel?: boolean; completa_liberada?: boolean; completa_motivo?: string | null
   completa_em_andamento?: boolean
+  exige_amostra?: boolean; amostra?: ResumoAmostra | null; amostra_limite?: number
   bloqueio?: Bloqueio | null
   contagens: Contagens; ultima_carga: UltimaCarga | null
 }
@@ -171,7 +174,11 @@ export default function PainelBases({ bases, erro, onRecarregar, ehAdmin, cargaH
 }
 
 function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Base; ehAdmin: boolean; habilitada: boolean; rodando: number | null; onAcao: (b: Base, m: Modo) => void; onFim: () => void }) {
-  const st = STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' }
+  const seloAmostra = b.tem_conector && b.exige_amostra === true && !!b.conector_id
+  const exige = ehAdmin && seloAmostra
+  const [estAm, setEstAm] = useState<EstadoAmostra>(estadoAmostra(b.amostra ?? null, false))
+  // M1: fonte que exige amostra: o selo segue o estado da amostra; o verde só depois da aprovação
+  const st = seloAmostra ? SELO_AMOSTRA[estAm] : (STATUS[b.status] ?? { rotulo: b.status, classe: 'triado' })
   const c = b.contagens
   const n = (v: number) => (b.tem_conector ? milhar(v) : '—')
   const pPrata = b.tem_conector ? perda(c.bronze, c.prata) : null
@@ -190,7 +197,8 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       </p>
       {b.descricao && <p className="sutil">{b.descricao}</p>}
       {bl && <AvisoBloqueio bl={bl} nome={b.nome} conector={b.conector_id ?? String(b.id)} ehAdmin={ehAdmin} onFim={onFim} />}
-      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
+      <p>Última carga: {u ? `${dataHoraBR(u.iniciado_em)} · ${u.tipo_texto ?? TIPO[u.tipo] ?? u.tipo} · ${u.status === 'origem_vazia' ? 'origem vazia' : u.status}` : 'Nunca carregado'}</p>
+      {u?.texto_limite && <p className="aviso-ambar" role="status">{u.texto_limite}</p>}
       {u?.status === 'origem_vazia' && <p className="aviso-ambar" role="status">{MSG_ORIGEM_VAZIA}</p>}
       {u?.status === 'falha' && u.erro && (
         <div className="motivo-falha">
@@ -220,7 +228,20 @@ function CartaoBase({ b, ehAdmin, habilitada, rodando, onAcao, onFim }: { b: Bas
       )}
       {!ccRodando && <p>Pendências: {b.tem_conector ? `${milhar(c.pendentes)} sem correspondência` : '—'}</p>}
       {!b.tem_conector && <p className="sutil">{b.status === 'excluido' ? 'Base descartada na triagem' : 'Conector ainda não implementado'}</p>}
-      {ehAdmin && b.tem_conector && (
+      {exige && b.conector_id && (
+        <div className="acoes" id={`acoes-${b.conector_id}`}>
+          <PainelAmostra conector={b.conector_id} nome={b.nome} limite={b.amostra_limite ?? 1000} inicial={b.amostra ?? null}
+            onMudou={onFim} desabilitado={rodandoAlgo || travada} onEstado={setEstAm} />
+          {travada && bl && <p className="sutil motivo-trava" id={`motivo-trava-${b.id}`}>Indisponível: {bl.mensagem}</p>}
+          <CargaCompleta key={`${b.conector_id}-${b.completa_liberada === true}`} conector={b.conector_id} liberada={b.completa_liberada === true}
+            motivo={b.completa_motivo ?? null} onFim={onFim} onRodando={setCcRodando} />
+          <details className="menu-acoes">
+            <summary>Mais ações de {b.nome}</summary>
+            <button className="btn outlined" disabled={ocupado || !b.pode_carregar} aria-label={`Reprocessar ${b.nome}`} onClick={() => onAcao(b, 'reprocessar')}>Reprocessar</button>
+          </details>
+        </div>
+      )}
+      {ehAdmin && b.tem_conector && !(b.exige_amostra && b.conector_id) && (
         <div className="acoes">
           <button className="btn" disabled={rodandoAlgo || !b.pode_carregar || travada} aria-label={`Puxar amostra de ${b.nome}`}
             aria-describedby={travada ? `motivo-trava-${b.id}` : undefined} onClick={() => onAcao(b, 'amostra')}>
