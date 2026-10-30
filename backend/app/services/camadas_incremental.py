@@ -188,7 +188,7 @@ def executa(db: Session, ate: int, ex_id: int | None = None, cancelado=None, pro
     total = _pendentes(db)
     feitos = 0
     por_tipo: dict[str, int] = {}
-    if progresso:
+    if progresso and total:  # sem fila não manda "0 de 0" (a tela mantém o sinal de vida do Pulso)
         progresso(0, total)
     for tipo in ORDEM:
         while True:

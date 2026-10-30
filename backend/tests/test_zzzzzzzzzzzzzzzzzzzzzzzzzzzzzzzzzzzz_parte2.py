@@ -221,3 +221,57 @@ def test_d4_hash_conteudo_preenchido_na_carga_nova(db, base):
     db.commit()
     r = db.scalar(select(RegistroBronze).where(RegistroBronze.id_origem == "ZZT0000003"))
     assert r.hash_conteudo == ingestao.hash_registro(regs[0]) == r.hash  # sem rowversion: o mesmo do hash atual
+
+
+def test_d6b_ultimas_versoes_em_ordem_de_id(db, base):
+    ids = [r.id for r, _ in pr._ultimas_versoes(db)]
+    assert ids == sorted(ids) and len(ids) == len(set(ids))  # ordem final por id (desempate do idx.melhor)
+
+
+def test_d6_regressao_linear_com_homologacao_e_quarentena(db, base):
+    """Prata indexada == linear (APP_ENV=test) com versões em quarentena e de homologação na bronze."""
+    from tests import sintetico_prata
+    io = "ZZT0000009"
+    d = {"Matricula": io, "Nome": "ZZTESTE LINEAR", "Dt_Nasc": "1979-01-01", "Mae": "ZZTESTE MAE", "Sexo": "F"}
+    _bronze(db, base, io, d)
+    _bronze(db, base, io, dict(d, Nome="ZZTESTE Q"), quarentena="chave_nula")
+    _bronze(db, base, io, dict(d, Nome="ZZTESTE H"), ambiente="sandbox")
+    sp = db.begin_nested()
+    pr.reconstruir(db, indexado=False)
+    linear = sintetico_prata.snapshot(db)
+    sp.rollback()
+    sp = db.begin_nested()
+    pr.reconstruir(db)
+    assert sintetico_prata.snapshot(db) == linear
+    sp.rollback()
+    db.rollback()
+
+
+def test_pi5_diferenca_esperada_so_nas_chaves_de_homologacao(db, base):
+    """D6 no PI5: comparado ao predicado antigo (só quarentena), a diferença são exatamente as chaves que só existem
+    em homologação (padrão SIL sandbox, as marcadas pela 0020). A contagem vai para a evidência."""
+    for k in range(3):
+        _bronze(db, base, f"ZZSB{k}", {"Matricula": f"ZZSB{k}", "Nome": "ZZTESTE SANDBOX"}, ambiente="sandbox")
+    db.flush()
+    R = RegistroBronze
+    antigo = {(s, t, io) for s, t, io in db.execute(select(R.sistema_origem, R.tabela, R.id_origem)
+                                                     .where(R.quarentena.is_(None)).distinct())}
+    novo = {(s, t, io) for s, t, io in db.execute(select(R.sistema_origem, R.tabela, R.id_origem)
+                                                   .where(R.quarentena.is_(None), R.ambiente_origem == "producao")
+                                                   .distinct())}
+    so_homolog = {(s, t, io) for s, t, io in db.execute(select(R.sistema_origem, R.tabela, R.id_origem).where(
+        R.ambiente_origem != "producao").distinct())} - novo
+    assert antigo - novo == so_homolog and len(so_homolog) >= 3
+    db.rollback()
+
+
+def test_pulso_e_sem_zero_por_cento_no_incremental(db, base, monkeypatch):
+    monkeypatch.setattr(ci, "LOTE", 1)
+    _novo_trib_e_fatos(db, base, 11)
+    vistos, ouro = [], []
+    ate = uv.sincroniza(db)
+    ci.executa(db, ate, progresso=lambda n, t: vistos.append((n, t)), ouro=lambda n, t: ouro.append((n, t)))
+    feitos = [n for n, _ in vistos]
+    assert feitos == sorted(feitos)  # contador nunca volta
+    assert all(t and t > 0 and n <= t for n, t in vistos)  # sempre com total: nunca "0 de nada"
+    assert vistos[-1][0] == vistos[-1][1] > 0 and ouro  # chega a 100% e o ouro (recomposto) dá sinal
