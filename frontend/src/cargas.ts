@@ -87,8 +87,12 @@ export function ariaFases(etapa: string | null, status?: string): string {
   const i = indiceFase(etapa)
   return status === 'erro' ? `Fase ${i + 1} de ${FASES.length}: ${FASES[i]}, com erro` : ariaFase(etapa)
 }
-export function textoErro(motivo: string | null): string {
-  return `${(motivo ?? 'A carga falhou').replace(/\.$/, '')}. Para tentar de novo, use Rodar de novo em Conectores.`
+/** UX57-1: o texto de erro acompanha a fase com ✕ (a mesma de partesFases) e nunca cita outra fase. */
+export const FALHA_FASE = ['Falha ao ler a origem.', 'Falha ao processar a Prata.', 'Falha ao processar o Ouro.'] as const
+export const COMPLEMENTO_ERRO = 'Para tentar de novo, use Rodar de novo em Conectores.'
+export function textoErro(etapa: string | null): string {
+  const i = Math.min(Math.max(indiceFase(etapa), 0), FALHA_FASE.length - 1)
+  return `${FALHA_FASE[i]} ${COMPLEMENTO_ERRO}`
 }
 
 /** CT6/CT17/UXC2: progresso da subetapa. Sem total: nunca percentual. Sem contador: consulta sem contagem parcial. */
