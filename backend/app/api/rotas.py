@@ -97,7 +97,7 @@ def _migracao(db: Session) -> str | None:
     """version_num do alembic (só o id da revisão, sem dado sensível). Falha -> None; nunca derruba o health."""
     try:
         with db.begin_nested():
-            v = db.execute(text("select version_num from alembic_version limit 1")).scalar()
+            v = db.execute(text("select version_num from controle.alembic_version limit 1")).scalar()
         return str(v) if v is not None else None
     except Exception as exc:  # noqa: BLE001 - só a classe no log, nada na resposta
         _log_health.warning("health: migracao ilegivel (%s)", type(exc).__name__)

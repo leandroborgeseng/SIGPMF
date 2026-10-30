@@ -201,7 +201,7 @@ def test_health_traz_migracao(client):
     from app.core.db import SessionLocal
     with SessionLocal() as s:
         try:
-            esperado = s.execute(text("select version_num from alembic_version")).scalar()
+            esperado = s.execute(text("select version_num from controle.alembic_version")).scalar()
         except Exception:  # noqa: BLE001 - banco de teste sem alembic_version
             esperado = None
     assert "migracao" in r.json() and r.json()["migracao"] == esperado
@@ -256,3 +256,33 @@ def test_d2_ttl_zero_em_teste_espera_o_fim(db, monkeypatch):
     monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", "0.05")
     v, atualizando = contagens_cache.obter(db, "zzteste-d2t", lambda _db: (time.sleep(0.3), 7)[1])
     assert v == 7 and atualizando is False
+
+
+def test_d3_health_le_controle_alembic_version_apos_upgrade_real(banco, client):
+    """Banco _test migrado de verdade (alembic upgrade head): o health devolve a ponta real, não null."""
+    from alembic import command
+    from alembic.script import ScriptDirectory
+
+    from tests.conftest import TEST_URL, alembic_cfg
+    assert "_test" in TEST_URL.rsplit("/", 1)[-1]
+    cfg = alembic_cfg()
+    command.upgrade(cfg, "head")
+    (ponta,) = ScriptDirectory.from_config(cfg).get_heads()
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json()["migracao"] == ponta
+
+
+@pytest.mark.parametrize("valor", ["nan", "inf", "-inf", "1e400"])
+def test_d1b_env_nao_finita_usa_padrao_com_aviso(monkeypatch, caplog, valor):
+    import logging
+    monkeypatch.setenv("APP_ENV", "producao")
+    monkeypatch.setenv("CONECTORES_CACHE_S", valor)
+    monkeypatch.setenv("CONECTORES_CACHE_ESPERA_S", valor)
+    with caplog.at_level(logging.WARNING, logger=contagens_cache.log.name):
+        assert contagens_cache.ttl_s() == 60.0
+        assert contagens_cache.espera_s() == 0.35
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("CONECTORES_CACHE_S inválido" in m for m in msgs)
+    assert any("CONECTORES_CACHE_ESPERA_S inválido" in m for m in msgs)
+    assert not any(valor in m for m in msgs)

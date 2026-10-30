@@ -10,6 +10,7 @@ Com CONECTORES_CACHE_S=0 (padrão em APP_ENV=test) recalcula sempre e espera o f
 Nada aqui abre conexão com SQL Server ou SIL; só SELECT no Postgres da aplicação.
 """
 import logging
+import math
 import os
 import threading
 import time
@@ -30,10 +31,13 @@ def _env_float(nome: str, padrao: float) -> float:
     if bruto is None:
         return padrao
     try:
-        return float(bruto)
+        valor = float(bruto)
     except ValueError:
+        valor = math.nan
+    if not math.isfinite(valor):  # nan, inf, 1e400 (estoura para inf)
         log.warning("%s inválido; usando o padrão %s", nome, padrao)
         return padrao
+    return valor
 
 
 def _em_teste() -> bool:
