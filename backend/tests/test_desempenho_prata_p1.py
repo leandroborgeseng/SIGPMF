@@ -124,17 +124,38 @@ def test_pulso_por_tempo_no_maximo_30s(monkeypatch):
 
 
 def test_migracao_0036_idempotente(banco):
+    """Banco próprio (o CONCURRENTLY espera transações abertas de outros testes no banco compartilhado)."""
     from alembic import command
     from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    url = make_url(banco)
+    nome = f"{url.database}_mig0036"
+    adm = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}"'))
+            c.execute(text(f'CREATE DATABASE "{nome}"'))
+    except Exception:  # noqa: BLE001
+        adm.dispose()
+        pytest.skip("sem permissão para criar o banco de teste da migração")
+    alvo = url.set(database=nome).render_as_string(hide_password=False)
     cfg = alembic_cfg()
-    command.stamp(cfg, "0033")
-    command.upgrade(cfg, "head")  # 2ª execução com o índice já criado
-    command.downgrade(cfg, "0033")
-    command.downgrade(cfg, "0033")
-    command.upgrade(cfg, "head")
-    eng = create_engine(banco)
-    with eng.connect() as c:
-        ok = c.scalar(text("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
-                           "WHERE c.relname = 'ix_registros_ultima_versao'"))
-    eng.dispose()
-    assert ok is True
+    cfg.set_main_option("sqlalchemy.url", alvo.replace("%", "%%"))
+    try:
+        command.upgrade(cfg, "head")
+        command.stamp(cfg, "0033")
+        command.upgrade(cfg, "head")  # 2ª execução com o índice já criado
+        command.downgrade(cfg, "0033")
+        command.stamp(cfg, "0036")
+        command.downgrade(cfg, "0033")  # 2º downgrade com o índice já removido
+        command.upgrade(cfg, "head")
+        eng = create_engine(alvo)
+        with eng.connect() as c:
+            ok = c.scalar(text("SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                               "WHERE c.relname = 'ix_registros_ultima_versao'"))
+        eng.dispose()
+        assert ok is True
+    finally:
+        with adm.connect() as c:
+            c.execute(text(f'DROP DATABASE IF EXISTS "{nome}" WITH (FORCE)'))
+        adm.dispose()
