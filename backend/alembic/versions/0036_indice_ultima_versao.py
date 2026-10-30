@@ -34,13 +34,16 @@ def _concorrente() -> str:
 
 
 PADRAO_LOCK_TIMEOUT = "30s"
+TETO_LOCK_TIMEOUT = "10min"
+TETO_LOCK_TIMEOUT_MS = 10 * 60 * 1000
+_FATOR_MS = {"ms": 1, "s": 1000, "min": 60_000}
 _TRAVA = {"55P03", "57014"}  # lock_not_available, query_canceled (timeout)
 
 
 def _lock_timeout() -> str:
     """Espera máxima por travas (SIGPMF_INDICE_LOCK_TIMEOUT, padrão 30s): sem isso o CONCURRENTLY espera para sempre
     uma transação longa aberta na bronze e trava o boot. Valor inválido ou zero (0 no Postgres = espera infinita) volta
-    ao padrão, com aviso no log que não repete o valor."""
+    ao padrão; acima de 10min vira 10min. Os dois com aviso no log que não repete o valor."""
     bruto = os.environ.get("SIGPMF_INDICE_LOCK_TIMEOUT")
     if bruto is None or not bruto.strip():
         return PADRAO_LOCK_TIMEOUT
@@ -48,6 +51,10 @@ def _lock_timeout() -> str:
     if not m or int(m.group(1)) <= 0:
         log.warning("SIGPMF_INDICE_LOCK_TIMEOUT inválido ou zero (espera infinita); usando %s", PADRAO_LOCK_TIMEOUT)
         return PADRAO_LOCK_TIMEOUT
+    ms = int(m.group(1)) * _FATOR_MS[m.group(2) or "ms"]
+    if ms > TETO_LOCK_TIMEOUT_MS:  # acima do teto (inclui valores que estourariam o int do Postgres -> DataError)
+        log.warning("SIGPMF_INDICE_LOCK_TIMEOUT acima do teto; usando %s", TETO_LOCK_TIMEOUT)
+        return TETO_LOCK_TIMEOUT
     return f"{int(m.group(1))}{m.group(2) or 'ms'}"
 
 
