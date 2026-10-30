@@ -78,6 +78,12 @@ def _env(db):
             "SIGPMF_CHAVE_HASH_SEGREDO": "ZZTESTE-evidencia-0000000000000000000"}
 
 
+def _grava(a, res) -> None:
+    """Grava o JSON parcial depois de cada fase (nada se perde se a bancada for interrompida)."""
+    with open(a.saida, "w") as f:
+        json.dump(res, f, indent=1, ensure_ascii=False)
+
+
 def _fase(a, fase, *extra) -> dict:
     """Roda uma fase num subprocesso e mede tempo de parede e RSS máximo (KiB) dele."""
     t = time.perf_counter()
@@ -206,14 +212,18 @@ def principal(a):
         res["bronze_linhas"] = c.execute(text("SELECT count(*) FROM bronze.registros")).scalar()
     eng.dispose()
     res["preenche_ultima_versao"] = _fase(a, "sincroniza")
+    _grava(a, res)
     res["completa"] = _fase(a, "completa")
+    _grava(a, res)
     for v in range(1, a.rodadas + 1):
         _fase(a, "delta", "--fatos", str(a.fatos), "--v", str(v))
         _fase(a, "sincroniza")
         res[f"incremental_{v}"] = _fase(a, "incremental")
+        _grava(a, res)
     res["explain"] = _fase(a, "explain", "--fatos", str(a.fatos))
     inc = _fase(a, "snapshot")["snap"]
     res["recomposicao"] = _fase(a, "recompoe")
+    _grava(a, res)
     rec = _fase(a, "snapshot")["snap"]
     res["pi5_identico"] = inc == rec
     res["pi5_diferencas"] = sorted(k for k in set(inc) | set(rec) if inc.get(k) != rec.get(k))
