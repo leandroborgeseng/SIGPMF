@@ -96,6 +96,23 @@ def _subetapa_leitura(ex_id: int, tabela: str, lidas: int | None, total: int | N
         log.warning("subetapa da leitura não gravada (execução %s)", ex_id)
 
 
+def pedido_cancelar(ex_id: int) -> bool:
+    """Lê o pedido de cancelamento numa conexão SEPARADA (o da sessão da reconstrução não vê o commit do clique)."""
+    with get_engine().connect() as c:
+        return bool(c.scalar(select(Execucao.cancelar).where(Execucao.id == ex_id)))
+
+
+def _camadas_canceladas(db: Session, ex: Execucao, conector: str) -> None:
+    """P1: cancelamento entre lotes da prata/ouro. Rollback da transação das camadas: prata e ouro anteriores ficam
+    como estavam (nada parcial); rodar de novo reconstrói do zero, sem duplicar."""
+    ex_id = ex.id
+    db.rollback()
+    ex = db.get(Execucao, ex_id)
+    ex.tabela_atual = None
+    return _finaliza(db, ex, "cancelada", f"Carga de {NOMES[conector]} cancelada durante a prata/ouro. A bronze foi "
+                                          "mantida e a prata/ouro anteriores ficaram como estavam; use Retomar camadas.")
+
+
 class PrataInconsistente(RuntimeError):
     """CC11: a prata gravada não bate com as chaves distintas esperadas; o ouro não roda."""
 
@@ -106,7 +123,8 @@ def confere_prata(db: Session) -> None:
     problemas = []
     for rotulo, m in (("vínculos", Vinculo), ("pendências", CP)):
         linhas = int(db.scalar(select(func.count()).select_from(m)) or 0)
-        chaves = int(db.scalar(select(func.count(func.distinct(func.concat(m.sistema, "|", m.tabela, "|", m.chave_origem))))) or 0)
+        chaves = int(db.scalar(select(func.count()).select_from(
+            select(m.sistema, m.tabela, m.chave_origem).distinct().subquery())) or 0)
         if linhas != chaves:
             problemas.append(f"{rotulo}: {linhas} linhas para {chaves} chaves distintas")
     if problemas:
@@ -706,9 +724,9 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=MSG_CAMADAS_MANTIDAS))
         resumo = MSG_CAMADAS_MANTIDAS
     else:
-        total = int(db.scalar(select(func.count(func.distinct(func.concat(
-            RegistroBronze.sistema_origem, "|", RegistroBronze.tabela, "|", RegistroBronze.id_origem))))
-            .where(RegistroBronze.quarentena.is_(None))) or 0)
+        R = RegistroBronze  # P1: chaves distintas pela tupla (sem concat), coberto pelo índice 0036
+        total = int(db.scalar(select(func.count()).select_from(
+            select(R.sistema_origem, R.tabela, R.id_origem).where(R.quarentena.is_(None)).distinct().subquery())) or 0)
         t0 = _inicio_etapa(db, ex, "prata", total)  # faz commit: a trava de transação das camadas vem depois
         from app.services import trava as tv
         tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
@@ -720,7 +738,7 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
                 med = sub.MedicaoComSinal(ex.id)
                 sres = processamento.reconstruir(
                     db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
-                    medicao=med)
+                    medicao=med, cancelado=lambda: pedido_cancelar(ex.id))
             confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
             _log_separado(ex.id, "prata", t0, sres)
             sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
@@ -729,7 +747,10 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
             sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
             with sub.Pulso(ex.id):
                 gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
-                                                                      sub.sinal(ex.id, n, tot)))
+                                                                      sub.sinal(ex.id, n, tot)),
+                                         cancelado=lambda: pedido_cancelar(ex.id))
+        except processamento.CamadasCanceladas:
+            return _camadas_canceladas(db, ex, conector)
         finally:
             sub.finaliza(ex.id)  # fecha a subetapa aberta mesmo se a prata/ouro falhar
         _log_separado(ex.id, "ouro", t1, gres)

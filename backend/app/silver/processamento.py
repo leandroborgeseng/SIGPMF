@@ -21,7 +21,8 @@ from datetime import date
 from itertools import combinations
 from typing import NamedTuple
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, insert, select, tuple_
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session
 
 from app.identity import cns as cnsmod
@@ -41,6 +42,62 @@ from app.models.camadas import (
 from app.models.controle import ConfirmacaoObito, Parametro, Sistema
 
 log = logging.getLogger("app.silver.medicao")
+LOTE = 5000  # registros por lote: sinal de vida e checagem do pedido de cancelamento
+
+
+class CamadasCanceladas(RuntimeError):
+    """Pedido de cancelamento visto entre lotes da prata/ouro. A transação inteira volta (nada parcial)."""
+
+
+def exige_ambiente_teste(caminho: str) -> None:
+    """P1: o caminho linear/linha a linha (referência dos testes) é O(n²) e não roda fora de APP_ENV=test."""
+    if os.environ.get("APP_ENV", "prod") != "test":
+        log.error("caminho %s bloqueado fora de APP_ENV=test (só referência de teste)", caminho)
+        raise RuntimeError(f"Caminho {caminho} só é permitido com APP_ENV=test")
+
+
+class Pulso:
+    """Sinal de vida (a cada lote ou a cada PULSO_S segundos, o que vier antes; nunca mais de 30 s sem pulso enquanto
+    o laço avança) e checagem de cancelamento a cada lote."""
+    PULSO_S = 10.0
+
+    def __init__(self, progresso=None, cancelado=None, batimento=None):
+        self.progresso, self.cancelado, self.batimento = progresso, cancelado, batimento
+        self._ult = time.monotonic()
+        self._n: tuple[int, int | None] = (0, None)
+
+    def lote(self, n: int, total: int | None) -> None:
+        if self.cancelado and self.cancelado():
+            raise CamadasCanceladas("cancelamento pedido")
+        self.pulsa(n, total, forca=True)
+
+    def pulsa(self, n: int, total: int | None, forca: bool = False) -> None:
+        agora = time.monotonic()
+        self._n = (n, total)
+        if self.progresso and (forca or agora - self._ult >= self.PULSO_S):
+            self.progresso(n, total)
+            self._ult = agora
+
+    def leitura(self, n: int) -> None:
+        """Leitura da bronze (total ainda desconhecido): cancelamento a cada lote e batimento (só atualizado_em) a cada
+        PULSO_S, sem mexer no contador da etapa."""
+        if n % LOTE == 0 and self.cancelado and self.cancelado():
+            raise CamadasCanceladas("cancelamento pedido")
+        agora = time.monotonic()
+        if self.batimento and (n % LOTE == 0 or agora - self._ult >= self.PULSO_S):
+            self.batimento()
+            self._ult = agora
+
+    def grava(self) -> None:
+        """Lote gravado: checa o cancelamento e pulsa com o último (n, total) já informado, sem zerar nem
+        voltar o contador da etapa na tela."""
+        self.lote(*self._n)
+
+    def passo(self, n: int, total: int | None) -> None:
+        if n % LOTE == 0:
+            self.lote(n, total)
+        else:
+            self.pulsa(n, total)
 
 
 def _rss_atual_mb() -> float:
@@ -108,23 +165,25 @@ def tabelas_fato() -> list[str]:
 
 
 def _ultimas_versoes(db: Session):
-    """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor). Antes vinham como
-    objetos ORM completos (com `dados`) numa lista: centenas de MB a mais por 100 mil linhas."""
+    """Última versão de cada (sistema, tabela, id_origem), em streaming (cursor no servidor), na ordem de id.
+    P1 desempenho: DISTINCT ON (chave) ORDER BY chave, id DESC (= max(id) por chave) usa o índice parcial
+    bronze.ix_registros_ultima_versao (0036); o filtro de tabelas-fato compara a tupla (sistema, tabela) em vez de
+    concat(sistema, '|', tabela), que não usava índice."""
     # GE: GESTAOESCOLAR/CORESSO têm prata própria (app.silver.educacao); dados de menores nunca viram cidadão aqui
     so_fatos = sistemas_so_fatos() + ("GESTAOESCOLAR", "CORESSO")  # TR3: fatos tributários (milhões de linhas) nem saem do banco
-    sub = select(func.max(RegistroBronze.id)).where(RegistroBronze.quarentena.is_(None),  # CC9
-                                                    RegistroBronze.sistema_origem.not_in(so_fatos),
-                                                    func.concat(RegistroBronze.sistema_origem, "|", RegistroBronze.tabela)
-                                                    .not_in(tabelas_fato())).group_by(
-        RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem)
-    q = (select(RegistroBronze.id, RegistroBronze.sistema_origem, RegistroBronze.tabela, RegistroBronze.id_origem,
-                RegistroBronze.atualizado_origem_em, RegistroBronze.dados)
-         .where(RegistroBronze.id.in_(sub)).order_by(RegistroBronze.id).execution_options(yield_per=5000))
+    fatos = [tuple(x.split("|", 1)) for x in tabelas_fato()]
+    R = RegistroBronze
+    ult = (select(R.id).where(R.quarentena.is_(None), R.sistema_origem.not_in(so_fatos),  # CC9
+                              tuple_(R.sistema_origem, R.tabela).not_in(fatos))
+           .ext(distinct_on(R.sistema_origem, R.tabela, R.id_origem))
+           .order_by(R.sistema_origem, R.tabela, R.id_origem, R.id.desc()).subquery())
+    q = (select(R.id, R.sistema_origem, R.tabela, R.id_origem, R.atualizado_origem_em, R.dados)
+         .join(ult, ult.c.id == R.id).order_by(R.id).execution_options(yield_per=LOTE))
     for i, so, t, io, at, dados in db.execute(q):
         yield _Reg(i, so, t, io, at), dados
 
 
-def _grava(db: Session, model, objs, lote: int = 5000) -> None:
+def _grava(db: Session, model, objs, lote: int = LOTE, pulso: "Pulso | None" = None) -> None:
     """INSERT em lote (ORM bulk insert por dicts, sem unit of work nem identity map). Atributos não definidos ficam
     de fora do dict e recebem o default da coluna, como no add_all."""
     buf = []
@@ -133,6 +192,8 @@ def _grava(db: Session, model, objs, lote: int = 5000) -> None:
         if len(buf) >= lote:
             db.execute(insert(model), buf)
             buf = []
+            if pulso is not None:
+                pulso.grava()
     if buf:
         db.execute(insert(model), buf)
 
@@ -219,10 +280,15 @@ class _Indice:
         return sorted(out, key=self.pos.__getitem__)
 
 
-def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Medicao | None = None) -> dict[str, int]:
+def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Medicao | None = None,
+                cancelado=None, batimento=None) -> dict[str, int]:
     """progresso(processados, total): sinal de vida (chamado a cada bloco). indexado=False mantém o algoritmo
     linear antigo só para o teste de regressão (mesmo resultado). medicao: recebe tempo/linhas/RSS por etapa (também
-    vai para o log app.silver.medicao, sem PII)."""
+    vai para o log app.silver.medicao, sem PII). cancelado(): checado a cada lote; se True, sobe CamadasCanceladas
+    (quem chama faz rollback: a prata/ouro anteriores ficam intactas)."""
+    if not indexado:
+        exige_ambiente_teste("prata linear")
+    pulso = Pulso(progresso, cancelado, batimento)
     med = medicao if medicao is not None else Medicao()
     from app.silver import endereco_saude
     endereco_saude.carrega(db)  # EN10: referência Rua/Bairro do Geral para o endereço da Saúde
@@ -263,6 +329,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
 
     regs = []
     for r, dados in _ultimas_versoes(db):
+        pulso.leitura(len(regs) + 1)
         m = MAPEAMENTOS.get((r.sistema_origem, r.tabela), {})
         if not m or m.get("papel") == "fato":  # sem mapeamento (ISS.Municipes) ou fato tributário: silver própria
             continue
@@ -276,8 +343,17 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     def passo():
         """CC11: uma unidade só, cada registro da bronze contado uma vez (nunca passa do total)."""
         feitos[0] += 1
-        if progresso and feitos[0] % 5000 == 0:
-            progresso(min(feitos[0], total), total)
+        pulso.passo(feitos[0], total)
+
+    vistos = [0]
+
+    def vivo():
+        """Laços que não contam no total (já contados): pulso por tempo e cancelamento a cada lote."""
+        vistos[0] += 1
+        if vistos[0] % LOTE == 0:
+            pulso.lote(min(feitos[0], total), total)
+        else:
+            pulso.pulsa(min(feitos[0], total), total)
 
     # CNS por pessoa (sistema, matrícula) e donos de cada CNS
     cns_pessoa: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -333,6 +409,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     # 2) CNS
     sem_ident = []
     for r, c in sem_cpf:
+        vivo()
         meus = cns_de(r)
         if meus and meus <= cns_ambiguos:
             outros = sorted({f"{s}:{m}" for x in meus for (s, m) in donos[x] if m != r.id_origem})
@@ -358,7 +435,10 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
 
     med.marca("passe_cns", entrada=len(sem_cpf), saida=len(sem_cpf) - len(sem_ident))
     # 3) atributos
+    if not (indexado and pesos_positivos):
+        log.warning("prata: passe de atributos no caminho linear (pesos não positivos em controle.parametros)")
     for r, c in sem_ident:  # já contados na etapa 1 (CC11: sem contar de novo)
+        vivo()
         melhor, mcid, mattrs = 0.0, None, []
         if indexado and pesos_positivos:
             top, cid = idx.melhor(c, p)
@@ -433,12 +513,13 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
 
     med.marca("passe_obitos", entrada=len(por_papel["obito"]))
     db.flush()  # SistemaSilver e os DELETEs antes dos INSERTs em lote
-    _grava(db, Cidadao, cidadaos.values())
+    pulso.lote(min(feitos[0], total), total)
+    _grava(db, Cidadao, cidadaos.values(), pulso=pulso)
     med.marca("grava_cidadaos", saida=len(cidadaos))
-    _grava(db, Identificador, ids.values())
+    _grava(db, Identificador, ids.values(), pulso=pulso)
     med.marca("grava_identificadores", saida=len(ids))
-    _grava(db, CorrelacaoPendente, pend)
-    _grava(db, Inconsistencia, inc)
+    _grava(db, CorrelacaoPendente, pend, pulso=pulso)
+    _grava(db, Inconsistencia, inc, pulso=pulso)
     med.marca("grava_pendentes_inconsistencias", saida=len(pend) + len(inc))
     enderecos: list[Endereco] = []
 
@@ -458,7 +539,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
                 else:
                     enderecos.append(Endereco(cidadao_id=cid, logradouro=c["endereco"], sistema=r.sistema_origem,
                                               fonte_atualizado_em=r.atualizado_origem_em))
-    _grava(db, Vinculo, gera_vinculos())
+    _grava(db, Vinculo, gera_vinculos(), pulso=pulso)
     med.marca("grava_vinculos", saida=len(vinculos))
     ultimo: dict[str, Endereco] = {}
     for e in enderecos:
@@ -467,7 +548,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
             ultimo[e.cidadao_id] = e
     for e in enderecos:
         e.mais_recente = e is ultimo[e.cidadao_id]
-    _grava(db, Endereco, enderecos)
+    _grava(db, Endereco, enderecos, pulso=pulso)
     med.marca("grava_enderecos", saida=len(enderecos))
     log.info("prata total segundos=%.3f", med.total())
     if progresso:
