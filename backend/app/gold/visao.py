@@ -43,8 +43,12 @@ def _mais_novo(v_data, atual_data) -> bool:
     return bool(v_data and (atual_data is None or v_data > atual_data))
 
 
-def reconstruir(db: Session, progresso=None) -> dict[str, int]:
-    """progresso(processados, total): sinal de vida a cada lote (vínculos processados / total de vínculos)."""
+def reconstruir(db: Session, progresso=None, cancelado=None) -> dict[str, int]:
+    """progresso(processados, total): sinal de vida a cada lote (vínculos processados / total de vínculos) e no
+    mínimo a cada Pulso.PULSO_S segundos. cancelado(): checado a cada lote; se True, sobe CamadasCanceladas e quem
+    chama faz rollback (ouro anterior intacto, nada parcial)."""
+    from app.silver.processamento import Pulso
+    pulso = Pulso(progresso, cancelado)
     db.execute(delete(DadoGold))
     db.execute(delete(CidadaoSistemas))
     db.flush()
@@ -96,8 +100,10 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
                                          "campo": "cadastro", "valor": f"{tab}:{chave}", "sistema": sistema,
                                          "fonte_atualizado_em": fonte_em, "mais_recente": True}
         feitos += 1
-        if progresso and feitos % GOLD_LOTE == 0:
-            progresso(feitos, total)
+        if feitos % GOLD_LOTE == 0:
+            pulso.lote(feitos, total)
+        else:
+            pulso.pulsa(feitos, total)
     if atual_cid is not None:
         fecha_cidadao(atual_cid, melhor)
     for cid in sorted(falecidos):  # falecido sem vínculo (raro): só a marca de óbito
@@ -111,6 +117,8 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
 
 def reconstruir_legado(db: Session) -> dict[str, int]:
     """Algoritmo antigo (ORM, tudo em memória). Só para o teste de regressão: mesmo resultado que reconstruir()."""
+    from app.silver.processamento import exige_ambiente_teste
+    exige_ambiente_teste("ouro legado")
     db.execute(delete(DadoGold))
     db.execute(delete(CidadaoSistemas))
     dominios = {s.codigo: s.dominio or "outros" for s in db.scalars(select(SistemaSilver))}
