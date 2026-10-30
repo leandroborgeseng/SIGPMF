@@ -51,7 +51,8 @@ def contagem_bronze(db: Session) -> dict[str, int]:
                         .group_by(RegistroBronze.sistema_origem))
 
 
-def indicadores(db: Session) -> list[dict]:
+def contagens_por_sistema(db: Session) -> dict[str, dict[str, int]]:
+    """As agregações pesadas (milhões de linhas). Só SELECT no Postgres; a rota lê isto pelo contagens_cache."""
     bronze = contagem_bronze(db)
     prata = _por_sistema(db, select(Vinculo.sistema, func.count()).group_by(Vinculo.sistema))
     ouro = _por_sistema(db, select(DadoGold.sistema, func.count(func.distinct(DadoGold.cidadao_id))).group_by(DadoGold.sistema))
@@ -60,6 +61,14 @@ def indicadores(db: Session) -> list[dict]:
     prata["ISS"] = prata.get("ISS", 0) + int(db.scalar(select(func.count()).select_from(Municipe)) or 0)
     pend = _por_sistema(db, select(CorrelacaoPendente.sistema, func.count())
                         .where(CorrelacaoPendente.status == "pendente").group_by(CorrelacaoPendente.sistema))
+    return {"bronze": bronze, "prata": prata, "ouro": ouro, "pendentes": pend}
+
+
+def indicadores(db: Session, contagens: dict[str, dict[str, int]] | None = None) -> list[dict]:
+    """contagens=None calcula na hora (lento em produção); a rota /conectores passa o retrato do cache."""
+    if contagens is None:
+        contagens = contagens_por_sistema(db)
+    bronze, prata, ouro, pend = (contagens.get(k, {}) for k in ("bronze", "prata", "ouro", "pendentes"))
     execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
     out = []
     bases = db.scalars(select(BaseCatalogo).order_by(BaseCatalogo.prioridade.is_(None), BaseCatalogo.prioridade, BaseCatalogo.nome))
