@@ -26,9 +26,24 @@ LOTES_AMOSTRA_PADRAO = 20  # TL 29/10: ~1.000 linhas (lotes de ~50); o teto de 1
 
 
 def lotes_por_execucao() -> int:
-    """Lotes da amostra SIL: SIL_AMOSTRA_MAX_LOTES (padrão 20, 1 a 100). Independe de SIL_CONSULTARLOTE_MAX_LOTES."""
-    from app.connectors.sil.config import _num
-    return int(_num("SIL_AMOSTRA_MAX_LOTES", LOTES_AMOSTRA_PADRAO, 1, 100))
+    """Lotes da amostra SIL: SIL_AMOSTRA_MAX_LOTES (padrão 20, inteiro de 1 a 100). Independe de
+    SIL_CONSULTARLOTE_MAX_LOTES. Valor inválido (não numérico, nan, inf, fracionário, <= 0 ou > 100) -> padrão e
+    WARNING só com o nome da variável (nunca o valor)."""
+    import logging
+    import math
+    import os
+    bruto = (os.environ.get("SIL_AMOSTRA_MAX_LOTES") or "").strip()
+    if not bruto:
+        return LOTES_AMOSTRA_PADRAO
+    try:
+        x = float(bruto)
+    except ValueError:
+        x = math.nan
+    if math.isfinite(x) and x == int(x) and 1 <= x <= 100:
+        return int(x)
+    logging.getLogger("sigpmf.sil").warning(
+        "SIL_AMOSTRA_MAX_LOTES inválida (esperado inteiro de 1 a 100); usando o padrão %d.", LOTES_AMOSTRA_PADRAO)
+    return LOTES_AMOSTRA_PADRAO
 STATUS_SUCESSO = ("sucesso", "sem_novidades")  # demais (falha, interrompida, origem vazia...) -> etapa "falha"
 
 
