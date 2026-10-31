@@ -37,17 +37,25 @@ PULOS_SEGUIDOS_PADRAO = 3
 
 
 def max_pulos_seguidos() -> int:
-    """SIL_MAX_PULOS_SEGUIDOS (padrão 3). nan, inf, <= 0, não numérico ou fracionário -> padrão."""
+    """SIL_MAX_PULOS_SEGUIDOS (padrão 3): inteiro de 1 a 100, mesma regra do #66. Valor inválido (não numérico, nan,
+    inf, fracionário, <= 0 ou > 100) -> padrão e WARNING só com o nome da variável (nunca o valor).
+
+    Semântica (decisão TL 30/10, B3): N é o número de Sequencias problemáticas SEGUIDAS que param a carga. Com o
+    padrão 3, a carga pula 2 Sequencias seguidas e para com ErroSil na 3ª. N=1 desliga o pulo (para na 1ª)."""
     import math
     import os
     bruto = (os.environ.get("SIL_MAX_PULOS_SEGUIDOS") or "").strip()
+    if not bruto:
+        return PULOS_SEGUIDOS_PADRAO
     try:
-        n = float(bruto)
+        x = float(bruto)
     except ValueError:
-        return PULOS_SEGUIDOS_PADRAO
-    if not math.isfinite(n) or n <= 0 or n != int(n):
-        return PULOS_SEGUIDOS_PADRAO
-    return int(n)
+        x = math.nan
+    if math.isfinite(x) and x == int(x) and 1 <= x <= 100:
+        return int(x)
+    log.warning("SIL_MAX_PULOS_SEGUIDOS inválida (esperado inteiro de 1 a 100); usando o padrão %d.",
+                PULOS_SEGUIDOS_PADRAO)
+    return PULOS_SEGUIDOS_PADRAO
 
 
 MSG_NAO_CONFIGURADA = "API SIL não configurada no ambiente (SIL_BASE_URL, SIL_CLIENT_ID, SIL_CLIENT_SECRET)."

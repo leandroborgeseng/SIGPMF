@@ -98,15 +98,30 @@ def _cp(db):
 
 
 # ------------------------------------------------------------------ (1) limite de pulos seguidos
-@pytest.mark.parametrize("valor,esperado", [(None, 3), ("", 3), ("5", 5), ("1", 1), ("0", 3), ("-2", 3),
-                                            ("nan", 3), ("NaN", 3), ("inf", 3), ("-inf", 3), ("2.5", 3),
-                                            ("abc", 3), (" 4 ", 4), ("4.0", 4)])
-def test_env_max_pulos_seguidos_validado(monkeypatch, valor, esperado):
+@pytest.mark.parametrize("valor,esperado,aviso", [
+    (None, 3, False), ("", 3, False), ("5", 5, False), ("1", 1, False), ("100", 100, False), (" 4 ", 4, False),
+    ("4.0", 4, False), ("0", 3, True), ("-2", 3, True), ("101", 3, True), ("nan", 3, True), ("NaN", 3, True),
+    ("inf", 3, True), ("-inf", 3, True), ("2.5", 3, True), ("abc", 3, True), ("1e9", 3, True)])
+def test_env_max_pulos_seguidos_validado(monkeypatch, caplog, valor, esperado, aviso):
     if valor is None:
         monkeypatch.delenv("SIL_MAX_PULOS_SEGUIDOS", raising=False)
     else:
         monkeypatch.setenv("SIL_MAX_PULOS_SEGUIDOS", valor)
-    assert max_pulos_seguidos() == esperado
+    with caplog.at_level(logging.WARNING, logger="sigpmf.sil"):
+        assert max_pulos_seguidos() == esperado
+    avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    if aviso:
+        assert len(avisos) == 1 and "SIL_MAX_PULOS_SEGUIDOS" in avisos[0] and "padrão 3" in avisos[0]
+        assert valor.strip() not in avisos[0].replace("padrão 3", "").replace("1 a 100", "")
+    else:
+        assert avisos == []
+
+
+def test_padrao_3_pula_duas_e_para_na_terceira(db, ambiente):
+    """B3 (TL 30/10): padrão 3 = 2 pulos seguidos; a 3ª Sequencia ruim seguida para a carga."""
+    api = Api([_lote([1]), *_ruim(), *_ruim(), *_ruim()])
+    ex = _rodar(db, api)
+    assert ex.status == "falha" and api.sequencias == [1, 2, 2, 3, 3, 4, 4]
 
 
 def test_tres_ruins_seguidas_param_com_erro_sil_sem_pular(db, ambiente):
@@ -155,7 +170,7 @@ def test_pulo_grava_quarentena_sem_valores_log_warn_e_contador(db, ambiente):
     assert r.dados == {"Sequencia": 2, "status": 200, "tipo_json": "dict", "chaves": ["cnpj", "erro"]}
     assert r.quarentena_campos == ["cnpj", "erro"] and r.execucao_id == ex.id
     assert VALOR_PII not in json.dumps(r.dados)
-    warns = [lg for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id)) if "pulada" in lg.mensagem]
+    warns = [lg for lg in db.scalars(select(Log).where(Log.execucao_id == ex.id)) if "pulada para a quarentena" in lg.mensagem]
     assert len(warns) == 1 and warns[0].nivel == "WARN" and "Sequencia=2" in warns[0].mensagem
     assert VALOR_PII not in warns[0].mensagem
     # contador da tela (card da carga completa e "Ver detalhes da quarentena") == linhas da quarentena
@@ -171,6 +186,37 @@ def test_reexecutar_mesmo_pulo_nao_duplica_quarentena(db, ambiente):
     db.commit()
     _rodar(db, Api([*_ruim(), FIM]))
     assert len(_quar(db)) == 1
+
+
+def test_mesma_sequencia_com_outro_formato_continua_uma_linha(db, ambiente):
+    """M1: a identidade da quarentena é só a Sequencia; outro formato de resposta atualiza a mesma linha."""
+    _rodar(db, Api([*_ruim(), FIM]))
+    db.execute(delete(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
+    db.commit()
+    outro = (200, {"mensagem": VALOR_PII, "codigo": 7, "x": 1})
+    ex2 = _rodar(db, Api([outro, outro, FIM]))
+    assert ex2.status == "sucesso", ex2.mensagem
+    q = _quar(db)
+    assert len(q) == 1 and q[0].id_origem == "sil_resposta_inesperada:1"
+    assert q[0].dados["chaves"] == ["codigo", "mensagem", "x"] and q[0].execucao_id == ex2.id
+    assert ccomp.contagens_card(db, "SIL")["quarentena"] == 1 and len(ccomp.quarentena(db, "sil")) == 1
+
+
+def test_mensagem_final_separa_pulos_de_chave_nula(db, ambiente):
+    """Info TL 30/10: a mensagem final conta as Sequencias puladas separado da quarentena por chave nula."""
+    ex = _rodar(db, Api([*_ruim(), _lote([2]), *_ruim(), FIM]))
+    assert ex.status == "sucesso", ex.mensagem
+    assert "2 Sequencia(s) pulada(s) em quarentena (resposta inesperada da API SIL)" in ex.mensagem
+    assert "(chave nula)" not in ex.mensagem
+    # com uma linha de chave nula também: as duas contagens aparecem, cada uma com o seu texto
+    db.add(RegistroBronze(sistema_origem="SIL", tabela="Empresas", id_origem="chave_nula:zzteste:1",
+                          dados={"Ccm": None}, hash="zzteste-nula", execucao_id=ex.id, quarentena="chave_nula",
+                          quarentena_campos=["Ccm"]))
+    db.execute(delete(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
+    db.commit()
+    ex2 = _rodar(db, Api([*_ruim(), _lote([2]), *_ruim(), FIM]))
+    assert "1 linha(s) em quarentena (chave nula)" in ex2.mensagem
+    assert "2 Sequencia(s) pulada(s) em quarentena (resposta inesperada da API SIL)" in ex2.mensagem
 
 
 # ------------------------------------------------------------------ (3) checkpoint, conclusão e retomada

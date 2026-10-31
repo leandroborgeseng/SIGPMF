@@ -214,8 +214,22 @@ def quarentena_pulos_sil(db: Session, ex: Execucao, sistema: str, tabela: str, p
         db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=(
             f"{sistema}.{tabela}: Sequencia={dados['Sequencia']} pulada para a quarentena (resposta inesperada da "
             f"API: status={dados['status']} tipo_json={dados['tipo_json']} chaves={dados['chaves']})")))
-    db.execute(insert(RegistroBronze).values(vals).on_conflict_do_nothing(
-        index_elements=["sistema_origem", "tabela", "id_origem", "hash"]))
+    # M1: a identidade é SÓ a Sequencia (id_origem). Se ela já está na quarentena (mesmo com outro formato de
+    # resposta, logo outro hash), atualiza a linha existente em vez de criar outra: o contador não dobra.
+    existentes = {r.id_origem: r for r in db.scalars(select(RegistroBronze).where(
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
+        RegistroBronze.id_origem.in_([v["id_origem"] for v in vals])))}
+    novos = []
+    for v in {v["id_origem"]: v for v in vals}.values():
+        r = existentes.get(v["id_origem"])
+        if r is None:
+            novos.append(v)
+        else:
+            r.dados, r.hash, r.execucao_id = v["dados"], v["hash"], v["execucao_id"]
+            r.quarentena, r.quarentena_campos = v["quarentena"], v["quarentena_campos"]
+    if novos:
+        db.execute(insert(RegistroBronze).values(novos).on_conflict_do_nothing(
+            index_elements=["sistema_origem", "tabela", "id_origem", "hash"]))
     return len(pulos)
 
 
@@ -795,12 +809,17 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
                mensagem="Reconciliação bronze x origem: " + "; ".join(
                    f"{t} origem={r['origem']} bronze={r['bronze']} quarentena={r['quarentena']}" for t, r in rec.items())))
-    quar = sum(r["quarentena"] for r in rec.values())
-    res_rec = ("ok com pendências" if quar else "ok") if ok else "divergente"
+    quar_total = sum(r["quarentena"] for r in rec.values())
+    pulos = int(db.scalar(select(func.count()).select_from(RegistroBronze).where(  # Info TL 30/10: separa os motivos
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena == "sil_resposta_inesperada")) or 0)
+    quar = max(quar_total - pulos, 0)  # chave nula e demais motivos (texto de sempre)
+    res_rec = ("ok com pendências" if quar_total else "ok") if ok else "divergente"
     aviso = tabelas_vazias.alerta(ex)
     _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: {lido} {resumo} "
                                  f"reconciliacao={res_rec}"
                                  + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else "")
+                                 + (f"; {pulos} Sequencia(s) pulada(s) em quarentena (resposta inesperada da API SIL)"
+                                    if pulos else "")
                                  + (f". {aviso['texto']}" if aviso else ""),
               {"alerta": aviso["codigo"], "tabelas_vazias": aviso["tabelas"]} if aviso else None)
 
