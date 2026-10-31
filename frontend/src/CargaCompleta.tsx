@@ -13,6 +13,7 @@ export type ExecCompleta = {
   tabelas_lidas?: number | null; tabelas_total?: number | null
   total_etapa?: number | null; atualizado_em?: string | null; sem_progresso?: boolean; alerta_min?: number
   pode_retomar_camadas?: boolean
+  pode_camadas_parcial?: boolean
 }
 export type Etapa = 'leitura' | 'prata' | 'ouro' | 'concluida'
 export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
@@ -57,6 +58,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   const [erroPoll, setErroPoll] = useState('')
   const [confRetomar, setConfRetomar] = useState(false)
   const [retomando, setRetomando] = useState(false)
+  const [confParcial, setConfParcial] = useState(false)
   const cancelarRetomar = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!confRetomar) return
@@ -150,6 +152,17 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
       setEnviando(false); setRetomando(false)
     }
   }
+  const camadasParcial = async () => {
+    setConfParcial(false); setErro(''); setEnviando(true)
+    try {
+      setSit(await api<Situacao>(`/conectores/${conector}/completa/camadas-parcial`, { method: 'POST' }))
+      anterior.current = 'em_andamento'
+    } catch (e) {
+      setErro(e instanceof ApiErro ? e.message : 'Não foi possível processar as camadas da leitura parcial.')
+    } finally {
+      setEnviando(false)
+    }
+  }
   const cancelar = async () => {
     try {
       setSit(await api<Situacao>(`/conectores/${conector}/completa/cancelar`, { method: 'POST' }))
@@ -188,6 +201,18 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
         </div>
       )}
 
+      {confParcial && (
+        <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfParcial(false) }}>
+          <div role="dialog" aria-modal="true" aria-labelledby={`t-cp-${conector}`} className="dialogo">
+            <h3 id={`t-cp-${conector}`}>Processar prata e ouro só com o que a leitura parcial já gravou na bronze? A origem não será consultada e a leitura continua de onde parou na próxima carga.</h3>
+            <div className="acoes">
+              <button className="btn secundario" onClick={() => setConfParcial(false)}>Cancelar</button>
+              <button className="btn" onClick={camadasParcial}>Processar camadas da leitura parcial</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modal && (
         <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setModal(false) }}>
           <div role="dialog" aria-modal="true" aria-labelledby={`t-cc-${conector}`} className="dialogo">
@@ -218,6 +243,11 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
         <div role="alert" className="aviso erro">
           <p>{ex.mensagem}</p>
           <button className="btn" onClick={abrir} disabled={!ok}>Tentar de novo</button>
+          {ex.pode_camadas_parcial && (
+            <button className="btn outlined" onClick={() => setConfParcial(true)} disabled={enviando}>
+              Processar camadas da leitura parcial
+            </button>
+          )}
         </div>
       )}
       {ex && !rodando && ex.status === 'interrompida' && (
