@@ -623,6 +623,27 @@ def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(a
     return ccomp.situacao(db, conector)
 
 
+@api.post("/conectores/{conector}/completa/camadas-parcial", status_code=202)
+def completa_camadas_parcial(conector: str, req: Request, u: Usuario = Depends(admin_auditado),
+                             db: Session = Depends(get_db)):
+    """TL 30/10 (PP1–PP5): prata e ouro sobre a bronze de uma leitura parcial, sem ler a origem e sem mexer no
+    checkpoint. Roda com a agenda desligada (de propósito); 409 só com outra execução em andamento. Auditado."""
+    conector = _conector_completa(db, conector)
+    audita(db, u.email, "camadas_parcial_solicitada", f"conector:{conector}", {"usuario_id": u.id}, _ip(req))
+    try:
+        ex = ccomp.iniciar_camadas_parcial(db, u.email, conector)
+    except ccomp.Bloqueado as exc:
+        audita(db, u.email, "camadas_parcial_negada", f"conector:{conector}", {"usuario_id": u.id, "motivo": str(exc)},
+               _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except cc.Conflito as exc:
+        audita(db, u.email, "camadas_parcial_conflito", f"conector:{conector}", {"usuario_id": u.id}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "camadas_parcial_iniciada", f"execucao:{ex.id}", {"conector": conector, "usuario_id": u.id},
+           _ip(req))
+    return ccomp.situacao(db, conector)
+
+
 @api.post("/conectores/{conector}/completa/cancelar")
 def completa_cancelar(conector: str, req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
     """Para no próximo lote; nada do que já entrou é apagado (o checkpoint permite retomar)."""

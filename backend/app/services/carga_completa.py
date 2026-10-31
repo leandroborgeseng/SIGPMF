@@ -354,9 +354,10 @@ def ativa(db: Session, sistema: str) -> Execucao | None:
                                             Execucao.status == "em_andamento").order_by(Execucao.id.desc()).limit(1))
 
 
-def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False) -> None:
+def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False, parcial: bool = False) -> None:
     """Background (thread daemon). Os testes substituem por execução síncrona com origem sintética."""
-    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs={"somente_camadas": somente_camadas},
+    kw = {"somente_camadas": somente_camadas, **({"parcial": True} if parcial else {})}
+    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs=kw,
                      daemon=True, name=f"carga-completa-{conector}").start()
 
 
@@ -369,6 +370,52 @@ def pode_retomar_camadas(db: Session, sistema: str) -> bool:
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     tabs = set(cc.tabelas_do_conector(sistema))
     return bool(cps) and tabs <= {c.tabela for c in cps if c.concluida}
+
+
+def pode_camadas_parcial(db: Session, sistema: str) -> bool:
+    """TL 30/10: leitura parcial (algum checkpoint com concluida=f) e bronze não vazia, sem execução em andamento.
+    Libera "camadas da leitura parcial": prata e ouro só do que já está na bronze, sem ler a origem."""
+    if not tem_bronze(db, sistema):
+        return False
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
+    return bool(cps) and any(not c.concluida for c in cps)
+
+
+def posicao_parcial(db: Session, sistema: str) -> int:
+    """Maior posição gravada nos checkpoints ainda abertos (texto "até N"); nunca altera o checkpoint."""
+    return max((c.posicao or 0 for c in db.scalars(select(CheckpointCarga).where(
+        CheckpointCarga.sistema == sistema, _do_ambiente(sistema))) if not c.concluida), default=0)
+
+
+def iniciar_camadas_parcial(db: Session, usuario: str, conector: str) -> Execucao:
+    """TL 30/10 (PP1–PP5): prata e ouro sobre a bronze de uma leitura parcial. Não lê a origem, não mexe nos
+    checkpoints, termina como 'parcial'. Roda com a agenda desligada; 409 (Conflito) só com outra execução viva."""
+    if conector not in CONECTORES_COMPLETA:
+        raise Bloqueado("Carga completa ainda não disponível para este conector")
+    sistema = _sistema(conector)
+    if not pode_camadas_parcial(db, sistema):
+        raise Bloqueado("Só dá para processar as camadas de uma leitura parcial com bronze já carregada.")
+    disco = recursos.motivo_disco_cheio(exige_leitura=True)
+    if disco:
+        raise Bloqueado(disco)
+    trava = db.get_bind().connect()
+    if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": _chave_lock(sistema)}).scalar():
+        trava.close()
+        from app.services import trava as tv
+        raise cc.Conflito(tv.conflito(db, sistema, conector, usuario))
+    try:
+        from app.services import trava as tv
+        for velha in tv.em_andamento(db, sistema):
+            tv.interromper(db, velha, usuario, "sem processo vivo (trava livre)", automatico=True)
+        ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
+                      etapa="prata", atualizado_em=datetime.now(UTC), modo=None)
+        db.add(ex)
+        db.commit()
+    except Exception:
+        _solta(trava, sistema)
+        raise
+    disparar(ex.id, conector, trava, somente_camadas=True, parcial=True)
+    return ex
 
 
 def _trava_livre(db: Session, sistema: str) -> bool:
@@ -552,14 +599,22 @@ def _origem_sil(ex: Execucao) -> dict:
     return ConfigSil.do_ambiente().origem_publica()
 
 
-def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
+def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False,
+          parcial: bool = False) -> None:
     sistema = _sistema(conector)
     proprio = db is None
     db = db or SessionLocal()
     try:
         ex = db.get(Execucao, ex_id)
         try:
-            if somente_camadas:  # retomada: nenhum conector é criado nem lido
+            if somente_camadas and parcial:  # TL 30/10: camadas da leitura parcial, origem não é lida
+                ate = posicao_parcial(db, sistema)
+                db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Camadas sobre leitura parcial (até {ate}) de "
+                                                                      f"{conector}: prata e ouro a partir da bronze, "
+                                                                      "sem ler a origem"))
+                db.commit()
+                _camadas(db, ex, conector, sistema, pode_pular=False, parcial_ate=ate)
+            elif somente_camadas:  # retomada: nenhum conector é criado nem lido
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Retomando prata e ouro de {conector} a partir "
                                                                       "da bronze (sem reler a origem)"))
                 db.commit()
@@ -707,7 +762,8 @@ def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) ->
     log.info("carga completa %s: %s", ex_id, msg)
 
 
-def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True) -> None:
+def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True,
+             parcial_ate: int | None = None) -> None:
     """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada.
     IN1: se nenhuma entrada mudou desde a última reconstrução (camadas_estado), a reconstrução é pulada (o resultado
     seria idêntico); a reconciliação da carga completa roda do mesmo jeito."""
@@ -749,6 +805,11 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
         resumo = f"silver={sres} gold={gres}"
     lido = f"lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados} ignorados={ex.ignorados}"
+    if parcial_ate is not None:  # PP2/PP3: sem reconciliação (a leitura não terminou); checkpoint intacto
+        return _finaliza(db, ex, STATUS_PARCIAL, f"Camadas sobre leitura parcial (até {parcial_ate}) de "
+                                                 f"{NOMES[conector]}: {resumo}. Não é carga completa: o checkpoint "
+                                                 "continua aberto e a próxima carga segue de onde parou.",
+                         {"camadas_parcial": True, "ate": parcial_ate})
     if ex.modo == "incremental":  # a reconciliação compara com o COUNT(*) da última completa: não vale aqui
         return _finaliza(db, ex, "sucesso", f"Carga incremental de {NOMES[conector]} concluída: {lido} {resumo}")
     rec = reconciliacao(db, sistema)
@@ -871,7 +932,8 @@ def situacao(db: Session, conector: str) -> dict:
             "erro": ex.erro_publico(), "alerta": ex.alerta_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
             "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
-            "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
+            "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema),
+            "pode_camadas_parcial": ex.status != "em_andamento" and pode_camadas_parcial(db, sistema)}
     from app.services import contagens_cache
     camadas, atualizando = contagens_cache.obter(db, f"completa:{sistema}", lambda s: contagens_card(s, sistema))
     sem_retrato = camadas is None
