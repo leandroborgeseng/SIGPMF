@@ -381,9 +381,17 @@ def pode_camadas_parcial(db: Session, sistema: str) -> bool:
     return bool(cps) and any(not c.concluida for c in cps)
 
 
+def _ate_checkpoint(c: CheckpointCarga) -> int:
+    """QA M1: "até N" é a última chave gravada (SIL: Sequencia/CCM) quando é inteira; senão, a posição (linhas)."""
+    ch = c.ultima_chave
+    if isinstance(ch, list) and len(ch) == 1 and isinstance(ch[0], int) and not isinstance(ch[0], bool):
+        return ch[0]
+    return c.posicao or 0
+
+
 def posicao_parcial(db: Session, sistema: str) -> int:
-    """Maior posição gravada nos checkpoints ainda abertos (texto "até N"); nunca altera o checkpoint."""
-    return max((c.posicao or 0 for c in db.scalars(select(CheckpointCarga).where(
+    """Maior "até N" dos checkpoints ainda abertos (texto da execução); nunca altera o checkpoint."""
+    return max((_ate_checkpoint(c) for c in db.scalars(select(CheckpointCarga).where(
         CheckpointCarga.sistema == sistema, _do_ambiente(sistema))) if not c.concluida), default=0)
 
 

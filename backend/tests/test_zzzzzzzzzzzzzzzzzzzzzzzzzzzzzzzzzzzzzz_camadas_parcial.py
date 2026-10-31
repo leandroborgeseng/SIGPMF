@@ -25,12 +25,14 @@ def parcial(client, tokens, origem, db, monkeypatch):  # noqa: F811
         ccomp.rodar(ex_id, conector, trava, leitor=origem[cc.CONECTORES[conector][0]],
                     somente_camadas=somente_camadas, parcial=parcial)
     monkeypatch.setattr(ccomp, "disparar", sincrono)
+    ativo = db.scalar(select(Agendamento.ativo).where(Agendamento.conector == "saude"))
+    db.execute(update(Agendamento).where(Agendamento.conector == "saude").values(ativo=True))  # CT26: completa exige ativo
+    db.commit()
     ex = _carga_ok(client, tokens, db)
     ex = db.get(Execucao, ex.id)
     ex.status = "falha"  # leitura interrompida por erro da origem (como a SIL na 102493)
     db.execute(update(CheckpointCarga).where(CheckpointCarga.sistema == "SAUDE").values(concluida=False))
     db.commit()
-    ativo = db.scalar(select(Agendamento.ativo).where(Agendamento.conector == "saude"))
     yield origem
     db.execute(update(Agendamento).where(Agendamento.conector == "saude").values(ativo=ativo, forcar=False))
     db.commit()
@@ -107,3 +109,9 @@ def test_recusa_com_leitura_concluida(client, tokens, parcial, db):
     db.execute(update(CheckpointCarga).where(CheckpointCarga.sistema == "SAUDE").values(concluida=True))
     db.commit()
     assert client.post(URL, headers=tokens["admin"]).status_code == 409
+
+
+def test_m1_ate_usa_a_chave_do_checkpoint_quando_ha(db, parcial):
+    db.execute(update(CheckpointCarga).where(CheckpointCarga.sistema == "SAUDE").values(posicao=300, ultima_chave=[101733]))
+    db.commit()
+    assert ccomp.posicao_parcial(db, "SAUDE") == 101733
