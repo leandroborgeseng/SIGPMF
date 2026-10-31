@@ -178,6 +178,7 @@ def test_corpo_vazio_continua_sendo_fim_sem_repeticao():
 @pytest.fixture()
 def sil_falha(monkeypatch):
     api = Api([(200, {"zz": CCM_SECRETO})] * 2)
+    monkeypatch.setenv("SIL_MAX_PULOS_SEGUIDOS", "1")  # sem pulo: o 1º problema já para (comportamento do #64)
     monkeypatch.setenv("CARGA_COMPLETA_LOTE", "50")
     monkeypatch.setenv("CARGA_COMPLETA_PAUSA_MS", "0")
     monkeypatch.setattr(recursos, "disco", lambda: recursos.Uso(total=100, livre=50))

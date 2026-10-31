@@ -260,7 +260,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           </dl>
           {(sit.quarentena ?? 0) > 0 && (
             <div className="aviso-ambar" role="status">
-              <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena (chave nula)</p>
+              <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena{conector === 'sil' ? ' (Sequencias puladas ou chave nula)' : ' (chave nula)'}</p>
               <button className="link-btn" aria-expanded={quar !== null} onClick={verQuarentena}>
                 {quar ? 'Ocultar detalhes da quarentena' : 'Ver detalhes da quarentena'}
               </button>
