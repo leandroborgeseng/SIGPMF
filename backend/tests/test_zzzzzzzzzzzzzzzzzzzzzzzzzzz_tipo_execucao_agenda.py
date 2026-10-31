@@ -111,7 +111,7 @@ def test_sil_amostra_lotes_vem_da_env_com_padrao_20(monkeypatch):
     assert amostra_sil.lotes_por_execucao() == 20
     monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "3")
     assert amostra_sil.lotes_por_execucao() == 3
-    for v, esperado in (("0", 1), ("999", 100), ("x", 20)):
+    for v, esperado in (("0", 20), ("999", 20), ("x", 20)):  # fora de 1..100 -> padrão (antes: limitava)
         monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", v)
         assert amostra_sil.lotes_por_execucao() == esperado
 

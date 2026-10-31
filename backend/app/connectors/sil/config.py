@@ -1,7 +1,10 @@
 """Configuração do conector SIL, só por variável de ambiente (SIL1). Nada tem valor padrão sensível."""
+import logging
 import math
 import os
 from dataclasses import dataclass, field
+
+log = logging.getLogger("sigpmf.sil")
 
 
 def _env(nome: str) -> str | None:
@@ -14,8 +17,10 @@ def _num(nome: str, padrao: float, minimo: float, maximo: float) -> float:
     try:
         x = float(v) if v is not None else padrao
     except ValueError:
-        x = padrao
-    if not math.isfinite(x):  # nan/inf: float() aceita, min/max não resolvem (D1)
+        x = None
+    if x is None or not math.isfinite(x):  # nan/inf: float() aceita, min/max não resolvem (D1)
+        # Só o nome da variável: o valor nunca vai para o log (pode ser um segredo colado no lugar errado).
+        log.warning("%s inválida (não numérica, nan ou inf); usando o padrão %s.", nome, padrao)
         x = padrao
     return min(max(x, minimo), maximo)
 
