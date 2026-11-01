@@ -30,17 +30,41 @@ INSERT INTO gold.cidadao_sistemas (cidadao_id, nome, sistemas, dominios, atualiz
 SELECT c.cidadao_id, c.nome, COALESCE(s.sistemas, '[]'::jsonb), COALESCE(d.dominios, '[]'::jsonb), c.atualizado_em
   FROM silver.cidadaos c
   LEFT JOIN (SELECT cidadao_id, jsonb_agg(sistema ORDER BY sistema COLLATE "C") AS sistemas
-               FROM (SELECT DISTINCT cidadao_id, sistema FROM silver.vinculos) x
+               FROM (SELECT DISTINCT cidadao_id, sistema FROM silver.vinculos
+                     UNION
+                     SELECT DISTINCT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) x
               GROUP BY cidadao_id) s ON s.cidadao_id = c.cidadao_id
   LEFT JOIN (SELECT cidadao_id, jsonb_agg(dominio ORDER BY dominio COLLATE "C") AS dominios
                FROM (SELECT DISTINCT v.cidadao_id, COALESCE(NULLIF(ss.dominio, ''), 'outros') AS dominio
-                       FROM silver.vinculos v LEFT JOIN silver.sistemas ss ON ss.codigo = v.sistema) y
+                       FROM (SELECT cidadao_id, sistema FROM silver.vinculos
+                             UNION
+                             SELECT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) v
+                       LEFT JOIN silver.sistemas ss ON ss.codigo = v.sistema) y
               GROUP BY cidadao_id) d ON d.cidadao_id = c.cidadao_id
 """)
 
 
 def _mais_novo(v_data, atual_data) -> bool:
     return bool(v_data and (atual_data is None or v_data > atual_data))
+
+
+_SQL_SIL = text("""
+SELECT e.cidadao_id, max(e.ccm) AS ccm
+  FROM silver.empresas_sil e JOIN silver.cidadaos c ON c.cidadao_id = e.cidadao_id
+ WHERE e.cidadao_id IS NOT NULL
+ GROUP BY e.cidadao_id ORDER BY e.cidadao_id
+""")
+
+
+def _presenca_sil(db: Session, dominios: dict, buf: list, descarrega) -> None:
+    """SO1-SO3: a SIL não grava em silver.vinculos (é tributário, por CCM). Ela entra no ouro só como presença do
+    cidadão PF já correlacionado (cadastro = "Empresas:<ccm>", maior CCM do cidadão). Nenhum campo da empresa
+    (nome, documento, endereço) vai para a gold; PJ fica fora porque não tem cidadao_id."""
+    dom = dominios.get("SIL", "tributario")
+    for cid, ccm in db.execute(_SQL_SIL):
+        buf.append({"cidadao_id": cid, "dominio": dom, "campo": "cadastro", "valor": f"Empresas:{ccm}",
+                    "sistema": "SIL", "fonte_atualizado_em": None, "mais_recente": True})
+        descarrega()
 
 
 def reconstruir(db: Session, progresso=None) -> dict[str, int]:
@@ -104,6 +128,8 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
         fecha_cidadao(atual_cid, melhor)
     for cid in sorted(falecidos):  # falecido sem vínculo (raro): só a marca de óbito
         fecha_cidadao(cid, {})
+    descarrega(forca=True)
+    _presenca_sil(db, dominios, buf, descarrega)
     descarrega(forca=True)
     db.execute(_SQL_CIDADAO_SISTEMAS)
     if progresso:
