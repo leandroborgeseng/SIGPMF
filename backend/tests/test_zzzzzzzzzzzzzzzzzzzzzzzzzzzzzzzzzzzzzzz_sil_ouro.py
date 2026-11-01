@@ -51,3 +51,31 @@ def test_so5_idempotente(db):
     visao.reconstruir(db)
     assert [(d.cidadao_id, d.campo, d.valor) for d in _sil(db)] == um
     assert db.scalar(select(func.count()).select_from(DadoGold)) == tot1
+
+
+def test_m1_dominio_tributario_sem_sil_no_catalogo(db):
+    from app.models.camadas import SistemaSilver
+    db.query(SistemaSilver).filter(SistemaSilver.codigo == "SIL").delete()
+    _monta(db)
+    visao.reconstruir(db)
+    a = db.get(CidadaoSistemas, CID_A)
+    assert a.sistemas == ["SIL"] and a.dominios == ["tributario"]
+    assert [d.dominio for d in _sil(db)] == ["tributario"]
+
+
+def test_b3_so_sil_e_sem_sil(db):
+    _monta(db)
+    visao.reconstruir(db)
+    assert db.get(CidadaoSistemas, CID_A).sistemas == ["SIL"]
+    assert db.get(CidadaoSistemas, CID_B).sistemas == []
+
+
+def test_b3_outro_sistema_mais_sil(db):
+    from app.models.camadas import Vinculo
+    _monta(db)
+    db.add(Vinculo(cidadao_id=CID_A, sistema="SAUDE", tabela="zzteste", chave_origem="zzteste-1", bronze_id=-1,
+                   metodo="cpf", confianca=1.0))
+    db.flush()
+    visao.reconstruir(db)
+    a = db.get(CidadaoSistemas, CID_A)
+    assert a.sistemas == ["SAUDE", "SIL"] and "tributario" in a.dominios

@@ -35,7 +35,7 @@ SELECT c.cidadao_id, c.nome, COALESCE(s.sistemas, '[]'::jsonb), COALESCE(d.domin
                      SELECT DISTINCT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) x
               GROUP BY cidadao_id) s ON s.cidadao_id = c.cidadao_id
   LEFT JOIN (SELECT cidadao_id, jsonb_agg(dominio ORDER BY dominio COLLATE "C") AS dominios
-               FROM (SELECT DISTINCT v.cidadao_id, COALESCE(NULLIF(ss.dominio, ''), 'outros') AS dominio
+               FROM (SELECT DISTINCT v.cidadao_id, COALESCE(NULLIF(ss.dominio, ''), CASE WHEN v.sistema = 'SIL' THEN 'tributario' ELSE 'outros' END) AS dominio
                        FROM (SELECT cidadao_id, sistema FROM silver.vinculos
                              UNION
                              SELECT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) v
@@ -60,7 +60,7 @@ def _presenca_sil(db: Session, dominios: dict, buf: list, descarrega) -> None:
     """SO1-SO3: a SIL não grava em silver.vinculos (é tributário, por CCM). Ela entra no ouro só como presença do
     cidadão PF já correlacionado (cadastro = "Empresas:<ccm>", maior CCM do cidadão). Nenhum campo da empresa
     (nome, documento, endereço) vai para a gold; PJ fica fora porque não tem cidadao_id."""
-    dom = dominios.get("SIL", "tributario")
+    dom = dominios.get("SIL") or "tributario"  # M1: mesmo domínio do cidadao_sistemas
     for cid, ccm in db.execute(_SQL_SIL):
         buf.append({"cidadao_id": cid, "dominio": dom, "campo": "cadastro", "valor": f"Empresas:{ccm}",
                     "sistema": "SIL", "fonte_atualizado_em": None, "mais_recente": True})
