@@ -210,3 +210,40 @@ def test_au_agenda_roda_o_audesp(db, tce, monkeypatch):
     assert "despesas 2026 até o mês 2" in (item.ultima_mensagem or "")
     assert ag.executar(db, item) == "sucesso" and "Nenhum arquivo novo" in (item.ultima_mensagem or "")
     assert any(i["conector"] == "audesp" and i["nome"].startswith("AUDESP") for i in ag.estado(db)["itens"])
+
+
+def test_au_carregar_agora_pela_tela_e_orfa(client, tokens, db, tce, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.controle import Execucao
+    monkeypatch.setattr(aq, "cliente_http", tce.cliente)
+    monkeypatch.setattr(aq.ConfigAudesp, "do_ambiente", classmethod(lambda cls, hoje=None: CFG))
+    monkeypatch.setattr(ca, "disparar", lambda ex_id, forcar=False: ca.rodar(ex_id, forcar))  # síncrono no teste
+    assert client.post("/api/audesp/carregar", json={}, headers=tokens["operador"]).status_code == 403
+    r = client.post("/api/audesp/carregar", json={}, headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    d = client.get("/api/audesp/arquivos", headers=tokens["leitura"]).json()
+    assert d["anos"] == [2026] and d["em_andamento"] is None
+    assert d["ultima_execucao"]["status"] == "sucesso" and "despesas 2026 até o mês 2" in d["ultima_execucao"]["mensagem"]
+    assert {(a["tipo"], a["ultimo_mes"]) for a in d["arquivos"]} == {("despesas", 2), ("receitas", 2), ("restos_a_pagar", 1)}
+    # forcar: baixa de novo, mas o conteúdo igual é pulado pelo SHA do CSV
+    gets = tce.gets
+    client.post("/api/audesp/carregar", json={"forcar": True}, headers=tokens["admin"])
+    assert tce.gets == gets + 3
+    assert client.get("/api/audesp/arquivos", headers=tokens["leitura"]).json()["ultima_execucao"]["status"] == "sem_novidades"
+    # órfã: em andamento sem sinal de vida há mais de 30 min não trava a próxima carga
+    velha = Execucao(tipo=ca.TIPO, sistema=aq.SISTEMA, status="em_andamento", usuario="x", modo="incremental",
+                     atualizado_em=datetime.now(UTC) - timedelta(hours=2))
+    db.add(velha)
+    db.commit()
+    assert client.post("/api/audesp/carregar", json={}, headers=tokens["admin"]).status_code == 202
+    db.refresh(velha)
+    assert velha.status == "interrompida"
+    # em andamento de verdade (recente) -> 409
+    db.add(Execucao(tipo=ca.TIPO, sistema=aq.SISTEMA, status="em_andamento", usuario="x", modo="incremental",
+                    atualizado_em=datetime.now(UTC)))
+    db.commit()
+    r = client.post("/api/audesp/carregar", json={}, headers=tokens["admin"])
+    assert r.status_code == 409 and "em andamento" in r.json()["detail"]
+    db.execute(delete(Execucao).where(Execucao.tipo == ca.TIPO, Execucao.status == "em_andamento"))
+    db.commit()

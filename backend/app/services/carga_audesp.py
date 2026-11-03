@@ -9,8 +9,9 @@
 - Uma carga do AUDESP por vez. Mensagens e logs só com tipo, ano e contagens; nunca conteúdo de linha.
 """
 import logging
+import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import select
@@ -26,6 +27,7 @@ log = logging.getLogger("sigpmf.audesp")
 TIPO = "carga_audesp"
 USUARIO_AGENDA = "agenda"
 LOTE = 2000
+ORFA_MIN = 30  # execução "em andamento" sem sinal de vida há mais que isso = processo morreu (deploy, queda)
 NOMES_TIPO = {"receitas": "receitas", "despesas": "despesas", "restos_a_pagar": "restos a pagar"}
 
 
@@ -34,8 +36,14 @@ class CargaRecusada(RuntimeError):
 
 
 def em_andamento(db: Session) -> Execucao | None:
-    return db.scalar(select(Execucao).where(Execucao.tipo == TIPO, Execucao.status == "em_andamento")
-                     .order_by(Execucao.id.desc()).limit(1))
+    """Carga em andamento. A que está sem sinal de vida há mais de ORFA_MIN minutos vira `interrompida` (o processo
+    morreu num deploy ou queda) para não travar o AUDESP para sempre; a próxima carga refaz o que faltou."""
+    ex = db.scalar(select(Execucao).where(Execucao.tipo == TIPO, Execucao.status == "em_andamento")
+                   .order_by(Execucao.id.desc()).limit(1))
+    if ex is not None and (ex.atualizado_em or ex.iniciado_em) < datetime.now(UTC) - timedelta(minutes=ORFA_MIN):
+        _fim(db, ex, "interrompida", "Carga do AUDESP interrompida (o servidor parou). Carregue de novo.")
+        return None
+    return ex
 
 
 def ultima(db: Session) -> Execucao | None:
@@ -133,12 +141,38 @@ def _ingere_e_repassa(db: Session, ex: Execucao, tipo: str, chave: str, lotes, c
         yield from lote
 
 
+def iniciar_em_fundo(db: Session, usuario: str, forcar: bool = False) -> Execucao:
+    """"Carregar agora" da tela: cria a execução (409 se já tem uma) e roda em background; a tela acompanha pelo GET."""
+    ex = _nova(db, usuario)
+    disparar(ex.id, forcar)
+    return ex
+
+
+def disparar(ex_id: int, forcar: bool = False) -> None:
+    """Background (thread daemon). Os testes trocam por execução síncrona."""
+    threading.Thread(target=rodar, args=(ex_id, forcar), daemon=True, name=f"audesp-{ex_id}").start()
+
+
+def rodar(ex_id: int, forcar: bool = False, cliente: httpx.Client | None = None) -> None:
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        ex = db.get(Execucao, ex_id)
+        if ex is not None and ex.status == "em_andamento":
+            executar(db, ex.usuario, cliente=cliente, forcar=forcar, ex=ex)
+    except Exception:  # noqa: BLE001
+        log.exception("AUDESP: execução %s caiu fora do laço", ex_id)
+    finally:
+        db.close()
+
+
 def executar(db: Session, usuario: str | None = USUARIO_AGENDA, cfg: aq.ConfigAudesp | None = None,
              cliente: httpx.Client | None = None, forcar: bool = False,
-             depois_do_arquivo: Callable[[dict], None] | None = None) -> Execucao:
-    """Confere e carrega os arquivos do TCE. `forcar` ignora a assinatura (ainda pula conteúdo idêntico pelo SHA-256)."""
+             depois_do_arquivo: Callable[[dict], None] | None = None, ex: Execucao | None = None) -> Execucao:
+    """Confere e carrega os arquivos do TCE. `forcar` ignora a assinatura (ainda pula conteúdo idêntico pelo SHA-256).
+    `ex`: execução já criada por `iniciar_em_fundo`."""
     cfg = cfg or aq.ConfigAudesp.do_ambiente()
-    ex = _nova(db, usuario)
+    ex = ex or _nova(db, usuario)
     proprio = cliente is None
     cliente = cliente or aq.cliente_http()
     carregados, pulados, falhas = [], 0, []
@@ -213,6 +247,17 @@ def carrega_upload(db: Session, usuario: str, conteudo: bytes) -> Execucao:
         return _fim(db, ex, "falha", str(exc))
     return _fim(db, ex, "sucesso", f"Carregado: {NOMES_TIPO[r['tipo']]} {r['ano']} até o mês {r['ultimo_mes']} "
                                    f"({r['linhas']} linhas).")
+
+
+def estado(db: Session) -> dict:
+    """Tela: arquivos carregados, anos configurados e a execução em andamento ou a última (só contagens e mensagens)."""
+    def ex_dict(e: Execucao | None) -> dict | None:
+        return None if e is None else {"id": e.id, "status": e.status, "mensagem": e.mensagem, "usuario_agenda": e.usuario == USUARIO_AGENDA,
+                                       "arquivo_atual": e.tabela_atual, "lidos": e.lidos or 0, "iniciado_em": e.iniciado_em,
+                                       "finalizado_em": e.finalizado_em}
+    cfg = aq.ConfigAudesp.do_ambiente()
+    return {"anos": list(cfg.anos), "municipio": cfg.municipio, "arquivos": arquivos(db),
+            "em_andamento": ex_dict(em_andamento(db)), "ultima_execucao": ex_dict(ultima(db))}
 
 
 def arquivos(db: Session) -> list[dict]:

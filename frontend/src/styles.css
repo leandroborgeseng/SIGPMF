@@ -460,3 +460,14 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 /* UX57-3: selo "Execução pendente" e "Cancelar execução pendente" com >= 8 px entre eles (também quebrando em 375 px) */
 .pendente { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .pendente > p { flex-basis: 100%; margin: 0; }
+
+/* AU1: card do AUDESP (TCE-SP) na tela Conectores */
+.audesp { margin: 1.25rem 0; display: grid; gap: .75rem; }
+.audesp h2 { margin: 0 0 .25rem; }
+.audesp p { margin: 0; }
+.ph-audesp { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; }
+.ph-audesp > div { flex: 1 1 320px; min-width: 0; }
+.audesp .acoes { margin-bottom: 0; }
+.audesp label.btn { cursor: pointer; }
+.audesp label.btn[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
+.audesp input[type="file"]:focus-visible + label.btn { outline: 3px solid var(--brand); outline-offset: 2px; }
