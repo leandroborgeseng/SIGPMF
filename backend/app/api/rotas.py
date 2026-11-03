@@ -1256,6 +1256,40 @@ def financas_painel(ano: int | None = None, mes_ate: int | None = None, orgao: s
     return pf.painel(db, ano, mes_ate, pf.filtro_valido(orgao), pf.filtro_valido(funcao), pf.filtro_valido(fonte))
 
 
+# ---------- IEG-M (TCE-SP) ----------
+IEGM_MAX_UPLOAD = 2 * 1024 * 1024
+
+
+@api.get("/iegm/painel")
+def iegm_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """IEG-M de Franca: faixa de cada índice por ano base, distribuição do estado e posição no último ano."""
+    from app.services import iegm
+    return iegm.painel(db)
+
+
+@api.get("/iegm/estado")
+def iegm_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: anos do IEG-M carregados e a última importação."""
+    from app.services import iegm
+    return iegm.estado_carga(db)
+
+
+@api.post("/iegm/arquivo")
+async def iegm_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Importação anual do IEG-M (admin): CSV no corpo, no formato de app/services/iegm.py. Inválido = nada gravado."""
+    from app.services import iegm
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo do IEG-M no corpo da requisição.")
+    if len(conteudo) > IEGM_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 2 MB).")
+    ex = iegm.importa(db, u.email, conteudo)
+    audita(db, u.email, "iegm_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo do IEG-M recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
 PERFIL_REVELA_EDUCACAO = "admin_lgpd"
 

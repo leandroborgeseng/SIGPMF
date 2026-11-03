@@ -12,6 +12,7 @@ import Simulador from './pages/Simulador'
 import Politicas from './pages/Politicas'
 import Vinculos from './pages/Vinculos'
 import { PainelFinancas } from './paineis/Financas'
+import { PainelIegm } from './paineis/Iegm'
 import { MonitorCargas, PainelFazenda, PainelGeral, PainelSaude } from './paineis/Paineis'
 
 function Protegido({ children }: { children: ReactNode }) {
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/painel/saude" element={<PainelSaude />} />
         <Route path="/painel/fazenda" element={<PainelFazenda />} />
         <Route path="/painel/financas" element={<PainelFinancas />} />
+        <Route path="/painel/iegm" element={<PainelIegm />} />
         <Route path="/monitor" element={<MonitorCargas />} />
         <Route path="/vinculos" element={<Vinculos />} />
         <Route path="/politicas" element={<Politicas />} />
