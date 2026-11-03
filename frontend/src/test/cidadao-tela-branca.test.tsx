@@ -23,7 +23,7 @@ async function abrirFicha(corpo: unknown, status = 200) {
   mockFetch((u) => (u.includes('/gold/cidadaos/') ? [status, corpo] : [200, LISTA]))
   salvaSessao({ token: 't', perfil: 'operador', nome: 'Teste' })
   render(<MemoryRouter initialEntries={['/simulador']}><AuthProvider><App /></AuthProvider></MemoryRouter>)
-  await userEvent.type(screen.getByLabelText('Nome ou CPF completo'), 'Fulano')
+  await userEvent.type(screen.getByLabelText('Nome, CPF, CNPJ ou CCM'), 'Fulano')
   await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Fulano Sintético' }))
 }

@@ -22,7 +22,7 @@ _NASC = re.compile(r"(nascimento|nasc$|^dt_nasc|^data_nasc|_nasc_|nascto)", re.I
 _ROTULO_SENSIVEL = re.compile(r"(cpf|cnpj|cns|documento|nome|mae|endereco|logradouro|bairro|cep|telefone|celular|email|nascimento|obito|falecido)", re.I)
 
 _CPF_TXT = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
-_CNPJ_TXT = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b")
+_CNPJ_TXT = re.compile(r"\b[0-9A-Z]{2}\.?[0-9A-Z]{3}\.?[0-9A-Z]{3}/?[0-9A-Z]{4}-?\d{2}\b")  # CN1: também o alfanumérico
 _EMAIL_TXT = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _CNS_TXT = re.compile(r"\b\d{15}\b")
 

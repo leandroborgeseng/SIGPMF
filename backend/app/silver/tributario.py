@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.identity import documento as docmod
 from app.identity.cpf import normaliza, valido
 from app.models.camadas import DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor, Lancamento, RegistroBronze
 
@@ -69,7 +70,8 @@ def _s(v, n: int) -> str | None:
 
 
 def _digitos(v) -> str:
-    return "".join(ch for ch in str(v or "") if ch.isdigit())
+    """Documento só com dígitos; o CNPJ alfanumérico (CN1) mantém as letras, em maiúsculas."""
+    return docmod.normaliza(str(v or "")) or ""
 
 
 def _grava(db: Session, model, objs, lote: int = 5000) -> int:
