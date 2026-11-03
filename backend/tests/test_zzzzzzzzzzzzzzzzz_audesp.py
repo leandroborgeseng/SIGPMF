@@ -247,3 +247,25 @@ def test_au_carregar_agora_pela_tela_e_orfa(client, tokens, db, tce, monkeypatch
     assert r.status_code == 409 and "em andamento" in r.json()["detail"]
     db.execute(delete(Execucao).where(Execucao.tipo == ca.TIPO, Execucao.status == "em_andamento"))
     db.commit()
+
+
+def test_au5_painel_financas(client, tokens, db, tce):
+    vazio = client.get("/api/financas/painel", headers=tokens["leitura"]).json()
+    assert vazio["atual"] is None and vazio["disponivel"]["anos"] == []
+    assert ca.executar(db, "teste", CFG, cliente=tce.cliente()).status == "sucesso"
+    d = client.get("/api/financas/painel", headers=tokens["leitura"]).json()
+    assert d["filtro"] == {"ano": 2026, "mes_ate": 2, "orgao": None, "funcao": None, "fonte": None}
+    a = d["atual"]
+    # empenhado líquido = 1000 + 250,25 - 100 (anulação); liquidado 400,50; receita 7.500,10
+    assert (a["empenhado"], a["liquidado"], a["pago"], a["receita"]) == (1150.25, 400.5, 400.5, 7500.1)
+    assert a["resultado"] == pytest.approx(7099.6) and a["pessoas_fisicas"] == 250.25 and a["restos_pagos"] == 246.9  # 2 linhas de 2026; o mês 13 de 2025 fica fora
+    assert d["anterior"] is None  # 2025 não carregado
+    assert [x["dim"] for x in d["credores_pj"]] == ["Fornecedor Exemplo Ltda"]  # PF não entra no ranking
+    assert "511418" not in str(d) and "Fulano" not in str(d)
+    assert {x["periodo"] for x in d["mensal"]["receita"]} == {"2026-01", "2026-02"}
+    # até janeiro e só Educação: receita/resultado/restos somem (não têm função)
+    e = client.get("/api/financas/painel", params={"mes_ate": 1, "funcao": "EDUCAÇÃO"}, headers=tokens["leitura"]).json()["atual"]
+    assert e["empenhado"] == 0 and e["receita"] is None and e["resultado"] is None and e["restos_pagos"] is None
+    s = client.get("/api/financas/painel", params={"funcao": "SAÚDE"}, headers=tokens["leitura"]).json()
+    assert s["atual"]["empenhado"] == 900.0 and [x["dim"] for x in s["por_funcao"]] == ["SAÚDE"]
+    assert client.get("/api/financas/painel").status_code == 401
