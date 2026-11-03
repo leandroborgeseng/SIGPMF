@@ -10,6 +10,8 @@ mapeamentos/
 *.dump
 *.sql.gz
 *.csv
+# Exceção: IEG-M do TCE-SP (agregado público por município e faixa; nenhum dado pessoal), fixture dos testes
+!backend/tests/fixtures/iegm-franca-2014-2024.csv
 *.xlsx
 backups/
 # python
