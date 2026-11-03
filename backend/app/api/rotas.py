@@ -1179,8 +1179,8 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
-    if conector == ag.EDUCACAO:  # educação: trava de concorrência, amostra e janela (mesma regra da carga manual)
-        recusa = ag.educacao_recusa(db)
+    if conector in (ag.EDUCACAO, ag.AUDESP):  # trava de concorrência (educação: também amostra e janela)
+        recusa = ag.educacao_recusa(db) if conector == ag.EDUCACAO else ag.audesp_recusa(db)
         if recusa:
             audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
                    {"motivo": recusa[0], "conector": conector}, _ip(req))
@@ -1195,6 +1195,43 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.") from None
     return ag.estado(db)
+
+
+# ---------- AUDESP (TCE-SP): AU1 ----------
+AUDESP_MAX_UPLOAD = 110 * 1024 * 1024
+
+
+@api.get("/audesp/arquivos")
+def audesp_arquivos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Últimos arquivos do AUDESP carregados por tipo e ano (só metadados: linhas, último mês, publicação no TCE)."""
+    from app.services import carga_audesp as ca
+    ult = ca.ultima(db)
+    return {"arquivos": ca.arquivos(db),
+            "ultima_execucao": None if ult is None else {"id": ult.id, "status": ult.status, "mensagem": ult.mensagem,
+                                                         "iniciado_em": ult.iniciado_em, "finalizado_em": ult.finalizado_em}}
+
+
+@api.post("/audesp/arquivo")
+async def audesp_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Plano B (AU1): o admin envia o zip do TCE ou o CSV no corpo (application/zip ou text/csv). O tipo vem do cabeçalho;
+    arquivo fora do contrato é recusado sem carregar nada. Auditado só com o resultado (nunca o conteúdo)."""
+    from app.services import carga_audesp as ca
+    tamanho = req.headers.get("content-length")
+    if tamanho and tamanho.isdigit() and int(tamanho) > AUDESP_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 110 MB).")
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo do AUDESP no corpo da requisição.")
+    if len(conteudo) > AUDESP_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 110 MB).")
+    try:
+        ex = ca.carrega_upload(db, u.email, conteudo)
+    except ca.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "audesp_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo do AUDESP recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
 
 
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------

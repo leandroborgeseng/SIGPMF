@@ -238,11 +238,16 @@ EDUCACAO_SISTEMAS = ("GESTAOESCOLAR",)
 # PR-07: job de contagens (J1–J4) na agenda, 05:45 (depois das cargas da noite); nasce desligado (0034)
 CONTAGENS = "contagens"
 NOME_CONTAGENS = "Contagens automáticas (só agregados)"
+# AU1: arquivos do AUDESP no portal do TCE-SP (receita, despesa, restos a pagar); nasce desligado (0038)
+AUDESP = "audesp"
+NOME_AUDESP = "AUDESP (TCE-SP): receita, despesa e restos a pagar"
 
 
 def _nome(conector: str) -> str:
     if conector == CONTAGENS:
         return NOME_CONTAGENS
+    if conector == AUDESP:
+        return NOME_AUDESP
     return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
 
 
@@ -308,6 +313,33 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
         return _encerra(db, ag, "parcial", ex.mensagem or "Carga de educação parcial.", agora, resolvido=True)
     return _encerra(db, ag, "falha", ex.mensagem or f"Carga de educação terminou como {ex.status}.", agora,
                     resolvido=False)
+
+
+def audesp_recusa(db: Session) -> tuple[str, str] | None:
+    from app.services import carga_audesp as ca
+    return ("ocupado", "Já existe uma carga do AUDESP em andamento.") if ca.em_andamento(db) is not None else None
+
+
+def _executar_audesp(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """AU1: confere os arquivos no portal do TCE e carrega só os que mudaram. Falha vira mensagem segura."""
+    from app.services import carga_audesp as ca
+    forcado = bool(ag.forcar)
+    recusa = audesp_recusa(db)
+    if recusa:
+        return _encerra(db, ag, "ocupada", recusa[1], agora, resolvido=False)
+    try:
+        ex = ca.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except ca.CargaRecusada as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Carga do AUDESP não concluída ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = {"sucesso": "sucesso", "sem_novidades": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
+    return _encerra(db, ag, status, ex.mensagem or "Carga do AUDESP concluída.", agora, resolvido=status != "falha")
 
 
 def _executar_contagens(db: Session, ag: Agendamento, agora: datetime) -> str:
@@ -410,6 +442,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
         return _executar_educacao(db, ag, agora, leitor=leitor)
     if conector == CONTAGENS:
         return _executar_contagens(db, ag, agora)
+    if conector == AUDESP:
+        return _executar_audesp(db, ag, agora)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -476,7 +510,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS)) or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP)) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
@@ -578,7 +612,7 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "ultima_execucao": _execucao(db, ag.ultima_execucao_id),
             "em_andamento": _execucao(db, atual.id) if atual else None,
             "atualizado_por": ag.atualizado_por})
-    historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS
+    historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS else AUDESP if e.sistema == "AUDESP"
                   else next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
                   **_execucao(db, e.id)}
                  for e in db.scalars(select(Execucao).where(Execucao.usuario == USUARIO,
