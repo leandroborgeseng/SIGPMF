@@ -1179,8 +1179,8 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
-    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL):  # trava de concorrência (educação: também amostra e janela)
-        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa}[conector](db)
+    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL, ag.CUBOS):  # trava de concorrência (educação: também amostra e janela)
+        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa, ag.CUBOS: ag.cubos_recusa}[conector](db)
         if recusa:
             audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
                    {"motivo": recusa[0], "conector": conector}, _ip(req))
@@ -1317,6 +1317,46 @@ def rh_painel(ano: int | None = None, mes: int | None = None, secretaria: str | 
     """Painel de RH: só agregados, com supressão de grupos com menos de 5 servidores. Nenhuma linha por pessoa."""
     from app.services import painel_rh as pr
     return pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
+
+
+# ---------- Cubos e cruzamentos: CB1 a CB3 ----------
+@api.get("/cubos")
+def cubos_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Catálogo dos cubos (dimensões e medidas), tabelas calculadas e o recálculo em andamento ou o último."""
+    from app.gold import cubos, cubos_consulta
+    return {"catalogo": cubos_consulta.catalogo(), **cubos.estado(db)}
+
+
+@api.post("/cubos/recalcular", status_code=202)
+def cubos_recalcular(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Recalcula os cubos em background (admin), sem depender da agenda."""
+    from app.gold import cubos
+    try:
+        ex = cubos.iniciar_em_fundo(db, u.email)
+    except cubos.CalculoRecusado as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "cubos_recalcular", f"execucao:{ex.id}", None, _ip(req))
+    return cubos.estado(db)
+
+
+@api.get("/cubos/{cubo}")
+def cubo_consulta(cubo: str, req: Request, agrupar: str = "", medidas: str = "", u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Consulta a um cubo: `agrupar` e `medidas` separados por vírgula e `f_<dimensão>=valor` para filtrar. Lista fechada;
+    grupo com menos de 5 pessoas não sai."""
+    from app.gold import cubos_consulta as cc_
+    filtros = {k[2:]: v for k, v in req.query_params.items() if k.startswith("f_")}
+    separa = lambda x: [i.strip() for i in x.split(",") if i.strip()]  # noqa: E731
+    try:
+        return cc_.consulta(db, cubo, separa(agrupar), separa(medidas) or None, filtros)
+    except cc_.ConsultaInvalida as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@api.get("/cruzamentos")
+def cruzamentos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Matriz por bairro, destaques, correlações e cruzamentos da cidade. Só agregados."""
+    from app.gold import cruzamentos as cz
+    return cz.tudo(db)
 
 
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------

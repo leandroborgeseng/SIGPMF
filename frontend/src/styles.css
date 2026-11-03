@@ -513,3 +513,17 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .iegm-desc dt { font-weight: 600; }
 .iegm-desc dd { margin: 2px 0 0; color: var(--ink-2); font-size: 13.5px; }
 @media (max-width: 640px) { .iegm-estado li { grid-template-columns: 1fr; gap: 4px; } .iegm-estado-pct { text-align: left; } }
+
+/* Cruzamentos */
+.cz-achados { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.cz-achados li { display: flex; flex-direction: column; gap: 6px; }
+.cz-achados p { margin: 0; }
+.cz-valor { font-family: var(--font-mono); font-size: 24px; font-variant-numeric: tabular-nums; }
+.cz-acao { font-size: 13px; }
+.cz-areas { margin-top: auto; font-size: 11.5px; }
+.cz-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.cz-lista .selo { margin-left: 8px; }
+.cz-busca { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.cz-tabela tbody th { background: none; color: inherit; font-size: inherit; font-weight: 500; text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.cz-tabela thead .link-btn { color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; text-align: inherit; }
+@media (max-width: 720px) { .cz-tabela tbody th { display: block; white-space: normal; font-weight: 600; } }

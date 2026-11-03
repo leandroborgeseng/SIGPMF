@@ -45,10 +45,10 @@ describe('acesso', () => {
     montar('/dashboard', 'admin')
     const nav = await screen.findByRole('navigation', { name: 'Navegação principal' })
     const links = within(nav).getAllByRole('link')
-    expect(links.map((l) => l.textContent)).toEqual(['Visão geral', 'Saúde', 'Fazenda', 'Finanças', 'IEG-M (TCE)', 'Recursos Humanos', 'Dashboard das cargas', 'Monitor de cargas',
+    expect(links.map((l) => l.textContent)).toEqual(['Visão geral', 'Saúde', 'Fazenda', 'Finanças', 'IEG-M (TCE)', 'Recursos Humanos', 'Cruzamentos', 'Dashboard das cargas', 'Monitor de cargas',
       'Conectores', 'Andamento das cargas', 'Simulador do Cidadão', 'Explorar dados', 'Explorador de vínculos', 'Políticas de dados',
       'Acesso por secretaria'])  // PR-06: grupo TI só para admin
-    expect(links[6]).toHaveAttribute('aria-current', 'page')
+    expect(links[7]).toHaveAttribute('aria-current', 'page')
     expect(links[0]).not.toHaveAttribute('aria-current')  // /painel não fica ativo em outras rotas (end)
   })
 
