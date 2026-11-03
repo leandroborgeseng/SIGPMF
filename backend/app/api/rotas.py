@@ -1247,6 +1247,15 @@ async def audesp_upload(req: Request, u: Usuario = Depends(admin_auditado), db: 
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
 
 
+@api.get("/financas/painel")
+def financas_painel(ano: int | None = None, mes_ate: int | None = None, orgao: str | None = None, funcao: str | None = None,
+                    fonte: str | None = None, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Painel Finanças (AUDESP): receita, despesa por fase, função, natureza, fonte, modalidade, fornecedores PJ e
+    restos a pagos, do ano até o mês escolhido e o mesmo período do ano anterior. Só agregados (PF só somado)."""
+    from app.services import painel_financas as pf
+    return pf.painel(db, ano, mes_ate, pf.filtro_valido(orgao), pf.filtro_valido(funcao), pf.filtro_valido(fonte))
+
+
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
 PERFIL_REVELA_EDUCACAO = "admin_lgpd"
 

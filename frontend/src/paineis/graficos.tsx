@@ -75,20 +75,29 @@ export function Vazio({ texto = 'Sem dados ainda: rode as cargas deste conector.
   return <p className="sutil painel-vazio">{texto}</p>
 }
 
-/** Barras horizontais ordenadas (maior primeiro), com o valor formatado à direita. */
-export function BarrasH({ pontos, formato = num, max = 10, cor = 'brand', rotulo }: {
+/** Barras horizontais ordenadas (maior primeiro), com o valor formatado à direita. Com `aoEscolher`, cada barra vira
+ * um botão que filtra a página (a escolhida fica marcada por `ativo`). */
+export function BarrasH({ pontos, formato = num, max = 10, cor = 'brand', rotulo, aoEscolher, ativo }: {
   pontos: Ponto[]; formato?: (v: number) => string; max?: number; cor?: 'brand' | 'alerta' | 'ok'; rotulo: string
+  aoEscolher?: (dim: string) => void; ativo?: string | null
 }) {
   const lista = [...pontos].sort((a, b) => b.valor - a.valor).slice(0, max)
   if (lista.length === 0) return <Vazio />
   const topo = Math.max(...lista.map((p) => p.valor), 1)
+  const conteudo = (p: Ponto) => (
+    <>
+      <span className="barras-h-rotulo" title={p.dim}>{p.dim}</span>
+      <span className="barras-h-trilho" aria-hidden="true"><span className={`barras-h-barra ${cor}`} style={{ width: `${Math.max(2, (p.valor / topo) * 100)}%` }} /></span>
+      <span className="barras-h-valor num">{formato(p.valor)}</span>
+    </>
+  )
   return (
-    <ul className="barras-h" aria-label={rotulo}>
+    <ul className={`barras-h${aoEscolher ? ' clicavel' : ''}`} aria-label={rotulo}>
       {lista.map((p) => (
-        <li key={p.dim}>
-          <span className="barras-h-rotulo" title={p.dim}>{p.dim}</span>
-          <span className="barras-h-trilho" aria-hidden="true"><span className={`barras-h-barra ${cor}`} style={{ width: `${Math.max(2, (p.valor / topo) * 100)}%` }} /></span>
-          <span className="barras-h-valor num">{formato(p.valor)}</span>
+        <li key={p.dim} className={ativo === p.dim ? 'ativo' : undefined}>
+          {aoEscolher
+            ? <button type="button" aria-pressed={ativo === p.dim} onClick={() => aoEscolher(p.dim)}>{conteudo(p)}</button>
+            : conteudo(p)}
         </li>
       ))}
     </ul>

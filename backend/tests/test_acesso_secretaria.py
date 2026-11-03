@@ -463,7 +463,7 @@ POR_FUNCAO_COM_MOTIVO = {
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/contagens/{eid}/cpfs-repetidos"),
 } | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
 NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
-    ("GET", "/api/audesp/arquivos"), ("POST", "/api/audesp/arquivo"), ("POST", "/api/audesp/carregar"),  # AU1: metadados e upload (só admin)
+    ("GET", "/api/audesp/arquivos"), ("POST", "/api/audesp/arquivo"), ("POST", "/api/audesp/carregar"), ("GET", "/api/financas/painel"),  # AU1/AU5: metadados e upload (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
     ("PUT", "/api/catalogo/sistemas/{sid}"), ("POST", "/api/catalogo/sistemas/{sid}/tabelas"), ("GET", "/api/conectores"),
     ("POST", "/api/conectores/{conector}/testar"), ("POST", "/api/conectores/demo/executar"), ("POST", "/api/conectores/sil/amostra"),
