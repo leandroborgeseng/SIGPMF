@@ -2,6 +2,29 @@
 # Em produção (Coolify) o compose é usado com `-f docker-compose.yml`, sem publicar porta;
 # o proxy do Coolify repassa o domínio para a porta 80 interna do frontend.
 services:
+  postgres:
+    # Máquina de desenvolvimento e runner do CI não têm a memória do servidor de produção
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_worker_processes=8
+      - -c
+      - max_parallel_workers=8
+      - -c
+      - max_parallel_workers_per_gather=2
+      - -c
+      - max_parallel_maintenance_workers=2
+      - -c
+      - max_wal_size=2GB
+    shm_size: 256m
   frontend:
     ports:
       - "${HTTP_PORT:-8080}:80"
