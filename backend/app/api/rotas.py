@@ -1203,12 +1203,25 @@ AUDESP_MAX_UPLOAD = 110 * 1024 * 1024
 
 @api.get("/audesp/arquivos")
 def audesp_arquivos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    """Últimos arquivos do AUDESP carregados por tipo e ano (só metadados: linhas, último mês, publicação no TCE)."""
+    """Tela do AUDESP: arquivos carregados por tipo e ano (linhas, último mês, publicação no TCE), anos configurados e a
+    carga em andamento ou a última. Só metadados."""
     from app.services import carga_audesp as ca
-    ult = ca.ultima(db)
-    return {"arquivos": ca.arquivos(db),
-            "ultima_execucao": None if ult is None else {"id": ult.id, "status": ult.status, "mensagem": ult.mensagem,
-                                                         "iniciado_em": ult.iniciado_em, "finalizado_em": ult.finalizado_em}}
+    return ca.estado(db)
+
+
+@api.post("/audesp/carregar", status_code=202)
+def audesp_carregar(req: Request, dados: dict | None = None, u: Usuario = Depends(admin_auditado),
+                    db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): confere o portal do TCE e carrega o que mudou, em background, sem depender da agenda.
+    `{"forcar": true}` baixa de novo mesmo com a data do TCE igual (o conteúdo idêntico continua sendo pulado)."""
+    from app.services import carga_audesp as ca
+    forcar = bool((dados or {}).get("forcar") is True)
+    try:
+        ex = ca.iniciar_em_fundo(db, u.email, forcar=forcar)
+    except ca.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "audesp_carregar", f"execucao:{ex.id}", {"forcar": forcar}, _ip(req))
+    return ca.estado(db)
 
 
 @api.post("/audesp/arquivo")

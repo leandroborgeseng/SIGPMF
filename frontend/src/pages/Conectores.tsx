@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { useAuth } from '../auth'
 import AgendaCargas from '../AgendaCargas'
+import CargaAudesp from '../CargaAudesp'
 import PainelProgresso from '../PainelProgresso'
 import { Esqueleto, SeloStatus } from '../componentes'
 import PainelBases, { CARGA_EM_PREPARACAO, type Base } from './PainelBases'
@@ -61,6 +62,7 @@ export default function Conectores() {
       </header>
       <PainelProgresso />
       <AgendaCargas ehAdmin={ehAdmin} />
+      <CargaAudesp ehAdmin={ehAdmin} />
       <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} contagensAtualizando={d?.contagens_atualizando === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
