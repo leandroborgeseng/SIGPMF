@@ -244,6 +244,9 @@ NOME_AUDESP = "AUDESP (TCE-SP): receita, despesa e restos a pagar"
 # RH1: remuneração dos servidores no Portal da Transparência; nasce desligado (0040)
 RH_PORTAL = "rh_portal"
 NOME_RH_PORTAL = "RH (Portal da Transparência): remuneração dos servidores"
+# CB1: recálculo dos cubos do ouro, depois das cargas da noite; nasce desligado (0041)
+CUBOS = "cubos"
+NOME_CUBOS = "Cubos e cruzamentos (recálculo do ouro)"
 
 
 def _nome(conector: str) -> str:
@@ -253,6 +256,8 @@ def _nome(conector: str) -> str:
         return NOME_AUDESP
     if conector == RH_PORTAL:
         return NOME_RH_PORTAL
+    if conector == CUBOS:
+        return NOME_CUBOS
     return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
 
 
@@ -371,6 +376,30 @@ def _executar_rh(db: Session, ag: Agendamento, agora: datetime) -> str:
     return _encerra(db, ag, status, ex.mensagem or "Carga de RH concluída.", agora, resolvido=status != "falha")
 
 
+def cubos_recusa(db: Session) -> tuple[str, str] | None:
+    from app.gold import cubos
+    return ("ocupado", "Já existe um recálculo dos cubos em andamento.") if cubos.em_andamento(db) is not None else None
+
+
+def _executar_cubos(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """CB1: recalcula os cubos. Falha vira mensagem segura e não afeta nenhuma carga."""
+    from app.gold import cubos
+    forcado = bool(ag.forcar)
+    try:
+        ex = cubos.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except cubos.CalculoRecusado as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Recálculo não concluído ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = "sucesso" if ex.status == "sucesso" else "falha"
+    return _encerra(db, ag, status, ex.mensagem or "Cubos recalculados.", agora, resolvido=status == "sucesso")
+
+
 def _executar_contagens(db: Session, ag: Agendamento, agora: datetime) -> str:
     """Roda o job J1–J4 (só leitura, só agregados). Falha vira mensagem fixa, nunca str(exc)."""
     from app.contagens import job
@@ -475,6 +504,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
         return _executar_audesp(db, ag, agora)
     if conector == RH_PORTAL:
         return _executar_rh(db, ag, agora)
+    if conector == CUBOS:
+        return _executar_cubos(db, ag, agora)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -541,7 +572,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP, RH_PORTAL)) or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP, RH_PORTAL, CUBOS)) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
@@ -645,6 +676,7 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "atualizado_por": ag.atualizado_por})
     historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS else AUDESP if e.sistema == "AUDESP"
                   else RH_PORTAL if e.sistema == "PORTAL_RH"
+                  else CUBOS if e.sistema == "CUBOS"
                   else next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
                   **_execucao(db, e.id)}
                  for e in db.scalars(select(Execucao).where(Execucao.usuario == USUARIO,

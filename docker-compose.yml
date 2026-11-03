@@ -4,6 +4,31 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Memória e paralelismo por variável (padrões modestos). Valores para 16 núcleos e 64 GB em .env.example.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1GB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - max_worker_processes=${PG_MAX_WORKER_PROCESSES:-8}
+      - -c
+      - max_parallel_workers=${PG_MAX_PARALLEL_WORKERS:-8}
+      - -c
+      - max_parallel_workers_per_gather=${PG_MAX_PARALLEL_PER_GATHER:-2}
+      - -c
+      - max_parallel_maintenance_workers=${PG_MAX_PARALLEL_MAINTENANCE:-2}
+      - -c
+      - random_page_cost=${PG_RANDOM_PAGE_COST:-1.1}
+      - -c
+      - max_wal_size=${PG_MAX_WAL_SIZE:-2GB}
+    # Consulta paralela usa /dev/shm: o padrão de 64 MB do Docker derruba consulta grande
+    shm_size: ${PG_SHM_SIZE:-256m}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?defina no .env}
       POSTGRES_USER: ${POSTGRES_USER:?defina no .env}
