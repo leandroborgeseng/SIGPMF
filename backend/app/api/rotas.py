@@ -1179,8 +1179,8 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
-    if conector in (ag.EDUCACAO, ag.AUDESP):  # trava de concorrência (educação: também amostra e janela)
-        recusa = ag.educacao_recusa(db) if conector == ag.EDUCACAO else ag.audesp_recusa(db)
+    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL):  # trava de concorrência (educação: também amostra e janela)
+        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa}[conector](db)
         if recusa:
             audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
                    {"motivo": recusa[0], "conector": conector}, _ip(req))
@@ -1288,6 +1288,35 @@ async def iegm_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Se
     if ex.status != "sucesso":
         raise HTTPException(422, ex.mensagem or "Arquivo do IEG-M recusado.")
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
+# ---------- RH pelo Portal da Transparência: RH1 e RH2 ----------
+@api.get("/rh/estado")
+def rh_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: meses de RH carregados e a carga em andamento ou a última. Só contagens."""
+    from app.services import carga_rh as cr
+    return cr.estado(db)
+
+
+@api.post("/rh/carregar", status_code=202)
+def rh_carregar(req: Request, dados: dict | None = None, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): baixa do portal os meses que faltam, em background, sem depender da agenda."""
+    from app.services import carga_rh as cr
+    forcar = (dados or {}).get("forcar") is True
+    try:
+        ex = cr.iniciar_em_fundo(db, u.email, forcar=forcar)
+    except cr.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "rh_carregar", f"execucao:{ex.id}", {"forcar": forcar}, _ip(req))
+    return cr.estado(db)
+
+
+@api.get("/rh/painel")
+def rh_painel(ano: int | None = None, mes: int | None = None, secretaria: str | None = None, grupo: str | None = None,
+              u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Painel de RH: só agregados, com supressão de grupos com menos de 5 servidores. Nenhuma linha por pessoa."""
+    from app.services import painel_rh as pr
+    return pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
 
 
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
