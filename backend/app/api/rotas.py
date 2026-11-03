@@ -898,7 +898,7 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     from datetime import date as _date
 
     from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
-    from app.silver.fatos import nomes
+    from app.silver.fatos import nomes, rotulo_especialidade
     acs.exige(db, u, req, "saude", dominios=["saude"], alvo=f"cidadao:{cid}")  # clínico: só a Saúde (inclusive menor)
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
@@ -910,9 +910,10 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
     audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
     return {"cidadao_id": cid,
-            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade),
+            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp),
                           "dias_espera": a.dias_espera} for a in ag],
-            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade)} for a in at],
+            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp)}
+                             for a in at],
             "vacinas": [{"data": v.data, "vacina": v.vacina, "dose": v.dose, "unidade": uni.get(v.unidade)} for v in va]}
 
 

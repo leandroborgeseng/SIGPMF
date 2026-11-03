@@ -18,6 +18,7 @@ const SERIES = {
   saude_atend_unidade: [{ periodo: '', dim: 'UBS Centro', valor: 6100 }, { periodo: '', dim: 'PS Norte', valor: 9800 }],
   saude_espera_especialidade: [{ periodo: '', dim: 'Ortopedia', valor: 132 }, { periodo: '', dim: 'Cardiologia', valor: 61 }],
   saude_agend_especialidade: [], saude_vacina_mes: [], saude_vacina_tipo: [{ periodo: '', dim: 'Influenza', valor: 61200 }],
+  saude_especialidade_sem_nome: [k('atendimentos', 12.5), k('agendamentos', 41.2)],
   trib_inadimplencia_tributo: [{ periodo: '', dim: 'IPTU', valor: 21.3 }],
   trib_divida_ano: [{ periodo: '', dim: '2024', valor: 300e6 }],
   trib_devedores_faixa: [{ periodo: '', dim: 'até R$ 1 mil', valor: 50000 }],
@@ -48,6 +49,7 @@ describe('painéis de gestão (onda 4)', () => {
     const lista = await screen.findByRole('list', { name: 'Atendimentos por unidade' })
     expect(within(lista).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['PS Norte9.800', 'UBS Centro6.100'])
     expect(screen.getAllByText(/Sem dados ainda/).length).toBeGreaterThan(0)  // agendamentos vazios
+    expect(screen.getByText('41,2% dos agendamentos com especialidade sem nome no cadastro da Saúde')).toBeVisible()  // ES2
   })
   it('fazenda: onde está o dinheiro e erro com tentar de novo', async () => {
     mock(200, { atualizado_em: null, series: SERIES })
