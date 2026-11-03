@@ -487,3 +487,29 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 /* Finanças: nomes longos (funções, órgãos, credores) ganham mais espaço que nos outros painéis */
 .painel-financas .barras-h li, .painel-financas .barras-h.clicavel button { grid-template-columns: minmax(120px, 52%) minmax(0, 1fr) auto; }
 .painel-financas .barras-h-rotulo { font-size: 12.5px; }
+
+/* IEG-M: selos de faixa (A … C), matriz área × ano e comparação com o estado */
+.faixa { display: inline-flex; align-items: center; justify-content: center; min-width: 2.4em; padding: 2px 6px; border-radius: 6px;
+  font-weight: 600; font-size: 13px; font-family: var(--font-mono); border: 1px solid transparent; }
+.faixa-A { background: var(--ok); color: #fff; }
+.faixa-Bmais { background: var(--ok-bg); color: var(--ok-ink); border-color: var(--ok-line); }
+.faixa-B { background: var(--brand-soft); color: var(--brand-hover); border-color: #CFE0F5; }
+.faixa-Cmais { background: var(--warn-bg); color: var(--warn-ink); border-color: var(--warn-line); }
+.faixa-C { background: var(--danger-bg); color: var(--danger-ink); border-color: var(--danger-line); }
+.faixa-vazia { color: var(--ink-4); }
+.iegm-matriz th[scope="row"] { min-width: 190px; text-align: left; text-transform: none; letter-spacing: normal; color: var(--ink); font-size: 13.5px; }
+.iegm-matriz td, .iegm-matriz thead th { text-align: center; }
+.iegm-nome { display: block; font-weight: 600; }
+.iegm-area { display: block; font-size: 12px; font-weight: 400; }
+.iegm-geral th, .iegm-geral td { background: var(--surface-2); }
+.iegm-legenda { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0 0; padding: 0; font-size: 13px; }
+.iegm-estado { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.iegm-estado li { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) 90px; gap: 10px; align-items: center; font-size: 13px; }
+.iegm-barra { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.iegm-barra .seg { min-width: 4px; border-radius: 0; padding: 0; font-size: 11px; white-space: nowrap; overflow: hidden; border: 0; }
+.iegm-barra .seg.franca { outline: 3px solid var(--ink); outline-offset: -3px; font-weight: 700; padding: 0 6px; flex-shrink: 0; }
+.iegm-estado-pct { text-align: right; }
+.iegm-desc { margin: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.iegm-desc dt { font-weight: 600; }
+.iegm-desc dd { margin: 2px 0 0; color: var(--ink-2); font-size: 13.5px; }
+@media (max-width: 640px) { .iegm-estado li { grid-template-columns: 1fr; gap: 4px; } .iegm-estado-pct { text-align: left; } }
