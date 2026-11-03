@@ -7,6 +7,14 @@ import OrigemDado from '../OrigemDado'
 import { AcessosCidadao, ImpostosCidadao, LinhaDoTempoCidadao, ResumoPortal, SaudeCidadao, useDadosFicha } from '../FichaPortal'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
+type Empresa = { documento: string; tipo_pessoa: string | null; nome: string | null; ccms: number[]; possui_debito: boolean | null; imoveis_ativos: number; fontes: string[] }
+
+/** CN4: CNPJ completo (numérico ou alfanumérico), raiz do CNPJ (8) ou CCM vão para a busca de empresa; o resto é cidadão. */
+function ehBuscaDeEmpresa(texto: string): boolean {
+  const t = texto.replace(/[\s./-]/g, '').toUpperCase()
+  if (/^\d{11}$/.test(t)) return false  // CPF
+  return /^[0-9A-Z]{12}\d{2}$/.test(t) || (/^[0-9A-Z]{8}$/.test(t) && /\d/.test(t)) || /^\d{1,9}$/.test(t)
+}
 type Dado = { dominio: string; campo: string; valor: string | null; fonte: string | null; atualizado_em: string | null }
 type Ficha = { cidadao_id: string; nome: string | null; cpf: string | null; cns?: string | null; sistemas: string[] | null; dados: Dado[] | null; enderecos: EnderecoFicha[] | null }
 type EnderecoFicha = { valor: string | null; linhas?: string[]; fonte: string | null; atualizado_em: string | null; mais_recente: boolean; origem_endereco?: string | null }
@@ -19,29 +27,42 @@ export default function Simulador() {
   const [busca, setBusca] = useState('')
   const [buscado, setBuscado] = useState('')
   const [lista, setLista] = useState<Item[] | null>(null)
+  const [empresas, setEmpresas] = useState<Empresa[] | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(false)
+  const [recusa, setRecusa] = useState<string | null>(null)
   const [params] = useSearchParams()
   const [sel, setSel] = useState<string | null>(params.get('cid'))  // VN5: "Abrir ficha completa" do explorador
 
   const buscar = async (e?: FormEvent) => {
     e?.preventDefault()
-    setErro(false); setCarregando(true); setSel(null); setBuscado(busca)
-    try { setLista((await api<Item[] | null>(`/silver/cidadaos?busca=${encodeURIComponent(busca)}`)) ?? []) }
-    catch { setErro(true) } finally { setCarregando(false) }
+    setErro(false); setRecusa(null); setCarregando(true); setSel(null); setBuscado(busca)
+    try {
+      if (ehBuscaDeEmpresa(busca)) {
+        setLista(null); setEmpresas((await api<Empresa[] | null>(`/silver/empresas?busca=${encodeURIComponent(busca)}`)) ?? [])
+      } else {
+        setEmpresas(null); setLista((await api<Item[] | null>(`/silver/cidadaos?busca=${encodeURIComponent(busca)}`)) ?? [])
+      }
+    } catch (x) {
+      // 400 = busca mal formada (CNPJ com DV errado...): mostra o motivo; 403 = sem acesso ao tributário
+      if (x instanceof ApiErro && (x.status === 400 || x.status === 403)) { setLista(null); setEmpresas(null); setRecusa(x.message) }
+      else setErro(true)
+    } finally { setCarregando(false) }
   }
 
   return (
     <section aria-labelledby="t-sim">
       <h1 id="t-sim">Simulador do Cidadão</h1>
       <form role="search" onSubmit={buscar} className="busca">
-        <label htmlFor="busca">Nome ou CPF completo</label>
+        <label htmlFor="busca">Nome, CPF, CNPJ ou CCM</label>
         <input id="busca" value={busca} onChange={(e) => setBusca(e.target.value)} />
         <button className="btn" type="submit">Buscar</button>
       </form>
       {erro ? <Erro texto="Não foi possível carregar os dados do cidadão. Tente novamente." onRetry={buscar} />
         : carregando ? <Esqueleto />
-        : lista === null ? <p className="vazio">Busque um cidadão por nome ou CPF para ver os dados integrados.</p>
+        : recusa ? <p className="vazio" role="alert">{recusa}</p>
+        : empresas !== null ? <ListaEmpresas empresas={empresas} buscado={buscado} />
+        : lista === null ? <p className="vazio">Busque um cidadão por nome ou CPF, ou uma empresa pelo CNPJ ou CCM.</p>
         : lista.length === 0 ? <p className="vazio">Nenhum cidadão encontrado para "{buscado}". Confira a grafia ou busque pelo CPF.</p>
         : !sel && (
           <ul className="lista-cartoes" aria-label="Resultados">
@@ -59,6 +80,27 @@ export default function Simulador() {
         </ErrorBoundary>
       )}
     </section>
+  )
+}
+
+function ListaEmpresas({ empresas, buscado }: { empresas: Empresa[]; buscado: string }) {
+  if (empresas.length === 0) return <p className="vazio">Nenhuma empresa encontrada para "{buscado}" na SIL, no ISS nem no IPTU.</p>
+  return (
+    <>
+      <p className="sutil">CNPJ e razão social aparecem mascarados (LGPD). A ficha completa da empresa vem numa próxima etapa.</p>
+      <ul className="lista-cartoes" aria-label="Empresas encontradas">
+        {empresas.map((e) => (
+          <li key={`${e.documento}-${e.ccms.join(',')}`} className="cartao">
+            <strong>{e.nome || 'Nome não informado'}</strong>
+            <div>{e.tipo_pessoa === 'PF' ? 'CPF' : 'CNPJ'}: {e.documento} · CCM: {e.ccms.join(', ') || '—'}</div>
+            <div>
+              {e.possui_debito === true ? 'Com débito na SIL' : e.possui_debito === false ? 'Sem débito na SIL' : 'Débito: sem informação'}
+              {' · '}{e.imoveis_ativos} {e.imoveis_ativos === 1 ? 'imóvel ativo' : 'imóveis ativos'} · Fontes: {e.fontes.join(', ')}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 

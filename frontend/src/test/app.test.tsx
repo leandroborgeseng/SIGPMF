@@ -138,8 +138,8 @@ describe('simulador', () => {
   async function abrir(perfil: string) {
     mockFetch(rota)
     const r = montar('/simulador', perfil)
-    expect(await screen.findByText('Busque um cidadão por nome ou CPF para ver os dados integrados.')).toBeInTheDocument()
-    await userEvent.type(screen.getByLabelText('Nome ou CPF completo'), 'Bruno')
+    expect(await screen.findByText('Busque um cidadão por nome ou CPF, ou uma empresa pelo CNPJ ou CCM.')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Nome, CPF, CNPJ ou CCM'), 'Bruno')
     await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Bruno Exemplo Souza' }))
     await screen.findByRole('heading', { name: 'Bruno Exemplo Souza' })
@@ -160,6 +160,35 @@ describe('simulador', () => {
   it('admin não vê o botão Revelar (UX-S11)', async () => {
     await abrir('admin')
     expect(screen.queryByRole('button', { name: 'Revelar CPF' })).toBeNull()
+  })
+
+  it('CNPJ, raiz ou CCM buscam empresa mascarada; DV errado mostra o motivo (CN4)', async () => {
+    const urls: string[] = []
+    mockFetch((url) => {
+      urls.push(url)
+      if (url.includes('/silver/empresas')) {
+        return url.includes('01DE-36') ? [400, { detail: 'CNPJ inválido: confira os dígitos verificadores.' }]
+          : [200, [{ documento: '**.***.***/01DE-**', tipo_pessoa: 'PJ', nome: 'P****** E******', ccms: [990001], possui_debito: true, imoveis_ativos: 1, fontes: ['SIL', 'IPTU'] }]]
+      }
+      return [200, []]
+    })
+    const { container } = montar('/simulador', 'leitura')
+    const campo = await screen.findByLabelText('Nome, CPF, CNPJ ou CCM')
+    await userEvent.type(campo, '12.abc.345/01de-35')
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    const lista = await screen.findByRole('list', { name: 'Empresas encontradas' })
+    expect(within(lista).getByText(/CNPJ: \*\*\.\*\*\*\.\*\*\*\/01DE-\*\* · CCM: 990001/)).toBeVisible()
+    expect(within(lista).getByText(/Com débito na SIL · 1 imóvel ativo · Fontes: SIL, IPTU/)).toBeVisible()
+    expect(urls.some((u) => u.includes('/silver/cidadaos'))).toBe(false)
+    await semViolacoesSerias(container)
+    await userEvent.clear(campo)
+    await userEvent.type(campo, '12.ABC.345/01DE-36')
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('CNPJ inválido: confira os dígitos verificadores.')
+    await userEvent.clear(campo)
+    await userEvent.type(campo, '123.456.789-09')  // CPF continua na busca de cidadão
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    await waitFor(() => expect(urls.at(-1)).toContain('/silver/cidadaos'))
   })
 
   it('admin_lgpd revela com motivo, aviso e remascara em 60 s (UX-S11/S12/S13)', async () => {

@@ -442,6 +442,7 @@ def test_qa2_rotas_de_qualidade_municipes_e_acessos(client, db, rbac, tokens):
 PESSOAIS = {
     ("GET", "/api/silver/cidadaos"), ("GET", "/api/silver/cidadaos.csv"), ("GET", "/api/silver/pendencias"),
     ("GET", "/api/silver/municipes"), ("GET", "/api/silver/municipes/pendencias"), ("GET", "/api/silver/inconsistencias"),
+    ("GET", "/api/silver/empresas"),  # CN4: MEI/empresário individual é pessoa física
     ("GET", "/api/gold/cidadaos/{cid}"), ("GET", "/api/gold/cidadaos/{cid}/tributario"),
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),

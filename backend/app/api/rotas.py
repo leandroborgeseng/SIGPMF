@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -763,6 +764,58 @@ def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depe
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 
+_LIMPA_DOC = re.compile(r"[\s.\-/]")
+
+
+@api.get("/silver/empresas", dependencies=[Depends(dom("tributario"))])
+def silver_empresas(req: Request, busca: str = "", u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """CN4: empresa pelo CNPJ completo (numérico ou alfanumérico, CN1), pela raiz do CNPJ (8 posições, matriz e filiais)
+    ou pelo CCM da SIL. Junta SIL (empresas_sil), ISS (municipes PJ) e IPTU (possuidor PJ). Não busca por nome: a razão
+    social sai mascarada (SIL16) e a busca por nome a revelaria. A auditoria guarda o modo e a quantidade, nunca o CNPJ."""
+    from app.identity import documento as docmod
+    from app.models.camadas import EmpresaSil, ImovelPossuidor
+    from app.services.vinculos import mascara_doc
+    termo = _LIMPA_DOC.sub("", busca or "").upper()
+    ccm = int(termo) if termo.isdigit() and len(termo) <= 9 else None
+    if re.fullmatch(r"[0-9A-Z]{12}[0-9]{2}", termo):
+        if not docmod.cnpj_valido(termo):
+            raise HTTPException(400, "CNPJ inválido: confira os dígitos verificadores.")
+        modo, casa = "cnpj", (lambda col: col == termo)
+    elif re.fullmatch(r"[0-9A-Z]{8}", termo):
+        modo, casa = "raiz", (lambda col: col.like(f"{termo}%") & (func.length(col) == 14))
+    elif ccm is not None:
+        modo, casa = "ccm", None
+    else:
+        raise HTTPException(400, "Informe o CNPJ completo (14 posições), a raiz do CNPJ (8) ou o CCM. Para CPF, use a busca de cidadão.")
+    docs: set[str] = set()
+    sil_sem_doc: list = []
+    if casa is not None:
+        docs |= set(db.scalars(select(EmpresaSil.documento).where(casa(EmpresaSil.documento)).limit(200)))
+        docs |= set(db.scalars(select(Municipe.documento).where(casa(Municipe.documento), Municipe.tipo_pessoa == "J").limit(200)))
+        docs |= set(db.scalars(select(ImovelPossuidor.documento).where(casa(ImovelPossuidor.documento)).limit(200)))
+    if ccm is not None:  # 8 dígitos podem ser raiz ou CCM: procura os dois
+        for e in db.scalars(select(EmpresaSil).where(EmpresaSil.ccm == ccm)):
+            if e.documento and len(e.documento) == 14:
+                docs.add(e.documento)
+            else:
+                sil_sem_doc.append(e)
+    out = []
+    for doc in sorted(d for d in docs if d)[:50]:
+        sil = list(db.scalars(select(EmpresaSil).where(EmpresaSil.documento == doc).order_by(EmpresaSil.ccm)))
+        mun = db.get(Municipe, doc)
+        imoveis = db.scalar(select(func.count(func.distinct(ImovelPossuidor.codi)))
+                            .where(ImovelPossuidor.documento == doc, ImovelPossuidor.ativo.is_(True))) or 0
+        nome = next((e.nome for e in sil if e.nome), None) or (mun.nome if mun else None)
+        fontes = [f for f, tem in (("SIL", sil), ("ISS", mun), ("IPTU", imoveis)) if tem]
+        out.append({"documento": mascara_doc(doc), "tipo_pessoa": "PJ", "nome": mascara_nome(nome), "ccms": [e.ccm for e in sil],
+                    "possui_debito": any(e.possui_debito for e in sil) if sil else None, "imoveis_ativos": imoveis,
+                    "fontes": fontes, "mascarado": True})
+    out += [{"documento": mascara_doc(e.documento) if e.documento else "—", "tipo_pessoa": e.tipo_pessoa, "nome": mascara_nome(e.nome), "ccms": [e.ccm], "possui_debito": e.possui_debito,
+             "imoveis_ativos": 0, "fontes": ["SIL"], "mascarado": True} for e in sil_sem_doc]
+    audita(db, u.email, "busca_empresa", "empresas", {"modo": modo, "resultados": len(out)}, _ip(req))
+    return out
+
+
 @api.get("/silver/inconsistencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def inconsistencias(db: Session = Depends(get_db)):
     return [{"id": i.id, "cidadao_id": i.cidadao_id, "sistema": i.sistema, "chave_origem": i.chave_origem, "tipo": i.tipo,
@@ -898,7 +951,7 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     from datetime import date as _date
 
     from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
-    from app.silver.fatos import nomes
+    from app.silver.fatos import nomes, rotulo_especialidade
     acs.exige(db, u, req, "saude", dominios=["saude"], alvo=f"cidadao:{cid}")  # clínico: só a Saúde (inclusive menor)
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
@@ -910,9 +963,10 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
     audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
     return {"cidadao_id": cid,
-            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade),
+            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp),
                           "dias_espera": a.dias_espera} for a in ag],
-            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade)} for a in at],
+            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp)}
+                             for a in at],
             "vacinas": [{"data": v.data, "vacina": v.vacina, "dose": v.dose, "unidade": uni.get(v.unidade)} for v in va]}
 
 

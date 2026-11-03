@@ -34,6 +34,14 @@ def nomes(db: Session) -> dict[str, dict]:
     return {"vacinas": vac, "especialidades": esp}
 
 
+def rotulo_especialidade(codigo: int | None, especialidades: dict) -> str:
+    """Nome da especialidade para tela e painel. Código fora de Aux_Especialidades (o dicionário da Saúde só tem parte dos
+    códigos usados em Consultas/Agendamento_Consulta) aparece como código sem nome, nunca com um nome inventado."""
+    if codigo is None:
+        return "Sem especialidade informada"
+    return especialidades.get(codigo) or f"Código {codigo} (sem nome no cadastro)"
+
+
 def reconstruir(db: Session) -> dict[str, int]:
     for m in (Evento, Vacinacao, Agendamento, Atendimento, UnidadeSaude):
         db.execute(delete(m))

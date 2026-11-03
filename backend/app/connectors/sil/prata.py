@@ -5,6 +5,7 @@
 - Débito: só o indicador PossuiDebito (S/N) vira booleano; nenhum valor financeiro é inferido (parcelas fora da v1).
 - Telefone e e-mail ficam na prata, mas só admin_lgpd vê. CPF/CNPJ em claro só para admin_lgpd; os demais veem
   mascarado. Nada daqui vai para log."""
+from app.identity import documento as docmod
 from app.identity.correlacao import cidadao_id_por_cpf
 from app.identity.cpf import mascara, valido
 
@@ -12,7 +13,8 @@ PERFIS_REVELAM = frozenset({"admin_lgpd"})
 
 
 def digitos(v) -> str:
-    return "".join(ch for ch in str(v or "") if ch.isdigit())
+    """Documento só com dígitos; o CNPJ alfanumérico (CN1) mantém as letras, em maiúsculas."""
+    return docmod.normaliza(str(v or "")) or ""
 
 
 def debito(v) -> bool | None:

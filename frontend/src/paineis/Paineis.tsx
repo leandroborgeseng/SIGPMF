@@ -7,7 +7,7 @@ import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, kpi, num, pct, reais, seri
 
 const SERIES_GERAL = ['kpi', 'trib_lancado_mes', 'trib_pago_mes', 'saude_atend_mes']
 const SERIES_SAUDE = ['kpi', 'saude_atend_mes', 'saude_atend_unidade', 'saude_espera_especialidade', 'saude_agend_especialidade',
-  'saude_vacina_mes', 'saude_vacina_tipo']
+  'saude_vacina_mes', 'saude_vacina_tipo', 'saude_especialidade_sem_nome']
 const SERIES_FAZENDA = ['kpi', 'trib_lancado_mes', 'trib_pago_mes', 'trib_inadimplencia_tributo', 'trib_divida_ano',
   'trib_devedores_faixa', 'trib_saldo_faixa', 'trib_maiores_saldos']
 
@@ -54,6 +54,9 @@ export function PainelGeral() {
 
 export function PainelSaude() {
   const { d, falhou, carregar } = useIndicadores(SERIES_SAUDE)
+  // ES2: parte dos códigos de especialidade não tem nome no cadastro da Saúde (Aux_Especialidades); o painel avisa
+  const semNome = serie(d, 'saude_especialidade_sem_nome').find((p) => p.dim === 'agendamentos')?.valor ?? 0
+  const avisoEsp = semNome > 0 ? `${pct(semNome)} dos agendamentos com especialidade sem nome no cadastro da Saúde` : undefined
   return (
     <section aria-labelledby="t-saude" className="painel">
       <Cabecalho kicker="Gestão" titulo="Saúde" sub="Atendimentos, filas e vacinação — sem conteúdo clínico; grupos com menos de 5 casos ficam ocultos." atualizado={d?.atualizado_em} />
@@ -67,10 +70,10 @@ export function PainelSaude() {
           <div className="painel-grade">
             <Painel titulo="Atendimentos por mês" largo><ColunasMes a={serie(d, 'saude_atend_mes')} rotuloA="Atendimentos" /></Painel>
             <Painel titulo="Atendimentos por unidade (12 meses)"><BarrasH pontos={serie(d, 'saude_atend_unidade')} rotulo="Atendimentos por unidade" /></Painel>
-            <Painel titulo="Espera média por especialidade" nota="dias entre a marcação e a consulta">
+            <Painel titulo="Espera média por especialidade" nota={`dias entre a marcação e a consulta${avisoEsp ? ` · ${avisoEsp}` : ''}`}>
               <BarrasH pontos={serie(d, 'saude_espera_especialidade')} formato={(v) => `${num(v)} d`} cor="alerta" rotulo="Espera por especialidade" />
             </Painel>
-            <Painel titulo="Agendamentos por especialidade"><BarrasH pontos={serie(d, 'saude_agend_especialidade')} rotulo="Agendamentos por especialidade" /></Painel>
+            <Painel titulo="Agendamentos por especialidade" nota={avisoEsp}><BarrasH pontos={serie(d, 'saude_agend_especialidade')} rotulo="Agendamentos por especialidade" /></Painel>
             <Painel titulo="Doses aplicadas por vacina"><BarrasH pontos={serie(d, 'saude_vacina_tipo')} cor="ok" rotulo="Doses por vacina" /></Painel>
             <Painel titulo="Vacinação por mês" largo><ColunasMes a={serie(d, 'saude_vacina_mes')} rotuloA="Doses" meses={24} /></Painel>
           </div>
