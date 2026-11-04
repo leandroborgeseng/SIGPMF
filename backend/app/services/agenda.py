@@ -244,6 +244,9 @@ NOME_AUDESP = "AUDESP (TCE-SP): receita, despesa e restos a pagar"
 # RH1: remuneração dos servidores no Portal da Transparência; nasce desligado (0040)
 RH_PORTAL = "rh_portal"
 NOME_RH_PORTAL = "RH (Portal da Transparência): remuneração dos servidores"
+# Cobertura de planos: dados abertos da ANS e população do IBGE; nasce desligado (0043)
+ANS = "ans"
+NOME_ANS = "ANS e IBGE: cobertura de planos de saúde"
 # CB1: recálculo dos cubos do ouro, depois das cargas da noite; nasce desligado (0041)
 CUBOS = "cubos"
 NOME_CUBOS = "Cubos e cruzamentos (recálculo do ouro)"
@@ -258,6 +261,8 @@ def _nome(conector: str) -> str:
         return NOME_RH_PORTAL
     if conector == CUBOS:
         return NOME_CUBOS
+    if conector == ANS:
+        return NOME_ANS
     return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
 
 
@@ -374,6 +379,30 @@ def _executar_rh(db: Session, ag: Agendamento, agora: datetime) -> str:
     db.commit()
     status = {"sucesso": "sucesso", "sem_novidades": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
     return _encerra(db, ag, status, ex.mensagem or "Carga de RH concluída.", agora, resolvido=status != "falha")
+
+
+def ans_recusa(db: Session) -> tuple[str, str] | None:
+    from app.services import carga_ans
+    return ("ocupado", "Já existe uma carga da ANS em andamento.") if carga_ans.em_andamento(db) is not None else None
+
+
+def _executar_ans(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """Busca os meses novos da ANS. Falha vira mensagem segura."""
+    from app.services import carga_ans
+    forcado = bool(ag.forcar)
+    try:
+        ex = carga_ans.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except carga_ans.CargaRecusada as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Carga da ANS não concluída ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = {"sucesso": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
+    return _encerra(db, ag, status, ex.mensagem or "Carga da ANS concluída.", agora, resolvido=status != "falha")
 
 
 def cubos_recusa(db: Session) -> tuple[str, str] | None:
@@ -506,6 +535,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
         return _executar_rh(db, ag, agora)
     if conector == CUBOS:
         return _executar_cubos(db, ag, agora)
+    if conector == ANS:
+        return _executar_ans(db, ag, agora)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -572,7 +603,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP, RH_PORTAL, CUBOS)) or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP, RH_PORTAL, CUBOS, ANS)) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
@@ -677,6 +708,7 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
     historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS else AUDESP if e.sistema == "AUDESP"
                   else RH_PORTAL if e.sistema == "PORTAL_RH"
                   else CUBOS if e.sistema == "CUBOS"
+                  else ANS if e.sistema == "ANS"
                   else next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
                   **_execucao(db, e.id)}
                  for e in db.scalars(select(Execucao).where(Execucao.usuario == USUARIO,

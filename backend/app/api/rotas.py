@@ -1179,8 +1179,8 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
-    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL, ag.CUBOS):  # trava de concorrência (educação: também amostra e janela)
-        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa, ag.CUBOS: ag.cubos_recusa}[conector](db)
+    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL, ag.CUBOS, ag.ANS):  # trava de concorrência (educação: também amostra e janela)
+        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa, ag.CUBOS: ag.cubos_recusa, ag.ANS: ag.ans_recusa}[conector](db)
         if recusa:
             audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
                    {"motivo": recusa[0], "conector": conector}, _ip(req))
@@ -1341,6 +1341,33 @@ def rh_painel(ano: int | None = None, mes: int | None = None, secretaria: str | 
     """Painel de RH: só agregados, com supressão de grupos com menos de 5 servidores. Nenhuma linha por pessoa."""
     from app.services import painel_rh as pr
     return pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
+
+
+# ---------- Cobertura de planos de saúde (ANS e IBGE) ----------
+@api.get("/cobertura/estado")
+def cobertura_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: meses da ANS carregados e a carga em andamento ou a última."""
+    from app.services import carga_ans
+    return carga_ans.estado(db)
+
+
+@api.post("/cobertura/carregar", status_code=202)
+def cobertura_carregar(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): baixa da ANS os meses que faltam, em background."""
+    from app.services import carga_ans
+    try:
+        ex = carga_ans.iniciar_em_fundo(db, u.email)
+    except carga_ans.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "cobertura_carregar", f"execucao:{ex.id}", None, _ip(req))
+    return carga_ans.estado(db)
+
+
+@api.get("/cobertura/painel")
+def cobertura_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Cobertura de planos em Franca. Só agregados; a estimativa por bairro vem rotulada."""
+    from app.services import painel_cobertura
+    return painel_cobertura.painel(db)
 
 
 # ---------- Cubos e cruzamentos: CB1 a CB3 ----------

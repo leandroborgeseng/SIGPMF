@@ -15,6 +15,7 @@ import { PainelFinancas } from './paineis/Financas'
 import { PainelIegm } from './paineis/Iegm'
 import { PainelRh } from './paineis/Rh'
 import { PainelCruzamentos } from './paineis/Cruzamentos'
+import { PainelCobertura } from './paineis/Cobertura'
 import { MonitorCargas, PainelFazenda, PainelGeral, PainelSaude } from './paineis/Paineis'
 
 function Protegido({ children }: { children: ReactNode }) {
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/painel/iegm" element={<PainelIegm />} />
         <Route path="/painel/rh" element={<PainelRh />} />
         <Route path="/painel/cruzamentos" element={<PainelCruzamentos />} />
+        <Route path="/painel/cobertura" element={<PainelCobertura />} />
         <Route path="/monitor" element={<MonitorCargas />} />
         <Route path="/vinculos" element={<Vinculos />} />
         <Route path="/politicas" element={<Politicas />} />

@@ -5,6 +5,7 @@ import { useAuth } from '../auth'
 import AgendaCargas from '../AgendaCargas'
 import CargaAudesp from '../CargaAudesp'
 import CargaIegm from '../CargaIegm'
+import CargaAns from '../CargaAns'
 import CargaNatureza from '../CargaNatureza'
 import CargaRh from '../CargaRh'
 import PainelProgresso from '../PainelProgresso'
@@ -68,6 +69,7 @@ export default function Conectores() {
       <CargaAudesp ehAdmin={ehAdmin} />
       <CargaIegm ehAdmin={ehAdmin} />
       <CargaNatureza ehAdmin={ehAdmin} />
+      <CargaAns ehAdmin={ehAdmin} />
       <CargaRh ehAdmin={ehAdmin} />
       <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} contagensAtualizando={d?.contagens_atualizando === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>

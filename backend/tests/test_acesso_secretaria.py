@@ -464,7 +464,7 @@ POR_FUNCAO_COM_MOTIVO = {
 } | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
 NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
     ("GET", "/api/audesp/arquivos"), ("POST", "/api/audesp/arquivo"), ("POST", "/api/audesp/carregar"), ("GET", "/api/financas/painel"), ("GET", "/api/iegm/painel"), ("GET", "/api/iegm/estado"),
-    ("POST", "/api/iegm/arquivo"), ("GET", "/api/divida/natureza/estado"), ("POST", "/api/divida/natureza/arquivo"), ("GET", "/api/rh/estado"), ("POST", "/api/rh/carregar"), ("GET", "/api/rh/painel"), ("GET", "/api/cubos"), ("POST", "/api/cubos/recalcular"), ("GET", "/api/cubos/{cubo}"), ("GET", "/api/cruzamentos"),  # AU1/AU5 e IEG-M (só agregados; upload só admin): metadados e upload (só admin)
+    ("POST", "/api/iegm/arquivo"), ("GET", "/api/divida/natureza/estado"), ("POST", "/api/divida/natureza/arquivo"), ("GET", "/api/rh/estado"), ("POST", "/api/rh/carregar"), ("GET", "/api/rh/painel"), ("GET", "/api/cobertura/estado"), ("POST", "/api/cobertura/carregar"), ("GET", "/api/cobertura/painel"), ("GET", "/api/cubos"), ("POST", "/api/cubos/recalcular"), ("GET", "/api/cubos/{cubo}"), ("GET", "/api/cruzamentos"),  # AU1/AU5 e IEG-M (só agregados; upload só admin): metadados e upload (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
     ("PUT", "/api/catalogo/sistemas/{sid}"), ("POST", "/api/catalogo/sistemas/{sid}/tabelas"), ("GET", "/api/conectores"),
     ("POST", "/api/conectores/{conector}/testar"), ("POST", "/api/conectores/demo/executar"), ("POST", "/api/conectores/sil/amostra"),
