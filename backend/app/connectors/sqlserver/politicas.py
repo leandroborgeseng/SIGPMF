@@ -218,11 +218,12 @@ SAUDE = Politica(
         "Unidades": ("Codigo", "Nome_Fantasia", "Tipo", "Inativo_Ativo", "Cd_Bai"),
         "Aux_Vacina": ("Cod_Vacina", "Vacina", "Dose"),
         "Aux_Especialidades": ("Codi_Espe", "Desc_Espe"),
+        "Aux_Bairro": ("Cd_Bai", "Bairro"),  # nomes dos bairros; a Geral, de mesma numeração, não é lida
     },
     filtros={"Consultas": ("Dt_Atend", lambda: date.today() - timedelta(days=365)),
              "Agendamento_Consulta": ("Dt_Cons", lambda: date.today() - timedelta(days=365)),
              "Vacina": ("Dt_Vacina", lambda: date.today() - timedelta(days=730))},
-    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
+    apoio=frozenset({"Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
                      "Aux_TpUnidade", "UnidadesESF", "UnidadesESFAgentes", "Aux_profissoes", "Medico_CBO",
                      "Aux_CBO_DePara"}),
     recusar=_RECUSA_COMUM,

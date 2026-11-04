@@ -75,6 +75,7 @@ def gerar_saude_fatos() -> dict[tuple[str, str], list[dict]]:
         ("SAUDE", "Unidades"): [{"Codigo": 10, "Nome_Fantasia": "UBS Sintetica Centro", "Tipo": "U", "Inativo_Ativo": "A", "Cd_Bai": 10},
                                 {"Codigo": 20, "Nome_Fantasia": "PS Sintetico", "Tipo": "P", "Inativo_Ativo": "A", "Cd_Bai": 11}],
         ("SAUDE", "Aux_Especialidades"): [{"Codi_Espe": 1, "Desc_Espe": "Clinica Geral"}, {"Codi_Espe": 2, "Desc_Espe": "Oftalmologia"}],
+        ("SAUDE", "Aux_Bairro"): [{"Cd_Bai": 1, "Bairro": "ZZTESTE CENTRO"}],
         ("SAUDE", "Aux_Vacina"): [{"Cod_Vacina": 7, "Vacina": "Influenza", "Dose": "D1"}],
         ("SAUDE", "Consultas"): [
             {"Cod_Paciente": 1001, "Cons_Paciente": 1, "Dt_Atend": d(-40), "Cod_Ubs": 10, "Codigo_Especialidade": 1,

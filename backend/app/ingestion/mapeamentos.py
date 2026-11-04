@@ -29,6 +29,7 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("SAUDE", "Unidades"): {**_FATO_SAUDE, "chave": "Codigo", "campo_incremental": None},
     ("SAUDE", "Aux_Vacina"): {**_FATO_SAUDE, "chave": "Cod_Vacina", "campo_incremental": None},
     ("SAUDE", "Aux_Especialidades"): {**_FATO_SAUDE, "chave": "Codi_Espe", "campo_incremental": None},
+    ("SAUDE", "Aux_Bairro"): {**_FATO_SAUDE, "chave": "Cd_Bai", "campo_incremental": None},
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
