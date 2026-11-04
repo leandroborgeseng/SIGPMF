@@ -118,6 +118,17 @@ PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         LEFT JOIN (SELECT DISTINCT ON (alu_id) alu_id, escola FROM silver.escola_matriculas WHERE atual AND excluida IS NOT TRUE ORDER BY alu_id, id DESC) m ON m.alu_id = a.alu_id
         WHERE a.excluido IS NOT TRUE GROUP BY 1, 2, 3, 4
     """, ("bairro_id",)),
+    ("cubo_cobertura_bairro", """
+        WITH ult AS (SELECT max(ano * 100 + mes) AS c FROM silver.ans_beneficiarios),
+        b AS (SELECT faixa, sum(ativos) AS n FROM silver.ans_beneficiarios WHERE cobertura = 'medica' AND ano * 100 + mes = (SELECT c FROM ult) GROUP BY 1),
+        est AS (SELECT populacao AS p FROM ref.ibge_populacao WHERE cd_municipio = 351620 ORDER BY abs(ano - (SELECT c FROM ult) / 100), ano DESC LIMIT 1),
+        cen AS (SELECT sum(populacao) AS p FROM ref.ibge_faixa WHERE cd_municipio = 351620),
+        t AS (SELECT f.faixa, LEAST(1.0, CAST(b.n AS numeric) / NULLIF(CAST(f.populacao AS numeric) * (SELECT p FROM est) / NULLIF((SELECT p FROM cen), 0), 0)) AS taxa
+              FROM ref.ibge_faixa f JOIN b USING (faixa) WHERE f.cd_municipio = 351620)
+        SELECT p.bairro_id, count(*) AS pessoas, sum(t.taxa) AS estimados
+        FROM gold.cubo_aux_pessoa p JOIN silver.cidadaos c USING (cidadao_id) JOIN t ON t.faixa = gold.faixa_quinquenal(c.data_nascimento)
+        WHERE NOT p.falecido GROUP BY 1
+    """, ("bairro_id",)),
     ("cubo_rh", f"""
         SELECT ano, mes, secretaria, grupo, COALESCE(cargo, 'Não informado') AS cargo, {_FAIXA_RH} AS faixa_salario,
                count(*) AS pessoas, sum(vencimentos) AS bruto, sum(liquido) AS liquido

@@ -12,6 +12,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/painel/financas', rotulo: 'Finanças', curto: 'Finanças' },
     { to: '/painel/iegm', rotulo: 'IEG-M (TCE)', curto: 'IEG-M' },
     { to: '/painel/rh', rotulo: 'Recursos Humanos', curto: 'RH' },
+    { to: '/painel/cobertura', rotulo: 'Cobertura de planos', curto: 'Planos' },
     { to: '/painel/cruzamentos', rotulo: 'Cruzamentos', curto: 'Cruzam.' },
   ] },
   { titulo: 'Dados', itens: [
