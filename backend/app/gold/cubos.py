@@ -98,10 +98,11 @@ PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         GROUP BY 1, 2, 3, 4, 5
     """.replace("{TRIBUTO}", _TRIBUTO), ("exercicio", "bairro_id")),
     ("cubo_divida", f"""
-        SELECT d.ano, COALESCE('Natureza ' || d.natureza, 'Não informada') AS natureza, COALESCE(c.bairro_id, 0) AS bairro_id, {_FAIXA_SALDO} AS faixa_saldo,
+        SELECT d.ano, COALESCE(n.descricao, 'Natureza ' || d.natureza, 'Não informada') AS natureza, COALESCE(c.bairro_id, 0) AS bairro_id, {_FAIXA_SALDO} AS faixa_saldo,
                COALESCE(d.protestos, 0) > 0 AS protestada, COALESCE(d.processo, '') <> '' AS em_processo,
                count(*) AS inscricoes, COALESCE(sum(d.saldo), 0) AS saldo
         FROM silver.dividas d LEFT JOIN silver.imoveis i ON i.codi = d.codi LEFT JOIN gold.cubo_aux_codigo_bairro c ON c.cd_bai = i.cd_bairro
+        LEFT JOIN ref.divida_natureza n ON n.codigo = d.natureza
         WHERE d.extinta IS NOT TRUE AND COALESCE(d.saldo, 0) > 0 GROUP BY 1, 2, 3, 4, 5, 6
     """, ("bairro_id",)),
     ("cubo_empresas", """

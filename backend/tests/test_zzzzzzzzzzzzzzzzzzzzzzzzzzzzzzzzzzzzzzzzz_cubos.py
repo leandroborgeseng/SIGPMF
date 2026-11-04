@@ -144,3 +144,49 @@ def test_agenda_recalcula(client, tokens, dados):
     from app.services import agenda as ag
     assert ag.cubos_recusa(dados[0]) is None
     assert ag._nome(ag.CUBOS) == ag.NOME_CUBOS
+
+
+def test_natureza_csv_valida_troca_e_chega_ao_cubo(client, tokens, dados):
+    from app.gold import cubos
+    from app.services import natureza_divida as nd
+    db, _ = dados
+    h, adm = tokens["leitura"], tokens["admin"]
+    db.execute(text("""INSERT INTO silver.dividas (chave_origem, codi, ano, natureza, saldo, extinta)
+                       SELECT 'n' || g, 800000, 2020, CASE WHEN g <= 6 THEN 1 ELSE 77 END, 100, false FROM generate_series(1, 12) g"""))
+    db.commit()
+    assert client.post("/api/divida/natureza/arquivo", content=b"COD_NATU;DESCRICAO\n1;IPTU\n", headers=h).status_code == 403
+    for ruim in (b"CODIGO;NOME\n1;IPTU\n", b"COD_NATU;DESCRICAO\nabc;IPTU\n", b"COD_NATU;DESCRICAO\n1;A\n1;B\n", b"COD_NATU;DESCRICAO;CPF\n1;A;2\n"):
+        assert client.post("/api/divida/natureza/arquivo", content=ruim, headers=adm).status_code == 422
+    assert client.get("/api/divida/natureza/estado", headers=h).json()["total"] == 0
+    r = client.post("/api/divida/natureza/arquivo", content="COD_NATU,DESCRICAO\n1,\"IMPOSTO, PREDIAL\"\n2,ISSQN\n3,NULL\n".encode("iso-8859-1"), headers=adm)
+    assert r.status_code == 200 and "2 naturezas" in r.json()["mensagem"]
+    e = client.get("/api/divida/natureza/estado", headers=h).json()
+    assert e["total"] == 2 and e["mais_usadas"] == [{"codigo": 1, "descricao": "IMPOSTO, PREDIAL", "inscricoes": 6}]
+    assert e["sem_nome"] == [{"codigo": 77, "inscricoes": 6}]
+    cubos.reconstruir(db)
+    nomes = {x["natureza"] for x in client.get("/api/cubos/divida?agrupar=natureza", headers=h).json()["linhas"]}
+    assert {"IMPOSTO, PREDIAL", "Natureza 77"} <= nomes  # código sem nome nunca ganha nome inventado
+    assert nd.le_csv("COD_NATU\tDESCRICAO\n5\tTLF\n".encode()) == [{"codigo": 5, "descricao": "TLF"}]
+
+
+def test_bairro_vem_da_saude_e_texto_de_sistema_nao_e_bairro(banco):
+    from app.core.db import SessionLocal
+    from app.silver import endereco_saude as es
+    db = SessionLocal()
+    f = lambda v: db.scalar(text("SELECT gold.norm_bairro(:v)"), {"v": v})  # noqa: E731
+    assert f(es.BAIRRO_SEM_REF) is None and f("CODIGO DO CADASTRO ANTIGO") is None
+    assert es.bairros_da_saude(db) >= 0
+    db.close()
+
+
+def test_bairros_lidos_da_bronze_da_saude(banco, monkeypatch):
+    from app.core.db import SessionLocal
+    from app.silver import endereco_saude as es
+    from app.silver import fatos
+    db = SessionLocal()
+    monkeypatch.setattr(fatos, "_ultimas", lambda _db, s, t: [("x", {"Cd_Bai": 987654, "Bairro": "ZZTESTE BAIRRO SAUDE"})] if (s, t) == ("SAUDE", "Aux_Bairro") else [])
+    assert es.bairros_da_saude(db) == 1
+    assert db.scalar(text("SELECT bairro FROM ref.geral_bairro WHERE cd_bai = 987654")) == "ZZTESTE BAIRRO SAUDE"
+    db.rollback()  # quem confirma é a reconstrução da prata
+    assert db.scalar(text("SELECT count(*) FROM ref.geral_bairro WHERE cd_bai = 987654")) == 0
+    db.close()

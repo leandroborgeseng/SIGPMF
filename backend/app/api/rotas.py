@@ -1290,6 +1290,30 @@ async def iegm_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Se
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
 
 
+# ---------- Dicionário da natureza da dívida (CSV) ----------
+@api.get("/divida/natureza/estado")
+def natureza_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: naturezas carregadas, as mais usadas e os códigos em uso sem nome."""
+    from app.services import natureza_divida
+    return natureza_divida.estado(db)
+
+
+@api.post("/divida/natureza/arquivo")
+async def natureza_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Dicionário exportado pelo DBA (admin): CSV com COD_NATU e DESCRICAO. Inválido = nada gravado."""
+    from app.services import natureza_divida
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo das naturezas no corpo da requisição.")
+    if len(conteudo) > IEGM_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 2 MB).")
+    ex = natureza_divida.importa(db, u.email, conteudo)
+    audita(db, u.email, "natureza_divida_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo das naturezas recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
 # ---------- RH pelo Portal da Transparência: RH1 e RH2 ----------
 @api.get("/rh/estado")
 def rh_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):

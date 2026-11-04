@@ -87,7 +87,7 @@ def linha_bairro(d: dict) -> dict | None:
     return None if cd is None else {"cd_bai": cd, "bairro": _t(d.get("BAIRRO"), 200), "cidade": _t(d.get("Cidade"), 120)}
 
 
-def importa(db: Session, ruas: list[dict], bairros: list[dict]) -> dict[str, int]:
+def importa(db: Session, ruas: list[dict], bairros: list[dict], commit: bool = True) -> dict[str, int]:
     """Upsert da referência do Geral (linhas já lidas com SQL_RUAS / SQL_BAIRROS). Só contagens no retorno."""
     rs = [x for x in (linha_rua(d) for d in ruas) if x]
     bs = [x for x in (linha_bairro(d) for d in bairros) if x]
@@ -101,8 +101,17 @@ def importa(db: Session, ruas: list[dict], bairros: list[dict]) -> dict[str, int
         db.execute(text("""INSERT INTO ref.geral_bairro (cd_bai, bairro, cidade) VALUES (:cd_bai, :bairro, :cidade)
             ON CONFLICT (cd_bai) DO UPDATE SET bairro = EXCLUDED.bairro, cidade = EXCLUDED.cidade,
               atualizado_em = now()"""), bs)
-    db.commit()
+    if commit:
+        db.commit()
     return {"ruas": len(rs), "bairros": len(bs), "descartadas": len(ruas) + len(bairros) - len(rs) - len(bs)}
+
+
+def bairros_da_saude(db: Session) -> int:
+    """Preenche os nomes de bairro a partir de Saude.Aux_Bairro, já na bronze (a Geral não é lida; a numeração é a mesma).
+    Roda dentro da transação da reconstrução da prata: quem chama decide o commit."""
+    from app.silver.fatos import _ultimas
+    linhas = [{"CD_BAI": d.get("Cd_Bai"), "BAIRRO": d.get("Bairro")} for _io, d in _ultimas(db, "SAUDE", "Aux_Bairro")]
+    return importa(db, [], linhas, commit=False)["bairros"] if linhas else 0
 
 
 def carrega(db: Session) -> None:

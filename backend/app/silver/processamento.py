@@ -225,6 +225,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     vai para o log app.silver.medicao, sem PII)."""
     med = medicao if medicao is not None else Medicao()
     from app.silver import endereco_saude
+    endereco_saude.bairros_da_saude(db)
     endereco_saude.carrega(db)  # EN10: referência Rua/Bairro do Geral para o endereço da Saúde
     p, peso_prov = _params(db)
     for m in (Endereco, Vinculo, Identificador, CorrelacaoPendente, Inconsistencia, Cidadao, SistemaSilver):
