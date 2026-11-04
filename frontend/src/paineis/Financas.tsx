@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, pct, reais, type Ponto } from './graficos'
+import { DrillCubo, doPeriodo, useDetalhe } from './Drill'
+import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, pct, reais, type Ponto, mesCurto } from './graficos'
 
 type Totais = { empenhado: number; liquidado: number; pago: number; receita: number | null; resultado: number | null
   sem_licitacao_pct: number | null; pessoas_fisicas: number; restos_pagos: number | null }
@@ -36,6 +37,7 @@ function dataTce(v: string | null | undefined): string | null {
 /** Painel Finanças (AUDESP / TCE-SP): receita, despesa por fase e por função, origem da receita e maiores credores. */
 export function PainelFinancas() {
   const [esc, setEsc] = useState<Escolha>({})
+  const { abrir, gaveta } = useDetalhe()
   const [d, setD] = useState<Resp | null>(null)
   const [falhou, setFalhou] = useState(false)
   const carregar = useCallback(() => {
@@ -52,6 +54,8 @@ export function PainelFinancas() {
   const ult = f ? d?.disponivel.ultimo_mes[String(f.ano)] ?? 12 : 12
   const publicado = f ? dataTce(d?.disponivel.publicado_tce[String(f.ano)]) : null
   const filtrosDespesa = !!(f?.funcao || f?.fonte)
+  const recorte = { ...(f?.orgao ? { orgao: f.orgao } : {}), ...(f?.funcao ? { funcao: f.funcao } : {}), ...(f?.fonte ? { fonte: f.fonte } : {}) }
+  const despesaDoMes = (p: string) => abrir({ titulo: `Despesa liquidada em ${mesCurto(p)}`, cubo: 'despesa', fixos: { ...doPeriodo(p), fase: 'liquidado', ...recorte }, caminho: ['funcao', 'orgao', 'natureza', 'modalidade', 'fonte'] })
   return (
     <section aria-label="Finanças" className="painel painel-financas">
       <Cabecalho kicker="Gestão" titulo="Finanças" atualizado={d?.disponivel.carregado_em}
@@ -101,9 +105,9 @@ export function PainelFinancas() {
             </p>
 
             <div className="kpis" id="t-fin-kpis">
-              {d.atual.receita != null && <Kpi rotulo="Receita arrecadada" valor={reais(d.atual.receita)} nota={variacao(d.atual.receita, d.anterior?.receita, f)} tom="bom" />}
+              {d.atual.receita != null && <Kpi rotulo="Receita arrecadada" valor={reais(d.atual.receita)} nota={variacao(d.atual.receita, d.anterior?.receita, f)} tom="bom" mini={d.mensal?.receita.slice(-13).map((p) => p.valor)} />}
               <Kpi rotulo="Despesa empenhada" valor={reais(d.atual.empenhado)} nota={variacao(d.atual.empenhado, d.anterior?.empenhado, f) ?? 'empenhos menos anulações'} />
-              <Kpi rotulo="Despesa liquidada" valor={reais(d.atual.liquidado)} nota={variacao(d.atual.liquidado, d.anterior?.liquidado, f)} />
+              <Kpi rotulo="Despesa liquidada" valor={reais(d.atual.liquidado)} nota={variacao(d.atual.liquidado, d.anterior?.liquidado, f)} mini={d.mensal?.liquidado.slice(-13).map((p) => p.valor)} />
               <Kpi rotulo="Despesa paga" valor={reais(d.atual.pago)} nota={variacao(d.atual.pago, d.anterior?.pago, f)} />
               {d.atual.resultado != null && (
                 <Kpi rotulo="Receita − despesa liquidada" valor={reais(d.atual.resultado)} tom={d.atual.resultado < 0 ? 'alerta' : 'bom'}
@@ -118,10 +122,10 @@ export function PainelFinancas() {
             <div className="painel-grade">
               {filtrosDespesa
                 ? <Painel titulo="Despesa liquidada por mês" nota="todos os anos carregados · com o filtro escolhido" largo>
-                    <ColunasMes a={d.mensal?.liquidado ?? []} rotuloA="Despesa liquidada" formato={reais} meses={72} />
+                    <ColunasMes a={d.mensal?.liquidado ?? []} rotuloA="Despesa liquidada" formato={reais} meses={72} aoAbrir={despesaDoMes} />
                   </Painel>
                 : <Painel titulo="Receita × despesa liquidada por mês" nota="todos os anos carregados" largo>
-                    <ColunasMes a={d.mensal?.receita ?? []} b={d.mensal?.liquidado ?? []} rotuloA="Receita" rotuloB="Despesa liquidada" formato={reais} meses={72} />
+                    <ColunasMes a={d.mensal?.receita ?? []} b={d.mensal?.liquidado ?? []} rotuloA="Receita" rotuloB="Despesa liquidada" formato={reais} meses={72} aoAbrir={despesaDoMes} />
                   </Painel>}
               <Painel titulo="Despesa por função" nota="liquidada · clique para filtrar">
                 <BarrasH pontos={d.por_funcao ?? []} formato={reais} rotulo="Despesa liquidada por função" max={12} aoEscolher={alterna('funcao')} ativo={f.funcao} />
@@ -144,24 +148,35 @@ export function PainelFinancas() {
               {!filtrosDespesa && (
                 <>
                   <Painel titulo="Origem da receita">
-                    <BarrasH pontos={d.receita_origem ?? []} formato={reais} rotulo="Receita por origem" cor="ok" />
+                    <BarrasH pontos={d.receita_origem ?? []} formato={reais} rotulo="Receita por origem" />
                   </Painel>
                   <Painel titulo="Impostos e taxas" nota="IPTU, ISS, ITBI, IR retido…">
-                    <BarrasH pontos={d.impostos ?? []} formato={reais} rotulo="Receita de impostos e taxas" cor="ok" />
+                    <BarrasH pontos={d.impostos ?? []} formato={reais} rotulo="Receita de impostos e taxas" />
                   </Painel>
                   <Painel titulo="Transferências recebidas" nota="FUNDEB, ICMS, IPVA, FPM, SUS…">
-                    <BarrasH pontos={d.transferencias ?? []} formato={reais} rotulo="Transferências correntes recebidas" cor="ok" />
+                    <BarrasH pontos={d.transferencias ?? []} formato={reais} rotulo="Transferências correntes recebidas" />
                   </Painel>
                 </>
               )}
               <Painel titulo="Modalidade de licitação" nota="empenhado">
-                <BarrasH pontos={d.por_modalidade ?? []} formato={reais} rotulo="Despesa empenhada por modalidade de licitação" cor="alerta" />
+                <BarrasH pontos={d.por_modalidade ?? []} formato={reais} rotulo="Despesa empenhada por modalidade de licitação" />
               </Painel>
               <Painel titulo="Maiores credores (pessoa jurídica)" nota="empenhado · inclui repasses ao próprio município e ao INSS">
                 <BarrasH pontos={d.credores_pj ?? []} formato={reais} rotulo="Maiores credores pessoa jurídica" max={15} />
               </Painel>
+              <Painel titulo="Explorar a despesa" nota={`liquidada em ${f.ano}, até ${MESES[f.mes_ate - 1]} · clique numa linha para descer de nível`} largo>
+                <DrillCubo key={JSON.stringify([f.ano, f.mes_ate, recorte])} cubo="despesa" fixos={{ ano: f.ano, fase: 'liquidado', ...recorte }} mesAte={f.mes_ate}
+                  caminho={['funcao', 'orgao', 'natureza', 'modalidade', 'fonte', 'mes']} nomeArquivo={`despesa-${f.ano}`} />
+              </Painel>
+              {!filtrosDespesa && (
+                <Painel titulo="Explorar a receita" nota={`em ${f.ano}, até ${MESES[f.mes_ate - 1]} · clique numa linha para descer de nível`} largo>
+                  <DrillCubo key={JSON.stringify([f.ano, f.mes_ate, f.orgao])} cubo="receita" fixos={{ ano: f.ano, ...(f.orgao ? { orgao: f.orgao } : {}) }} mesAte={f.mes_ate}
+                    caminho={['subcategoria', 'item', 'orgao', 'mes']} nomeArquivo={`receita-${f.ano}`} />
+                </Painel>
+              )}
             </div>
             <p className="sutil">Fonte: AUDESP / Portal da Transparência Municipal do TCE-SP. Carregado no SIGPMF em {dataHoraBR(d.disponivel.carregado_em)}.</p>
+            {gaveta}
           </>
         )}
     </section>

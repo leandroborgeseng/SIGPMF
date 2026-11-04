@@ -2,7 +2,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -1340,14 +1340,14 @@ def cubos_recalcular(req: Request, u: Usuario = Depends(admin_auditado), db: Ses
 
 
 @api.get("/cubos/{cubo}")
-def cubo_consulta(cubo: str, req: Request, agrupar: str = "", medidas: str = "", u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+def cubo_consulta(cubo: str, req: Request, agrupar: str = "", medidas: str = "", mes_ate: int | None = Query(None, ge=1, le=13), u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Consulta a um cubo: `agrupar` e `medidas` separados por vírgula e `f_<dimensão>=valor` para filtrar. Lista fechada;
     grupo com menos de 5 pessoas não sai."""
     from app.gold import cubos_consulta as cc_
     filtros = {k[2:]: v for k, v in req.query_params.items() if k.startswith("f_")}
     separa = lambda x: [i.strip() for i in x.split(",") if i.strip()]  # noqa: E731
     try:
-        return cc_.consulta(db, cubo, separa(agrupar), separa(medidas) or None, filtros)
+        return cc_.consulta(db, cubo, separa(agrupar), separa(medidas) or None, filtros, mes_ate)
     except cc_.ConsultaInvalida as exc:
         raise HTTPException(422, str(exc)) from None
 
