@@ -62,17 +62,39 @@ def test_bairro_junta_grafias_e_id_e_estavel(dados):
 
 def test_consulta_soma_e_suprime(client, tokens, dados):
     h = tokens["leitura"]
-    r = client.get("/api/cubos/pessoas?agrupar=bairro&f_falecido=false", headers=h).json()
+    r = client.get("/api/cubos/pessoas?agrupar=bairro&f_falecido=false", headers=h).json()["linhas"]
     por = {x["bairro"]: x["pessoas"] for x in r}
     assert por["Jardim Centro"] + por["Vila Nova"] == 294
-    assert {"Jardim Centro", "Vila Nova"} <= {x["bairro"] for x in client.get("/api/cubos/imoveis?agrupar=bairro", headers=h).json()}
+    assert {"Jardim Centro", "Vila Nova"} <= {x["bairro"] for x in client.get("/api/cubos/imoveis?agrupar=bairro", headers=h).json()["linhas"]}
     # grupo com menos de 5 não sai
     db, _ = dados
     db.execute(text("INSERT INTO silver.imoveis (codi, cd_bairro, situacao) VALUES (:c, 1, 'RARA')"), [{"c": 810000 + i} for i in range(4)])
     db.commit()
     from app.gold import cubos
     cubos.reconstruir(db)
-    assert "RARA" not in {x["situacao"] for x in client.get("/api/cubos/imoveis?agrupar=situacao", headers=h).json()}
+    r = client.get("/api/cubos/imoveis?agrupar=situacao", headers=h).json()
+    assert "RARA" not in {x["situacao"] for x in r["linhas"]} and r["ocultos"] == 1 and r["calculado"]
+
+
+def test_filtro_de_mes_e_nomes_de_tela(client, tokens, dados):
+    h = tokens["leitura"]
+    assert client.get("/api/cubos/imoveis?mes_ate=3", headers=h).status_code == 422
+    assert client.get("/api/cubos/saude?mes_ate=3", headers=h).status_code == 200
+    cat = client.get("/api/cubos", headers=h).json()["catalogo"]
+    assert {"chave": "bairro", "nome": "Bairro"} in cat["saude"]["dimensoes"]
+    assert {"chave": "media", "nome": "Remuneração média", "formato": "brl", "aditiva": False} in cat["rh"]["medidas"]
+
+
+def test_cubo_gravado_sem_a_coluna_pede_recalculo(client, tokens, dados):
+    db, _ = dados
+    db.execute(text("ALTER TABLE gold.cubo_saude RENAME COLUMN vacina TO vacina_antiga"))
+    db.commit()
+    from app.gold import cubos_consulta
+    cubos_consulta._cache.clear()
+    r = client.get("/api/cubos/saude?agrupar=vacina", headers=tokens["leitura"])
+    assert r.status_code == 200 and r.json()["calculado"] is False
+    db.execute(text("ALTER TABLE gold.cubo_saude RENAME COLUMN vacina_antiga TO vacina"))
+    db.commit()
 
 
 @pytest.mark.parametrize("url", ["/api/cubos/nada", "/api/cubos/saude?agrupar=cidadao_id", "/api/cubos/saude?medidas=nome", "/api/cubos/saude?f_cidadao_id=1"])

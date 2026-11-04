@@ -19,7 +19,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.controle import Execucao
-from app.silver.fatos import nomes
+from app.silver.fatos import NOMES_TRIBUTO, nomes
 
 log = logging.getLogger("sigpmf.cubos")
 TIPO = "cubos"
@@ -43,6 +43,9 @@ _FAIXA_RH = """CASE WHEN vencimentos < 3000 THEN 'até R$ 3 mil' WHEN vencimento
     WHEN vencimentos < 8000 THEN 'R$ 5 a 8 mil' WHEN vencimentos < 12000 THEN 'R$ 8 a 12 mil'
     WHEN vencimentos < 20000 THEN 'R$ 12 a 20 mil' ELSE 'acima de R$ 20 mil' END"""
 
+# Mesmo nome de tributo dos painéis, para o clique num gráfico chegar ao mesmo recorte
+_TRIBUTO = "CASE COALESCE(l.tributo, '') " + " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in NOMES_TRIBUTO.items()) + " WHEN '' THEN 'Outro' ELSE l.tributo END"
+
 # (tabela, SELECT, colunas a indexar). A ordem importa: dimensões e o auxiliar antes dos cubos.
 PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("dim_bairro", _DIM_BAIRRO, ("id", "norm")),
@@ -64,19 +67,20 @@ PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     """, ("bairro_id",)),
     ("cubo_saude", """
         WITH e AS (
-            SELECT 'consulta' AS tipo, data AS d, cidadao_id, unidade, especialidade, CAST(NULL AS integer) AS espera FROM silver.atendimentos WHERE data IS NOT NULL
-            UNION ALL SELECT 'agendamento', data_consulta, cidadao_id, unidade, especialidade, dias_espera FROM silver.agendamentos WHERE data_consulta IS NOT NULL
-            UNION ALL SELECT 'vacina', data, cidadao_id, unidade, NULL, NULL FROM silver.vacinacoes WHERE data IS NOT NULL)
+            SELECT 'consulta' AS tipo, data AS d, cidadao_id, unidade, especialidade, CAST(NULL AS integer) AS espera, CAST(NULL AS text) AS vacina FROM silver.atendimentos WHERE data IS NOT NULL
+            UNION ALL SELECT 'agendamento', data_consulta, cidadao_id, unidade, especialidade, dias_espera, NULL FROM silver.agendamentos WHERE data_consulta IS NOT NULL
+            UNION ALL SELECT 'vacina', data, cidadao_id, unidade, NULL, NULL, COALESCE(vacina, 'Não informada') FROM silver.vacinacoes WHERE data IS NOT NULL)
         SELECT CAST(extract(year FROM e.d) AS integer) AS ano, CAST(extract(month FROM e.d) AS integer) AS mes, e.tipo,
                COALESCE(p.bairro_id, 0) AS bairro_id, COALESCE(p.faixa, 'não informada') AS faixa, COALESCE(cu.bairro_id, 0) AS unidade_bairro_id,
                COALESCE(u.nome, 'Unidade ' || COALESCE(CAST(e.unidade AS text), '?')) AS unidade,
-               COALESCE(x.nome, CASE WHEN e.especialidade IS NULL THEN 'Não se aplica' ELSE 'Código ' || e.especialidade || ' (sem nome no cadastro)' END) AS especialidade,
+               COALESCE(x.nome, CASE WHEN e.especialidade IS NULL THEN 'Sem especialidade informada' ELSE 'Código ' || e.especialidade || ' (sem nome no cadastro)' END) AS especialidade,
+               COALESCE(e.vacina, 'Não se aplica') AS vacina,
                count(*) AS eventos, COALESCE(sum(e.espera), 0) AS espera_soma, count(e.espera) AS espera_n
         FROM e LEFT JOIN gold.cubo_aux_pessoa p USING (cidadao_id)
         LEFT JOIN silver.unidades_saude u ON u.codigo = e.unidade
         LEFT JOIN gold.cubo_aux_codigo_bairro cu ON cu.cd_bai = u.cd_bairro
         LEFT JOIN gold.dim_especialidade x ON x.codigo = e.especialidade
-        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
     """, ("ano", "bairro_id", "tipo")),
     ("cubo_imoveis", """
         SELECT COALESCE(c.bairro_id, 0) AS bairro_id, COALESCE(i.situacao, 'não informada') AS situacao, count(*) AS imoveis,
@@ -85,15 +89,16 @@ PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         FROM silver.imoveis i LEFT JOIN gold.cubo_aux_codigo_bairro c ON c.cd_bai = i.cd_bairro GROUP BY 1, 2
     """, ("bairro_id",)),
     ("cubo_tributario", """
-        SELECT l.exercicio, CAST(extract(month FROM l.vencimento) AS integer) AS mes, COALESCE(l.tributo, '?') AS tributo, COALESCE(c.bairro_id, 0) AS bairro_id,
+        SELECT l.exercicio, CAST(extract(year FROM l.vencimento) AS integer) AS ano_venc, CAST(extract(month FROM l.vencimento) AS integer) AS mes,
+               {TRIBUTO} AS tributo, COALESCE(c.bairro_id, 0) AS bairro_id,
                count(*) AS parcelas, COALESCE(sum(l.valor), 0) AS lancado, COALESCE(sum(l.valor_pago), 0) AS pago,
                COALESCE(sum(l.valor) FILTER (WHERE l.vencimento < current_date), 0) AS vencido,
                COALESCE(sum(l.valor) FILTER (WHERE l.vencimento < current_date AND NOT l.pago), 0) AS vencido_aberto
         FROM silver.lancamentos l LEFT JOIN silver.imoveis i ON i.codi = l.codi LEFT JOIN gold.cubo_aux_codigo_bairro c ON c.cd_bai = i.cd_bairro
-        GROUP BY 1, 2, 3, 4
-    """, ("exercicio", "bairro_id")),
+        GROUP BY 1, 2, 3, 4, 5
+    """.replace("{TRIBUTO}", _TRIBUTO), ("exercicio", "bairro_id")),
     ("cubo_divida", f"""
-        SELECT d.ano, d.natureza, COALESCE(c.bairro_id, 0) AS bairro_id, {_FAIXA_SALDO} AS faixa_saldo,
+        SELECT d.ano, COALESCE('Natureza ' || d.natureza, 'Não informada') AS natureza, COALESCE(c.bairro_id, 0) AS bairro_id, {_FAIXA_SALDO} AS faixa_saldo,
                COALESCE(d.protestos, 0) > 0 AS protestada, COALESCE(d.processo, '') <> '' AS em_processo,
                count(*) AS inscricoes, COALESCE(sum(d.saldo), 0) AS saldo
         FROM silver.dividas d LEFT JOIN silver.imoveis i ON i.codi = d.codi LEFT JOIN gold.cubo_aux_codigo_bairro c ON c.cd_bai = i.cd_bairro

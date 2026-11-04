@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, num, pct, reais, type Ponto } from './graficos'
+import { DrillCubo, doPeriodo, useDetalhe } from './Drill'
+import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, mesCurto, num, pct, reais, type Ponto } from './graficos'
 
 type Totais = { servidores: number; suprimido: boolean; bruto?: number; descontos?: number; liquido?: number; media?: number; mediana?: number
   afastados?: number; admissoes?: number; desligamentos?: number }
@@ -19,6 +20,8 @@ type Escolha = { ano?: number; mes?: number; secretaria?: string | null; grupo?:
 
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro', '13º salário']
 const GRUPOS: [string, string][] = [['', 'Todos'], ['ativa', 'Em atividade (secretarias)'], ['inativos', 'Aposentados e pensionistas'], ['outros', 'Cedidos e indenizados']]
+const CAMINHO_RH = ['secretaria', 'cargo', 'faixa_salario', 'grupo']
+const MEDIDAS_RH = ['pessoas', 'bruto', 'media']
 const valida = (r: unknown): r is Resp => !!r && typeof r === 'object' && Array.isArray((r as Resp).disponivel?.meses)
 
 /** "▲ 5,2% sobre set/2025" (ou nada, se o mesmo mês do ano anterior não existe ou foi suprimido). */
@@ -32,6 +35,7 @@ function variacao(atual: number | undefined, anterior: number | undefined, f: Fi
 /** Painel de RH (Portal da Transparência): quadro, custo da folha e evolução, por secretaria. Só números agregados. */
 export function PainelRh() {
   const [esc, setEsc] = useState<Escolha>({})
+  const { abrir, gaveta } = useDetalhe()
   const [d, setD] = useState<Resp | null>(null)
   const [falhou, setFalhou] = useState(false)
   const carregar = useCallback(() => {
@@ -46,6 +50,10 @@ export function PainelRh() {
   const a = d?.atual
   const anos = d ? [...new Set(d.disponivel.meses.map((m) => m.ano))].sort((x, y) => y - x) : []
   const mesesAno = d && f ? d.disponivel.meses.filter((m) => m.ano === f.ano).map((m) => m.mes) : []
+  const recorte = { ...(f?.secretaria ? { secretaria: f.secretaria } : {}), ...(f?.grupo ? { grupo: f.grupo } : {}) }
+  const abreCargo = (cargo: string) => {
+    if (f) abrir({ titulo: cargo, sub: 'Cargo, no mês escolhido', cubo: 'rh', fixos: { ano: f.ano, mes: f.mes, ...recorte, cargo }, caminho: ['secretaria', 'faixa_salario', 'grupo'], medidas: MEDIDAS_RH })
+  }
   const escolheSec = (dim: string) => muda({ secretaria: f?.secretaria === dim ? null : dim })
   return (
     <section aria-label="Recursos Humanos" className="painel painel-financas">
@@ -85,8 +93,8 @@ export function PainelRh() {
             </form>
             {a.suprimido ? <p className="aviso-ambar">Este recorte tem menos de 5 pessoas e não é mostrado, para não identificar ninguém.</p> : (
               <div className="kpis" id="t-rh-kpis">
-                <Kpi rotulo="Pessoas pagas no mês" valor={num(a.servidores)} nota={variacao(a.servidores, d.anterior?.servidores, f)} />
-                <Kpi rotulo="Folha bruta" valor={reais(a.bruto ?? null)} nota={variacao(a.bruto, d.anterior?.bruto, f)} />
+                <Kpi rotulo="Pessoas pagas no mês" valor={num(a.servidores)} nota={variacao(a.servidores, d.anterior?.servidores, f)} mini={d.mensal?.servidores.map((p) => p.valor)} />
+                <Kpi rotulo="Folha bruta" valor={reais(a.bruto ?? null)} nota={variacao(a.bruto, d.anterior?.bruto, f)} mini={d.mensal?.bruto.map((p) => p.valor)} />
                 <Kpi rotulo="Folha líquida" valor={reais(a.liquido ?? null)} nota={`descontos de ${reais(a.descontos ?? null)}`} />
                 <Kpi rotulo="Remuneração bruta média" valor={reais(a.media ?? null)} nota={variacao(a.media, d.anterior?.media, f)} />
                 <Kpi rotulo="Remuneração bruta mediana" valor={reais(a.mediana ?? null)} nota="metade recebe até este valor" />
@@ -96,8 +104,9 @@ export function PainelRh() {
               </div>
             )}
             <div className="painel-grade">
-              <Painel titulo="Folha bruta por mês" nota={`últimos 13 meses${f.secretaria ? ` · ${f.secretaria}` : ''} · sem 13º`} largo>
-                <ColunasMes a={d.mensal?.bruto ?? []} rotuloA="Folha bruta" formato={reais} meses={13} />
+              <Painel titulo="Folha bruta por mês" nota={`últimos 13 meses${f.secretaria ? ` · ${f.secretaria}` : ''} · sem 13º · clique num mês para detalhar`} largo>
+                <ColunasMes a={d.mensal?.bruto ?? []} rotuloA="Folha bruta" formato={reais} meses={13}
+                  aoAbrir={(p) => abrir({ titulo: `Folha de ${mesCurto(p)}`, cubo: 'rh', fixos: { ...doPeriodo(p), ...recorte }, caminho: CAMINHO_RH, medidas: MEDIDAS_RH })} />
               </Painel>
               <Painel titulo="Pessoas pagas por mês" nota="últimos 13 meses" largo>
                 <ColunasMes a={d.mensal?.servidores ?? []} rotuloA="Pessoas pagas" meses={13} />
@@ -118,38 +127,25 @@ export function PainelRh() {
                 <BarrasH pontos={d.por_secretaria_servidores ?? []} rotulo="Pessoas por secretaria" max={20} aoEscolher={escolheSec} ativo={f.secretaria} />
               </Painel>
               <Painel titulo="Cargos com mais pessoas" nota="no mês">
-                <BarrasH pontos={d.por_cargo_servidores ?? []} rotulo="Cargos com mais pessoas" max={15} />
+                <BarrasH pontos={d.por_cargo_servidores ?? []} rotulo="Cargos com mais pessoas" max={15} aoAbrir={abreCargo} />
               </Painel>
               <Painel titulo="Remuneração bruta média por cargo" nota="entre os cargos de maior custo">
-                <BarrasH pontos={d.por_cargo_media ?? []} formato={reais} rotulo="Remuneração média por cargo" max={15} cor="alerta" />
+                <BarrasH pontos={d.por_cargo_media ?? []} formato={reais} rotulo="Remuneração média por cargo" max={15} aoAbrir={abreCargo} />
               </Painel>
               <Painel titulo="Pessoas por faixa de remuneração" nota="bruta, no mês">
-                <BarrasOrdem pontos={d.por_faixa ?? []} rotulo="Pessoas por faixa de remuneração" />
+                <BarrasH naOrdem max={30} pontos={d.por_faixa ?? []} rotulo="Pessoas por faixa de remuneração" />
               </Painel>
               <Painel titulo="Tempo de casa" nota="pela data de admissão">
-                <BarrasOrdem pontos={d.por_tempo ?? []} rotulo="Pessoas por tempo de casa" />
+                <BarrasH naOrdem max={30} pontos={d.por_tempo ?? []} rotulo="Pessoas por tempo de casa" />
+              </Painel>
+              <Painel titulo="Explorar a folha do mês" nota="clique numa linha para descer de nível" largo>
+                <DrillCubo key={JSON.stringify([f.ano, f.mes, recorte])} cubo="rh" fixos={{ ano: f.ano, mes: f.mes, ...recorte }} caminho={CAMINHO_RH} medidas={MEDIDAS_RH} nomeArquivo={`folha-${f.ano}-${f.mes}`} />
               </Painel>
             </div>
             <p className="sutil">Fonte: Portal da Transparência de Franca, Servidores - Remuneração. Carregado em {dataHoraBR(d.disponivel.carregado_em)}. Secretarias com nomes padronizados ao longo dos anos.</p>
+            {gaveta}
           </>
         )}
     </section>
-  )
-}
-
-/** Faixas em ordem própria (até 3 mil, 3 a 5 mil...): sem a ordenação por valor do BarrasH. */
-function BarrasOrdem({ pontos, rotulo }: { pontos: Ponto[]; rotulo: string }) {
-  if (pontos.length === 0) return <p className="sutil painel-vazio">Sem dados neste recorte.</p>
-  const topo = Math.max(...pontos.map((p) => p.valor), 1)
-  return (
-    <ul className="barras-h" aria-label={rotulo}>
-      {pontos.map((p) => (
-        <li key={p.dim}>
-          <span className="barras-h-rotulo" title={p.dim}>{p.dim}</span>
-          <span className="barras-h-trilho" aria-hidden="true"><span className="barras-h-barra brand" style={{ width: `${Math.max(2, (p.valor / topo) * 100)}%` }} /></span>
-          <span className="barras-h-valor num">{num(p.valor)}</span>
-        </li>
-      ))}
-    </ul>
   )
 }

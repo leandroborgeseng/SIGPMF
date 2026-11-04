@@ -53,7 +53,7 @@ describe('painel Finanças (AUDESP)', () => {
     const lista = await screen.findByRole('list', { name: 'Despesa liquidada por função' })
     await userEvent.click(within(lista).getByRole('button', { name: /SAÚDE/ }))
     expect(await within(container.querySelector('#t-fin-kpis') as HTMLElement).findByText('R$ 337,4 mi')).toBeVisible()
-    expect(urls.at(-1)).toContain('funcao=SA%C3%9ADE')
+    expect(urls.filter((u) => !u.includes('/cubos')).at(-1)).toContain('funcao=SA%C3%9ADE')
     expect(screen.queryByText('Receita arrecadada')).toBeNull()
     expect(screen.getByRole('region', { name: 'Despesa liquidada por mês' })).toBeVisible()  // sem a receita da cidade toda
     expect(screen.queryByRole('region', { name: 'Receita × despesa liquidada por mês' })).toBeNull()
@@ -66,7 +66,7 @@ describe('painel Finanças (AUDESP)', () => {
     mock((u) => [200, resp(Object.fromEntries(new URL(u, 'http://x').searchParams))])
     const { unmount } = montar()
     await userEvent.selectOptions(await screen.findByLabelText('Ano'), '2025')
-    expect(urls.at(-1)).toContain('ano=2025')
+    expect(urls.filter((u) => !u.includes('/cubos')).at(-1)).toContain('ano=2025')
     unmount()
     mock(() => [200, { disponivel: { ...DISP, anos: [] }, filtro: null, atual: null, anterior: null }])
     const { unmount: u2 } = montar()
