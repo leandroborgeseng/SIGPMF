@@ -286,7 +286,8 @@ class Lancamento(Base):
 
 class DividaAtiva(Base):
     __tablename__ = "dividas"
-    __table_args__ = (Index("ix_silver_divida_cidadao", "cidadao_id"), Index("ix_silver_divida_codi", "codi"), TR)
+    __table_args__ = (Index("ix_silver_divida_cidadao", "cidadao_id"), Index("ix_silver_divida_codi", "codi"),
+                      Index("ix_silver_divida_aberto", "em_aberto"), TR)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chave_origem: Mapped[str] = mapped_column(String(200), unique=True)
     codi: Mapped[str] = mapped_column(String(22))
@@ -303,6 +304,13 @@ class DividaAtiva(Base):
     protestos: Mapped[int | None] = mapped_column(Integer)
     processo: Mapped[str | None] = mapped_column(String(30))
     extinta: Mapped[bool] = mapped_column(Boolean)
+    # DP-P20 (0046): `saldo` é o LÍQUIDO = GREATEST(0, VR_TOTA_DIVI − pago na Conta_Corrente) da linha do débito
+    sequ: Mapped[str | None] = mapped_column(String(4))
+    compo: Mapped[str | None] = mapped_column(String(1))
+    saldo_bruto: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    pago_conta_corrente: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    em_aberto: Mapped[bool | None] = mapped_column(Boolean)  # COMPO D/G/P/B, não extinta, saldo líquido > 0
+    qualidade: Mapped[str | None] = mapped_column(String(30))  # ex.: quitado_sem_baixa (Q sem pagamento)
 
 
 # ---------------- Saúde, fatos (onda 3, SA-F2): sem conteúdo clínico; cidadão pela matrícula já correlacionada --------

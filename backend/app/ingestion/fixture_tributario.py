@@ -31,12 +31,12 @@ def gerar(cpf_sa1: str) -> dict[tuple[str, str], list[dict]]:
                 "Status": "PAGO" if dt_pag else None, "Data_Ultima_Alteracao_Registro": "2026-10-01 08:00:00",
                 "Documento": "nunca entra"}
 
-    def div(codi, sequ, ano, saldo, extinta, protestos):
+    def div(codi, sequ, ano, saldo, extinta, protestos, compo="D"):
         return {"CODI": codi, "SEQU": sequ, "ANO": ano, "Nr_Carne": 900 + ano % 100, "Cod_Nat": 3,
                 "DT_INSCR": f"{ano + 1}-03-01 00:00:00", "DT_VENC": f"{ano}-12-20 00:00:00", "VR_ORIGEM": 350.0,
                 "VR_TOTA_DIVI": saldo, "VR_PAGO_TOTAL": 0.0, "STATUS": "A", "SITUACAO": 1, "DT_PAGAMENTO": None,
                 "Data_Extincao": "2025-01-10 00:00:00" if extinta else None, "QTDE_PROTESTO": protestos,
-                "NR_PROC": None, "DT_CALCULO": "2026-10-01 00:00:00", "OBS": "texto livre"}
+                "NR_PROC": None, "DT_CALCULO": "2026-10-01 00:00:00", "COMPO": compo, "OBS": "texto livre"}
 
     return {
         ("IPTU", "Cadastro"): [
@@ -59,6 +59,11 @@ def gerar(cpf_sa1: str) -> dict[tuple[str, str], list[dict]]:
         ("DIVIDA", "Divida"): [
             div("01111010010100", "00", 2024, 646.2, False, 1),
             div("02222020020200", "00", 2022, 0.0, True, 0),
+        ],
+        # DP-P20: pagamento parcial da linha D1 (CODI/SEQU/ANO) -> saldo líquido 646,20 − 100,00 = 546,20
+        ("DIVIDA", "Divida_Conta_Corrente"): [
+            {"Data_Movimentacao": "2026-05-02 00:00:00", "Sequencia": 1, "CODI": "01111010010100", "SEQU": "00",
+             "ANO": 2024, "Vr_Pago": 100.0, "Compo": "D", "Vr_Total": 646.2},
         ],
     }
 

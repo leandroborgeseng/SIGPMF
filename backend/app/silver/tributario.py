@@ -74,6 +74,29 @@ def _digitos(v) -> str:
     return docmod.normaliza(str(v or "")) or ""
 
 
+# Regra liberada (Leandro, 05/11/2026 — provisória): só estas situações COMPO entram no saldo em aberto.
+# R/S/X/T aguardam decisão; Q/K/H/E/Z (quitado/cancelado), A/C e os mestres de consolidação N/M/W ficam fora
+# (DP-P4: o mestre N duplica os membros, que reabrem como D/G e contam uma vez cada). O original parcelado não é
+# D/G/P/B, então o parcelamento conta só pelas parcelas P/B em aberto (DP-P1/DP-P10).
+COMPO_ABERTO = frozenset({"D", "G", "P", "B"})
+
+
+def _chave_divida(d: dict) -> tuple:
+    return (_s(d.get("CODI"), 22), (_s(d.get("SEQU"), 4) or "").zfill(2), _i(d.get("ANO")))
+
+
+def situacao_divida(compo: str | None, bruto: Decimal | None, pago: Decimal | None, extinta: bool):
+    """(compo, saldo líquido, em_aberto, qualidade) de UMA linha do débito.
+
+    saldo = GREATEST(0, VR_TOTA_DIVI − pago Conta_Corrente); em aberto só COMPO D/G/P/B, não extinta e saldo > 0.
+    Q com valor e sem nenhum pagamento na Conta_Corrente = "quitado_sem_baixa" (DP-P19): qualidade, nunca KPI."""
+    compo = (compo or "").strip().upper()[:1] or None
+    liquido = None if bruto is None else max(Decimal(0), bruto - (pago or Decimal(0)))
+    aberto = bool(compo in COMPO_ABERTO and not extinta and liquido and liquido > 0)
+    qualidade = "quitado_sem_baixa" if compo == "Q" and not extinta and (bruto or 0) > 0 and not pago else None
+    return compo, liquido, aberto, qualidade
+
+
 def _grava(db: Session, model, objs, lote: int = 5000) -> int:
     buf, n = [], 0
     for o in objs:
@@ -144,17 +167,29 @@ def reconstruir(db: Session) -> dict[str, int]:
                              pago=pagamento is not None or pago_v > 0, status=_s(d.get("Status"), 50))
     n_lanc = _grava(db, Lancamento, lancamentos())
 
+    # DP-P20: pago por linha do débito (CODI/SEQU/ANO) na Divida_Conta_Corrente, só Vr_Pago > 0
+    pagos: dict[tuple, Decimal] = defaultdict(Decimal)
+    for _io, c in _ultimas(db, "DIVIDA", "Divida_Conta_Corrente"):
+        v = _n(c.get("Vr_Pago"))
+        if v is not None and v > 0:
+            pagos[_chave_divida(c)] += v
+
     def dividas():
         for io, d in _ultimas(db, "DIVIDA", "Divida"):
             codi = _s(d.get("CODI"), 22)
             if not codi:
                 continue
-            yield DividaAtiva(chave_origem=io[:200], codi=codi, ano=_i(d.get("ANO")), natureza=_i(d.get("Cod_Nat")),
+            extinta = _dt(d.get("Data_Extincao")) is not None
+            bruto = _n(d.get("VR_TOTA_DIVI"))
+            pago = pagos.get(_chave_divida(d))
+            compo, liquido, aberto, qualidade = situacao_divida(_s(d.get("COMPO"), 1), bruto, pago, extinta)
+            yield DividaAtiva(sequ=_s(d.get("SEQU"), 4), compo=compo, saldo_bruto=bruto, pago_conta_corrente=pago,
+                              em_aberto=aberto, qualidade=qualidade, chave_origem=io[:200], codi=codi, ano=_i(d.get("ANO")), natureza=_i(d.get("Cod_Nat")),
                               cidadao_id=dono.get(codi), inscricao=_d(d.get("DT_INSCR")), vencimento=_d(d.get("DT_VENC")),
-                              valor_origem=_n(d.get("VR_ORIGEM")), saldo=_n(d.get("VR_TOTA_DIVI")),
+                              valor_origem=_n(d.get("VR_ORIGEM")), saldo=liquido,
                               pago_total=_n(d.get("VR_PAGO_TOTAL")), status=_s(d.get("STATUS"), 5),
                               situacao=_i(d.get("SITUACAO")), protestos=_i(d.get("QTDE_PROTESTO")),
-                              processo=_s(d.get("NR_PROC"), 30), extinta=_dt(d.get("Data_Extincao")) is not None)
+                              processo=_s(d.get("NR_PROC"), 30), extinta=extinta)
     n_div = _grava(db, DividaAtiva, dividas())
     ligados = defaultdict(int)
     for p in posses:

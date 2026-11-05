@@ -151,8 +151,8 @@ def test_natureza_csv_valida_troca_e_chega_ao_cubo(client, tokens, dados):
     from app.services import natureza_divida as nd
     db, _ = dados
     h, adm = tokens["leitura"], tokens["admin"]
-    db.execute(text("""INSERT INTO silver.dividas (chave_origem, codi, ano, natureza, saldo, extinta)
-                       SELECT 'n' || g, 800000, 2020, CASE WHEN g <= 6 THEN 1 ELSE 77 END, 100, false FROM generate_series(1, 12) g"""))
+    db.execute(text("""INSERT INTO silver.dividas (chave_origem, codi, ano, natureza, saldo, extinta, compo, em_aberto)
+                       SELECT 'n' || g, 800000, 2020, CASE WHEN g <= 6 THEN 1 ELSE 77 END, 100, false, 'D', true FROM generate_series(1, 12) g"""))
     db.commit()
     assert client.post("/api/divida/natureza/arquivo", content=b"COD_NATU;DESCRICAO\n1;IPTU\n", headers=h).status_code == 403
     for ruim in (b"CODIGO;NOME\n1;IPTU\n", b"COD_NATU;DESCRICAO\nabc;IPTU\n", b"COD_NATU;DESCRICAO\n1;A\n1;B\n", b"COD_NATU;DESCRICAO;CPF\n1;A;2\n"):

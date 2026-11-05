@@ -301,7 +301,9 @@ DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",
     colunas={"Divida": ("CODI", "SEQU", "ANO", "Nr_Carne", "Cod_Nat", "DT_INSCR", "DT_VENC", "VR_ORIGEM", "VR_TOTA_DIVI",
                         "VR_PAGO_TOTAL", "STATUS", "SITUACAO", "DT_PAGAMENTO", "Data_Extincao", "QTDE_PROTESTO",
-                        "NR_PROC", "DT_CALCULO")},
+                        "NR_PROC", "DT_CALCULO", "COMPO"),
+             # DP-P20: pagamentos por linha do débito (CODI/SEQU/ANO); só valores, sem texto livre
+             "Divida_Conta_Corrente": ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO", "Vr_Pago", "Compo")},
     recusar=(r"Planilha", r"Finalizados", r"Teste", r"SMS") + _RECUSA_COMUM,
     proibidas=frozenset({"OBS", "Info_Susp", "Moti_Extincao"}),
 )
