@@ -1,9 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
@@ -12,6 +14,7 @@ from app.contagens.rotas import contagens
 from app.core.config import VERSION, get_settings
 from app.core.db import SessionLocal
 from app.core.security import hash_senha
+from app.core.seguranca_log import instalar_filtro, mensagem_erro_banco
 from app.explorador.rotas import explorador
 from app.models.controle import Usuario
 from app.paineis.rotas import paineis
@@ -54,6 +57,7 @@ def configurar_logs() -> logging.Logger:
 
 
 configurar_logs()
+instalar_filtro()  # DSN/senha nunca saem em log (inclusive traceback do uvicorn)
 
 
 def bootstrap_admin() -> None:
@@ -100,6 +104,7 @@ def create_app() -> FastAPI:
     docs = s.app_env == "dev" and s.docs_habilitado
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        instalar_filtro()  # de novo: handlers criados depois do import (uvicorn/gunicorn)
         try:
             bootstrap_admin()
         except Exception as exc:  # noqa: BLE001
@@ -129,6 +134,12 @@ def create_app() -> FastAPI:
     if s.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins.split(","), allow_methods=["*"],
                            allow_headers=["*"])
+
+    @app.exception_handler(DBAPIError)
+    async def erro_banco(_req: Request, exc: DBAPIError):  # nunca str(exc): pode trazer DSN/usuário/senha
+        log.error("Erro de banco na requisição: %s", type(exc.orig).__name__ if exc.orig is not None else type(exc).__name__)
+        return JSONResponse(status_code=503, content={"detail": mensagem_erro_banco(exc)})
+
     app.include_router(publico)
     app.include_router(publico, prefix="/api")
     app.include_router(api, prefix="/api")

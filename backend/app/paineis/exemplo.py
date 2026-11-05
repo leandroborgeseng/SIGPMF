@@ -14,6 +14,7 @@ import sys
 
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 PAINEL = "folha-modelo"
@@ -86,8 +87,13 @@ if __name__ == "__main__":  # pragma: no cover
     if "_test" not in (make_url(url).database or ""):
         sys.exit("Recusado: DATABASE_URL precisa apontar para um banco com '_test' no nome.")
     from app.core.db import SessionLocal
-    s = SessionLocal()
+    from app.core.seguranca_log import instalar_filtro, mascarar, mensagem_erro_banco
+    instalar_filtro()
     try:
-        print(gerar(s))
-    finally:
-        s.close()
+        s = SessionLocal()
+        try:
+            print(gerar(s))
+        finally:
+            s.close()
+    except SQLAlchemyError as exc:  # nunca str(exc)/traceback cru: pode trazer o DSN
+        sys.exit(mascarar(mensagem_erro_banco(exc)))
