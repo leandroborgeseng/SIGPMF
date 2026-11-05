@@ -34,7 +34,7 @@ def mascara_doc(doc: str | None) -> str:
 
 
 def _divida(db: Session, *, cidadao: str | None = None, codi: str | None = None) -> float:
-    q = select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.extinta.is_(False))
+    q = select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.em_aberto.is_(True))
     q = q.where(DividaAtiva.cidadao_id == cidadao) if cidadao else q.where(DividaAtiva.codi == codi)
     return float(db.scalar(q) or 0)
 

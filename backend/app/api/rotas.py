@@ -74,6 +74,15 @@ dom = acs.dom
 _AREA_DOMINIO = {"impostos": "tributario"}  # área da linha do tempo -> domínio do ouro
 
 
+def _naturezas_divida(db: Session, codigos: set[int]) -> dict[int, str]:
+    """Nome da natureza (ref.divida_natureza, CSV do DBA); sem a tabela carregada fica só o código."""
+    if not codigos:
+        return {}
+    from sqlalchemy import bindparam
+    q = text("SELECT codigo, descricao FROM ref.divida_natureza WHERE codigo IN :c").bindparams(bindparam("c", expanding=True))
+    return {c: d for c, d in db.execute(q, {"c": sorted(codigos)}).all()}
+
+
 def _menor_cid(db: Session, cid: str) -> bool:
     """R4: o cidadão é menor (ou sem nascimento: trata como menor). Só lê quando a regra está ligada."""
     if not acs.rbac_ativo():
@@ -889,9 +898,12 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     divs = list(db.scalars(select(DividaAtiva).where(DividaAtiva.cidadao_id == cid).order_by(DividaAtiva.ano.desc())))
     hoje = _date.today()
     f = lambda v: None if v is None else float(v)  # noqa: E731
+    naturezas = _naturezas_divida(db, {d.natureza for d in divs if d.natureza is not None})
+    # origem legível da dívida: imóvel (silver.imoveis) pelo CODI da linha do débito
+    insc_div = dict(db.execute(select(Imovel.codi, Imovel.inscricao).where(Imovel.codi.in_({d.codi for d in divs}))).all()) if divs else {}
     em_aberto = [x for x in lancs if not x.pago]
     vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
-    ativa = [d for d in divs if not d.extinta]
+    ativa = [d for d in divs if d.em_aberto]  # DP-P20: só D/G/P/B com saldo líquido
     audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
                                                                   "dividas": len(divs), "empresas": len(empresas)}, _ip(req))
     return {
@@ -912,7 +924,10 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                          "pagamento": x.pagamento, "pago": x.pago,
                          "situacao": "pago" if x.pago else ("vencido" if x.vencimento and x.vencimento < hoje else "a_vencer")}
                         for x in lancs],
-        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "inscricao": d.inscricao, "saldo": f(d.saldo),
+        # DP-P11: `inscrita_em` (data DT_INSCR); `saldo` é o líquido por linha; `em_aberto` segue a regra DP-P20
+        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "natureza_nome": naturezas.get(d.natureza),
+                     "inscrita_em": d.inscricao, "origem": f"IPTU — imóvel {insc_div[d.codi] or d.codi}" if d.codi in insc_div else None, "saldo": f(d.saldo), "saldo_bruto": f(d.saldo_bruto),
+                     "pago": f(d.pago_conta_corrente), "situacao": d.compo, "em_aberto": bool(d.em_aberto),
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
         # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual

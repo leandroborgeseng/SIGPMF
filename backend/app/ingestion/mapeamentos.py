@@ -33,6 +33,8 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
+    ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia"),
+                                          "campo_incremental": "Data_Movimentacao"},
     # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
     ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
     ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",

@@ -46,10 +46,10 @@ def reconstruir(db: Session) -> dict[str, int]:
     add("kpi", db.scalar(select(func.count()).select_from(Imovel)), dim="imoveis")
     add("kpi", db.scalar(select(func.count()).select_from(Atendimento)), dim="atendimentos_12m")
     add("kpi", db.scalar(select(func.count()).select_from(Vacinacao)), dim="vacinas_24m")
-    add("kpi", db.scalar(select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.extinta.is_(False))), dim="divida_ativa")
-    add("kpi", db.scalar(select(func.count(func.distinct(DividaAtiva.codi))).where(DividaAtiva.extinta.is_(False),
+    add("kpi", db.scalar(select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.em_aberto.is_(True))), dim="divida_ativa")
+    add("kpi", db.scalar(select(func.count(func.distinct(DividaAtiva.codi))).where(DividaAtiva.em_aberto.is_(True),
                                                                                  DividaAtiva.saldo > 0)), dim="devedores")
-    add("kpi", db.scalar(select(func.count()).select_from(DividaAtiva).where(DividaAtiva.extinta.is_(False),
+    add("kpi", db.scalar(select(func.count()).select_from(DividaAtiva).where(DividaAtiva.em_aberto.is_(True),
                                                                            DividaAtiva.protestos > 0)), dim="protestadas")
     ano = hoje.year
     lan_ano = select(func.coalesce(func.sum(Lancamento.valor), 0), func.coalesce(func.sum(Lancamento.valor_pago), 0)).where(
@@ -90,10 +90,10 @@ def reconstruir(db: Session) -> dict[str, int]:
                                        .where(Lancamento.vencimento < hoje).group_by(G1)):
         add("trib_inadimplencia_tributo", round(100.0 * float(aberto or 0) / float(total), 1) if total else 0,
             dim=NOMES_TRIBUTO.get(t or "", t or "Outro"))
-    for a, s in db.execute(select(DividaAtiva.ano, func.sum(DividaAtiva.saldo)).where(DividaAtiva.extinta.is_(False)).group_by(G1)):
+    for a, s in db.execute(select(DividaAtiva.ano, func.sum(DividaAtiva.saldo)).where(DividaAtiva.em_aberto.is_(True)).group_by(G1)):
         add("trib_divida_ano", s, dim=str(a or "sem ano"))
     por_devedor: dict[str, float] = defaultdict(float)  # por imóvel (codi): sem pessoa no ouro
-    for codi, s in db.execute(select(DividaAtiva.codi, func.sum(DividaAtiva.saldo)).where(DividaAtiva.extinta.is_(False))
+    for codi, s in db.execute(select(DividaAtiva.codi, func.sum(DividaAtiva.saldo)).where(DividaAtiva.em_aberto.is_(True))
                               .group_by(G1)):
         por_devedor[codi] += float(s or 0)
     faixas = defaultdict(lambda: [0, 0.0])

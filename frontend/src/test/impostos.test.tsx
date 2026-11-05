@@ -14,7 +14,7 @@ const resp = {
     { exercicio: 2026, tributo: '001', parcela: 1, codi: '01111010010100', vencimento: '2026-02-10', valor: 184.3, valor_pago: 184.3, pagamento: '2026-02-09', pago: true, situacao: 'pago' },
     { exercicio: 2026, tributo: '001', parcela: 2, codi: '01111010010100', vencimento: '2026-03-10', valor: 184.3, valor_pago: 0, pagamento: null, pago: false, situacao: 'vencido' },
   ],
-  dividas: [{ codi: '01111010010100', ano: 2024, natureza: 3, inscricao: '2025-03-01', saldo: 646.2, valor_origem: 350, protestos: 1, extinta: false }],
+  dividas: [{ codi: '01111010010100', ano: 2024, natureza: 3, natureza_nome: 'IPTU', origem: 'IPTU — imóvel 0111101001010', inscrita_em: '2025-03-01', saldo: 646.2, saldo_bruto: 646.2, pago: null, situacao: 'D', em_aberto: true, valor_origem: 350, protestos: 1, extinta: false }],
 }
 const mock = (s: number, c: unknown) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(c), { status: s, headers: { 'Content-Type': 'application/json' } })))
 
@@ -32,8 +32,19 @@ describe('Impostos e imóveis (TR7)', () => {
     expect(within(tab).getByText('Pago')).toBeVisible()
     expect(within(tab).getByText('Vencido')).toBeVisible()
     expect(within(screen.getByRole('list', { name: 'Dívida ativa' })).getByText(/646,20/)).toBeVisible()
+    expect(screen.getByText(/inscrita em 01\/03\/2025/)).toBeVisible()
+    expect(screen.getByText(/IPTU — imóvel 0111101001010/)).toBeVisible()
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations.map((v) => v.id)).toEqual([])
+  })
+  it('DP-P11/DP-P20: usa inscrita_em e mostra linha fora do saldo sem valor', async () => {
+    mock(200, { ...resp, dividas: [...resp.dividas, { codi: '01111010010100', ano: 2023, natureza: 3, natureza_nome: null,
+      inscrita_em: '2024-03-01', saldo: 0, saldo_bruto: 90, pago: 90, situacao: 'Q', em_aberto: false, valor_origem: 90, protestos: 0, extinta: false }] })
+    render(<ImpostosCidadao id="c1" />)
+    const lista = await screen.findByRole('list', { name: 'Dívida ativa' })
+    expect(within(lista).getByText(/inscrita em 01\/03\/2024/)).toBeVisible()
+    expect(within(lista).getByText('Sem saldo em aberto')).toBeVisible()
+    expect(within(lista).getAllByText(/IPTU/).length).toBeGreaterThan(0)
   })
   it('mostra as empresas do CPF (SIL) com a situação de débito', async () => {
     mock(200, { ...resp, empresas: [

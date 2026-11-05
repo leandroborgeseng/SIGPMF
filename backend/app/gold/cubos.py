@@ -103,7 +103,7 @@ PASSOS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                count(*) AS inscricoes, COALESCE(sum(d.saldo), 0) AS saldo
         FROM silver.dividas d LEFT JOIN silver.imoveis i ON i.codi = d.codi LEFT JOIN gold.cubo_aux_codigo_bairro c ON c.cd_bai = i.cd_bairro
         LEFT JOIN ref.divida_natureza n ON n.codigo = d.natureza
-        WHERE d.extinta IS NOT TRUE AND COALESCE(d.saldo, 0) > 0 GROUP BY 1, 2, 3, 4, 5, 6
+        WHERE d.em_aberto IS TRUE GROUP BY 1, 2, 3, 4, 5, 6
     """, ("bairro_id",)),
     ("cubo_empresas", """
         SELECT COALESCE(b.id, 0) AS bairro_id, COALESCE(e.tipo_pessoa, '?') AS tipo_pessoa, COALESCE(e.possui_debito, false) AS possui_debito, count(*) AS empresas

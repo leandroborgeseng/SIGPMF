@@ -217,7 +217,7 @@ def cidade(db: Session) -> list[dict]:
             WITH c AS (SELECT DISTINCT credor_cnpj FROM silver.despesa WHERE ano = :a AND credor_cnpj IS NOT NULL)
             SELECT count(DISTINCT p.documento), COALESCE(sum(d.saldo), 0) FROM c
             JOIN silver.imovel_possuidores p ON p.documento = c.credor_cnpj AND p.ativo
-            JOIN silver.dividas d ON d.codi = p.codi AND d.extinta IS NOT TRUE AND d.saldo > 0
+            JOIN silver.dividas d ON d.codi = p.codi AND d.em_aberto IS TRUE
         """), {"a": ano}).one()
         if divida_forn[0] >= MINIMO:
             out.append(_achado("fornecedor_divida", "Fornecedores com imóvel em dívida ativa", divida_forn[0], "n",
@@ -244,7 +244,7 @@ def cidade(db: Session) -> list[dict]:
         out.append(_achado("idoso_sem_consulta", "Idosos sem consulta em 12 meses", ido[1], "n",
                            f"{_fmt(100 * ido[1] / ido[0], 'pct')} dos {_fmt(float(ido[0]), 'n')} idosos do cadastro não têm consulta na rede nos últimos 12 meses (com os dados carregados).",
                            ["Cadastro", "Saúde"], "Cruzar com o bairro para a atenção básica."))
-    conc = db.execute(text("""WITH v AS (SELECT codi, sum(saldo) AS s FROM silver.dividas WHERE extinta IS NOT TRUE AND saldo > 0 GROUP BY 1),
+    conc = db.execute(text("""WITH v AS (SELECT codi, sum(saldo) AS s FROM silver.dividas WHERE em_aberto IS TRUE GROUP BY 1),
                               r AS (SELECT s, ntile(100) OVER (ORDER BY s DESC) AS q FROM v)
                               SELECT count(*), sum(s) FILTER (WHERE q = 1), sum(s) FROM r""")).one()
     if conc[0] and conc[0] >= 100:
