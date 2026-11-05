@@ -1,0 +1,2 @@
+ ✓ src/test/shell-kpi.test.tsx (8 tests) 303ms
+      Tests  8 passed (8)

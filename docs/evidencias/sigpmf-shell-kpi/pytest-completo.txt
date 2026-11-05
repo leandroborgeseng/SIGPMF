@@ -1,0 +1,1 @@
+Backend (pytest -q, suíte completa, banco sigpmf_shell_test): 2078 passed, 55 warnings in 241.98s (0:04:01)

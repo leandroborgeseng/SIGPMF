@@ -14,6 +14,7 @@ from app.core.db import SessionLocal
 from app.core.security import hash_senha
 from app.explorador.rotas import explorador
 from app.models.controle import Usuario
+from app.paineis.rotas import paineis
 
 log = logging.getLogger("sigpmf")
 
@@ -135,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(sei, prefix="/api")  # SEI1–SEI8
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
+    app.include_router(paineis, prefix="/api")  # onda 0: shell de painéis (P01–P08, K01–K04)
 
     return app
 
