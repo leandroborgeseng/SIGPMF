@@ -37,7 +37,8 @@ BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 BASES_PERMITIDAS = frozenset({
     "Saude", "Cemiterio", "ISS", "IPTU", "Divida", "Financeiro", "API SIL",  # conectores SQL/REST (POLITICAS)
     "FRA_GestaoEscolar", "FRA_CoreSSO",                                    # educação (LeitorGE)
-    "Correios"})                                                           # DNE/CEP (#47)
+    "Correios",                                                            # DNE/CEP (#47)
+    "DBSENIOR"})                                                           # folha/RH Senior: só contagens HE (onda 0), login de contagens só-leitura
 _DECORACAO = "[]\"'`;"
 SUFIXO_BASE_TESTE = "_test"  # só com APP_ENV=test: bancos sintéticos dos testes (ex.: zz_sintetico_test)
 

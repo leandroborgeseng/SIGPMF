@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     sqlserver_database_iptu: str | None = Field(None, alias="SQLSERVER_DATABASE_IPTU")
     sqlserver_database_divida: str | None = Field(None, alias="SQLSERVER_DATABASE_DIVIDA")
     sqlserver_database_financeiro: str | None = Field(None, alias="SQLSERVER_DATABASE_FINANCEIRO")
+    sqlserver_database_senior: str | None = Field(None, alias="SQLSERVER_DATABASE_SENIOR")  # folha/RH (DBSENIOR)
     # TR1: Financeiro_Exercicio só a partir deste exercício (vazio = ano anterior ao atual)
     financeiro_exercicio_min: int | None = Field(None, alias="FINANCEIRO_EXERCICIO_MIN", ge=1990, le=2100)
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
