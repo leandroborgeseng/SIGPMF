@@ -9,8 +9,9 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from app.gold.cubos import geracao
+from app.paineis.privacidade import k_do_cubo
 
-MINIMO = 5
+MINIMO = 5  # padrão; o corte de cada cubo vem de app.paineis.privacidade.k_do_cubo (ponto único K02)
 LIMITE_LINHAS = 5000
 CACHE_MAX = 512
 _cache: OrderedDict[tuple, dict] = OrderedDict()
@@ -117,7 +118,7 @@ def consulta(db: Session, cubo: str, agrupar: list[str], medidas: list[str] | No
         sql += " WHERE " + " AND ".join(onde)
     if agrupar:
         sql += " GROUP BY " + ", ".join(col(d) for d in agrupar)
-    corte = MINIMO if c["minimo"] else 0
+    corte = k_do_cubo(cubo) if c["minimo"] else 0
     # O maior primeiro, para o limite cortar só a cauda; tempo sai na ordem do calendário
     ordem = ", ".join(agrupar) if set(agrupar) & TEMPO or not agrupar else f"{medidas[0]} DESC NULLS LAST"
     try:

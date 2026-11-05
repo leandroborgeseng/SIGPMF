@@ -14,6 +14,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/painel/rh', rotulo: 'Recursos Humanos', curto: 'RH' },
     { to: '/painel/cobertura', rotulo: 'Cobertura de planos', curto: 'Planos' },
     { to: '/painel/cruzamentos', rotulo: 'Cruzamentos', curto: 'Cruzam.' },
+    { to: '/painel/modelo-folha', rotulo: 'Folha (modelo · exemplo)', curto: 'Modelo' },
   ] },
   { titulo: 'Dados', itens: [
     { to: '/dashboard', rotulo: 'Dashboard das cargas', curto: 'Dashboard' },
