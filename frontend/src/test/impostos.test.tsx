@@ -14,7 +14,7 @@ const resp = {
     { exercicio: 2026, tributo: '001', parcela: 1, codi: '01111010010100', vencimento: '2026-02-10', valor: 184.3, valor_pago: 184.3, pagamento: '2026-02-09', pago: true, situacao: 'pago' },
     { exercicio: 2026, tributo: '001', parcela: 2, codi: '01111010010100', vencimento: '2026-03-10', valor: 184.3, valor_pago: 0, pagamento: null, pago: false, situacao: 'vencido' },
   ],
-  dividas: [{ codi: '01111010010100', ano: 2024, natureza: 3, natureza_nome: 'IPTU', origem: 'IPTU — imóvel 0111101001010', inscrita_em: '2025-03-01', saldo: 646.2, saldo_bruto: 646.2, pago: null, situacao: 'D', em_aberto: true, valor_origem: 350, protestos: 1, extinta: false }],
+  dividas: [{ codi: '01111010010100', sequ: '01', ano: 2024, natureza: 3, natureza_nome: 'IPTU', origem: 'IPTU — imóvel 0111101001010', inscrita_em: '2025-03-01', saldo: 646.2, saldo_bruto: 646.2, pago: null, situacao: 'D', em_aberto: true, valor_origem: 350, protestos: 1, extinta: false }],
 }
 const mock = (s: number, c: unknown) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(c), { status: s, headers: { 'Content-Type': 'application/json' } })))
 

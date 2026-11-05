@@ -7,7 +7,7 @@ type ImovelT = { codi: string; inscricao: string | null; numero: string | null; 
   iptu_anual: number | null; tipo_posse: number | null; desde: string | null; ate: string | null; ativo: boolean }
 type LancT = { exercicio: number; tributo: string | null; parcela: number | null; codi: string | null; vencimento: string | null
   valor: number | null; valor_pago: number | null; pagamento: string | null; pago: boolean; situacao: string }
-type DivT = { codi: string; ano: number | null; natureza: number | null; natureza_nome?: string | null; origem?: string | null; inscrita_em: string | null
+type DivT = { codi: string; sequ?: string | null; ano: number | null; natureza: number | null; natureza_nome?: string | null; origem?: string | null; inscrita_em: string | null
   saldo: number | null; saldo_bruto?: number | null; pago?: number | null; situacao?: string | null; em_aberto?: boolean
   valor_origem: number | null; protestos: number; extinta: boolean }
 type EmpresaT = { ccm: number; nome: string | null; documento: string; possui_debito: boolean | null; endereco: string | null
@@ -86,7 +86,7 @@ export default function ImpostosCidadao({ id, dados }: { id: string; dados?: Res
           {d.dividas.length > 0 && (
             <ul className="impostos-imoveis" aria-label="Dívida ativa">
               {d.dividas.map((x) => (
-                <li key={`${x.codi}-${x.ano}-${x.situacao ?? ''}`} className={x.em_aberto ? '' : 'inativo'}>
+                <li key={`${x.codi}-${x.sequ ?? ''}-${x.ano}-${x.situacao ?? ''}`} className={x.em_aberto ? '' : 'inativo'}>
                   <div><strong>Dívida {x.ano ?? ''}</strong><span className="sutil">{x.origem ? ` · ${x.origem}` : ''}{x.natureza_nome ? ` · ${x.natureza_nome}` : ''} · inscrita em {dataBR(x.inscrita_em)}{x.protestos ? ` · ${x.protestos} protesto(s)` : ''}</span></div>
                   <span className={`selo ${x.em_aberto ? 'falha' : 'neutro'}`}><i aria-hidden="true" />{x.extinta ? 'Extinta' : x.em_aberto ? reais(x.saldo) : 'Sem saldo em aberto'}</span>
                 </li>

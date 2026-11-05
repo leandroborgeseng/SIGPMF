@@ -59,6 +59,7 @@ def _pag(codi, sequ, ano, seq, valor):
 @pytest.fixture
 def prata(db):
     assert "_test" in db.bind.url.database
+    assert "_test" in db.scalar(text("SELECT current_database()"))
     db.execute(text("DELETE FROM silver.dividas"))
     db.execute(text("DELETE FROM bronze.registros WHERE sistema_origem = 'DIVIDA'"))
     cod = "ZZTESTE0000001"
@@ -85,6 +86,7 @@ def prata(db):
     db.commit()
     yield db
     db.rollback()
+    assert "_test" in db.scalar(text("SELECT current_database()"))
     db.execute(text("DELETE FROM silver.dividas"))
     db.execute(text("DELETE FROM bronze.registros WHERE id_origem LIKE 'zzteste-%'"))
     db.execute(text("DELETE FROM controle.execucoes WHERE tipo = 'zzteste'"))
@@ -130,3 +132,11 @@ def test_migracao_0046_aditiva(db):
     src = pathlib.Path(__file__).parents[1].joinpath("alembic/versions/0046_divida_saldo_liquido.py").read_text()
     sqls = " ".join(re.findall(r'op\.execute\((.*)\)', src)).upper()
     assert "ADD COLUMN IF NOT EXISTS" in sqls and "DROP" not in sqls and "DELETE" not in sqls
+
+
+def test_origem_divida_sem_iptu_fixo():
+    from app.api.rotas import _origem_divida
+    assert _origem_divida("ISS", "0111") == "ISS — imóvel 0111"
+    assert _origem_divida(None, "0111") == "Imóvel 0111"
+    assert _origem_divida("Taxa", None) == "Taxa"
+    assert _origem_divida(None, None) is None

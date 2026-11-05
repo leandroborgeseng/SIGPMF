@@ -83,6 +83,15 @@ def _naturezas_divida(db: Session, codigos: set[int]) -> dict[int, str]:
     return {c: d for c, d in db.execute(q, {"c": sorted(codigos)}).all()}
 
 
+def _origem_divida(natureza_nome: str | None, imovel: str | None) -> str | None:
+    """Origem legível: natureza (ref.divida_natureza) + imóvel quando houver; nunca supõe IPTU."""
+    if natureza_nome and imovel:
+        return f"{natureza_nome} — imóvel {imovel}"
+    if imovel:
+        return f"Imóvel {imovel}"
+    return natureza_nome or None
+
+
 def _menor_cid(db: Session, cid: str) -> bool:
     """R4: o cidadão é menor (ou sem nascimento: trata como menor). Só lê quando a regra está ligada."""
     if not acs.rbac_ativo():
@@ -925,8 +934,8 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                          "situacao": "pago" if x.pago else ("vencido" if x.vencimento and x.vencimento < hoje else "a_vencer")}
                         for x in lancs],
         # DP-P11: `inscrita_em` (data DT_INSCR); `saldo` é o líquido por linha; `em_aberto` segue a regra DP-P20
-        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "natureza_nome": naturezas.get(d.natureza),
-                     "inscrita_em": d.inscricao, "origem": f"IPTU — imóvel {insc_div[d.codi] or d.codi}" if d.codi in insc_div else None, "saldo": f(d.saldo), "saldo_bruto": f(d.saldo_bruto),
+        "dividas": [{"codi": d.codi, "sequ": d.sequ, "ano": d.ano, "natureza": d.natureza, "natureza_nome": naturezas.get(d.natureza),
+                     "inscrita_em": d.inscricao, "origem": _origem_divida(naturezas.get(d.natureza), insc_div[d.codi] or d.codi if d.codi in insc_div else None), "saldo": f(d.saldo), "saldo_bruto": f(d.saldo_bruto),
                      "pago": f(d.pago_conta_corrente), "situacao": d.compo, "em_aberto": bool(d.em_aberto),
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
