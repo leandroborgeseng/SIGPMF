@@ -5,7 +5,7 @@ Papéis: pessoa (cadastro), cns_extra (CNS adicionais de uma pessoa), revisao (s
 terceiro (titular/autorizado/comprador: só CPF válido associa), obito (nunca associa sozinho).
 Um campo canônico pode juntar várias colunas (tupla) como texto livre.
 """
-from app.connectors.sqlserver.politicas import HISTORICAS_OBITO
+from app.connectors.sqlserver.politicas import HISTORICAS_OBITO, ORDEM_KEYSET_CC
 
 CANONICOS = ("nome", "data_nascimento", "cpf", "nome_mae", "endereco", "atualizado_em")
 CHAVE_SEPULTAMENTO = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
@@ -33,8 +33,12 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
+    # Identidade da linha (bronze) preservada. O keyset v2 pagina pela PK clustered, não por esta chave.
+    # ordem_legada é só para reconhecer checkpoint antigo e recusá-lo; nunca é lida como cursor da PK.
     ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia"),
-                                          "campo_incremental": "Data_Movimentacao"},
+                                          "campo_incremental": "Data_Movimentacao",
+                                          "keyset": {"versao": 2, "ordem": ORDEM_KEYSET_CC, "prova": "catalogo_pk",
+                                                     "ordem_legada": ("CODI", "SEQU", "ANO", "Sequencia")}},
     # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
     ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
     ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",
@@ -114,3 +118,10 @@ def canonico(sistema: str, tabela: str, dados: dict) -> dict:
 
 def papel(sistema: str, tabela: str) -> str:
     return MAPEAMENTOS.get((sistema, tabela), {}).get("papel", "pessoa")
+
+
+def keyset_de(sistema: str, tabela: str) -> dict | None:
+    """Especificação de paginação alinhada à PK, quando a chave da bronze não é essa ordem."""
+    m = MAPEAMENTOS.get((sistema, str(tabela).split(".")[-1]))
+    spec = m.get("keyset") if m else None
+    return spec if isinstance(spec, dict) else None
