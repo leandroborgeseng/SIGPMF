@@ -635,3 +635,38 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .cz-destaques button:hover { border-color: var(--brand); background: var(--brand-soft); }
 .cz-destaques .sutil { grid-column: 1 / -1; font-size: 12.5px; }
 .natureza-lista { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 13px; }
+
+/* Ficha do cidadão: todas as áreas, com ou sem registro */
+.ficha-voltar { justify-self: start; }
+.ficha-topo { display: grid; gap: 4px; }
+.ficha-topo h2 { margin: 0; font-size: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ficha-kicker { margin: 0; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.ficha-selo { font-size: 12px; font-weight: 600; }
+.ficha-doc { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--ink-2); }
+.mapa-areas h3 { margin: 0 0 10px; }
+.mapa-areas ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.mapa-area { width: 100%; height: 100%; min-height: 66px; display: grid; align-content: start; gap: 3px; text-align: left; padding: 10px 12px; font: inherit; color: var(--ink); cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: var(--r-md); }
+.mapa-area:hover { background: var(--surface-2); }
+.mapa-area:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.mapa-nome { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.mapa-valor { font-size: 14px; font-weight: 600; }
+.mapa-area.est-tem { border-left-color: var(--brand); }
+.mapa-area.est-nao_tem { background: var(--surface-2); }
+.mapa-area.est-nao_tem .mapa-valor, .mapa-area.est-carregando .mapa-valor { color: var(--ink-2); font-weight: 400; }
+.mapa-area.est-sem_base, .mapa-area.est-sem_acesso, .mapa-area.est-falha { border-left-color: var(--warn); border-style: dashed; border-left-style: solid; }
+.mapa-area.est-sem_base .mapa-valor, .mapa-area.est-sem_acesso .mapa-valor, .mapa-area.est-falha .mapa-valor { color: var(--warn-ink); }
+.mapa-nota { margin: 10px 0 0; }
+.area-ficha { padding: 12px 0; border-top: 1px solid var(--line-2); scroll-margin-top: 80px; }
+.area-ficha:focus { outline: none; }
+.area-ficha:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--r-md); }
+.area-ficha > h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--ink); }
+.area-vazia { margin: 0; color: var(--ink-2); }
+.area-indefinida { margin: 0; padding: 8px 10px; font-size: 13.5px; color: var(--warn-ink); background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--r-md); }
+.portal-coluna { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.portal-coluna > * { margin-top: 0; }
+.cadastro-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 20px; }
+.campo-largo { grid-column: 1 / -1; }
+.edu-aluno { display: grid; gap: 6px; }
+.edu-aluno p { margin: 0; }
+.impostos .impostos-totais { margin-bottom: 12px; }

@@ -54,11 +54,11 @@ describe('ficha do cidadão (tela branca)', () => {
     expect(screen.getByText(/lixo/)).toBeInTheDocument()
     expect(screen.getByTestId('cpf')).toHaveTextContent('não informado')
   })
-  it('pessoa sem vínculos mostra —', async () => {
+  it('pessoa sem vínculos diz que não tem', async () => {
     await abrirFicha(ficha(null))
     expect(await screen.findByRole('heading', { name: 'Fulano Sintético' })).toBeInTheDocument()
     const cadastro = screen.getByRole('heading', { name: 'Dados cadastrais' }).closest('section') as HTMLElement
-    expect(within(cadastro).getByText('—')).toBeInTheDocument()
+    expect(within(cadastro).getByText('Nenhum sistema vinculado')).toBeInTheDocument()
   })
   it('500 na rota de detalhe mostra erro com motivo e volta à busca', async () => {
     await abrirFicha({ detail: 'x' }, 500)

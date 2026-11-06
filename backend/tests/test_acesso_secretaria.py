@@ -174,7 +174,7 @@ def test_r4_saude_nominal_sem_conteudo_clinico(client, db, rbac):
     _vinculo(db, u, "SAUDE")
     cid = _cidadao(db)
     corpo = client.get(f"/api/gold/cidadaos/{cid}/saude", headers=h).json()
-    assert set(corpo) == {"cidadao_id", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo) == {"cidadao_id", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
 
 
 def test_regra_desligada_nao_muda_comportamento(client, db, monkeypatch):
@@ -444,6 +444,7 @@ PESSOAIS = {
     ("GET", "/api/silver/municipes"), ("GET", "/api/silver/municipes/pendencias"), ("GET", "/api/silver/inconsistencias"),
     ("GET", "/api/silver/empresas"),  # CN4: MEI/empresário individual é pessoa física
     ("GET", "/api/gold/cidadaos/{cid}"), ("GET", "/api/gold/cidadaos/{cid}/tributario"),
+    ("GET", "/api/gold/cidadaos/{cid}/cemiterio"),
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
@@ -462,7 +463,7 @@ POR_FUNCAO_COM_MOTIVO = {
     ("GET", "/api/silver/pendencias"), ("GET", "/api/silver/inconsistencias"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/contagens/{eid}/cpfs-repetidos"),
 } | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
-NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
+NAO_PESSOAIS = {("GET", "/api/gold/ficha/fontes"),   # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
     ("GET", "/api/audesp/arquivos"), ("POST", "/api/audesp/arquivo"), ("POST", "/api/audesp/carregar"), ("GET", "/api/financas/painel"), ("GET", "/api/iegm/painel"), ("GET", "/api/iegm/estado"),
     ("POST", "/api/iegm/arquivo"), ("GET", "/api/divida/natureza/estado"), ("POST", "/api/divida/natureza/arquivo"), ("GET", "/api/rh/estado"), ("POST", "/api/rh/carregar"), ("GET", "/api/rh/painel"), ("GET", "/api/cobertura/estado"), ("POST", "/api/cobertura/carregar"), ("GET", "/api/cobertura/painel"), ("GET", "/api/cubos"), ("POST", "/api/cubos/recalcular"), ("GET", "/api/cubos/{cubo}"), ("GET", "/api/cruzamentos"),  # AU1/AU5 e IEG-M (só agregados; upload só admin): metadados e upload (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),

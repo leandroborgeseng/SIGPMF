@@ -840,6 +840,29 @@ def inconsistencias(db: Session = Depends(get_db)):
              "campo": i.campo, "detalhe": i.detalhe} for i in db.scalars(select(Inconsistencia).order_by(Inconsistencia.id))]
 
 
+def _cns_mascarado(db: Session, cid: str) -> str | None:
+    from app.identity.cns import mascara as mascara_cns
+    return mascara_cns(db.scalar(select(Identificador.valor).where(Identificador.cidadao_id == cid, Identificador.tipo == "cns").limit(1)))
+
+
+@api.get("/gold/ficha/fontes")
+def fontes_da_ficha(_u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Quais áreas da ficha já têm base carregada (sem dado de pessoa): separa "não tem" de "ainda não sabemos"."""
+    from app.services import ficha_cidadao
+    return ficha_cidadao.fontes(db)
+
+
+@api.get("/gold/cidadaos/{cid}/cemiterio")
+def cemiterio_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Túmulos em que o cidadão é titular ou autorizado, compra em leilão e sepultamento (óbito confirmado)."""
+    from app.services import ficha_cidadao
+    acs.exige(db, u, req, "cemiterio", dominios=["cemiterio"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    r = ficha_cidadao.cemiterio(db, cid)
+    audita(db, u.email, "consulta_cemiterio", f"cidadao:{cid}", {k: len(v) for k, v in r.items()}, _ip(req))
+    return {"cidadao_id": cid, **r}
+
+
 @api.get("/gold/cidadaos/{cid}")
 def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     sec = acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid),
@@ -850,6 +873,7 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
              if sec.ve(d.dominio)]
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
     return {"cidadao_id": cid, "nome": c.nome or "", "cpf": (_cpfs(db, [cid]).get(cid) if sec.sem_mascara else mascara(_cpfs(db, [cid]).get(cid))),
+            "cns": _cns_mascarado(db, cid) if sec.ve("saude") else None, "ve_cadastro": sec.ve("identificacao"),
             "cpf_mascarado": not sec.sem_mascara, "sistemas": (c.sistemas or []) if sec.dominios is None else [],
             "dominios": [d for d in (c.dominios or []) if sec.ve(d)],
             "dados": [{"dominio": d.dominio, "campo": d.campo,
@@ -910,7 +934,9 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     naturezas = _naturezas_divida(db, {d.natureza for d in divs if d.natureza is not None})
     # origem legível da dívida: imóvel (silver.imoveis) pelo CODI da linha do débito
     insc_div = dict(db.execute(select(Imovel.codi, Imovel.inscricao).where(Imovel.codi.in_({d.codi for d in divs}))).all()) if divs else {}
-    em_aberto = [x for x in lancs if not x.pago]
+    # os totais contam TODOS os lançamentos; a lista é que para nos 200 mais recentes
+    em_aberto = db.execute(select(Lancamento.valor, Lancamento.vencimento).where(Lancamento.cidadao_id == cid, Lancamento.pago.is_(False))).all()
+    total_lancs = db.scalar(select(func.count()).select_from(Lancamento).where(Lancamento.cidadao_id == cid)) or 0
     vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
     ativa = [d for d in divs if d.em_aberto]  # DP-P20: só D/G/P/B com saldo líquido
     audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
@@ -921,7 +947,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                    "em_aberto": round(sum(f(x.valor) or 0 for x in em_aberto), 2), "parcelas_em_aberto": len(em_aberto),
                    "vencido": round(sum(f(x.valor) or 0 for x in vencido), 2), "parcelas_vencidas": len(vencido),
                    "divida_ativa": round(sum(f(d.saldo) or 0 for d in ativa), 2), "inscricoes_divida": len(ativa),
-                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas)},
+                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas), "lancamentos": total_lancs},
         "imoveis": [{"codi": p.codi, "inscricao": getattr(imoveis.get(p.codi), "inscricao", None),
                      "numero": getattr(imoveis.get(p.codi), "numero", None),
                      "complemento": getattr(imoveis.get(p.codi), "complemento", None),
@@ -982,11 +1008,12 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     esp = nomes(db)["especialidades"]
     hoje = _date.today()
     ag = list(db.scalars(select(Agendamento).where(Agendamento.cidadao_id == cid, Agendamento.data_consulta >= hoje)
-                         .order_by(Agendamento.data_consulta).limit(10)))
-    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc()).limit(10)))
-    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
+                         .order_by(Agendamento.data_consulta).limit(50)))
+    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc().nulls_last()).limit(200)))
+    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc().nulls_last()).limit(200)))
+    conta = lambda m: db.scalar(select(func.count()).select_from(m).where(m.cidadao_id == cid)) or 0  # noqa: E731
     audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
-    return {"cidadao_id": cid,
+    return {"cidadao_id": cid, "totais": {"atendimentos": conta(Atendimento), "vacinas": conta(Vacinacao)},
             "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp),
                           "dias_espera": a.dias_espera} for a in ag],
             "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp)}
@@ -1018,7 +1045,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))
