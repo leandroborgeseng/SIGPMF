@@ -1,7 +1,7 @@
 /** UXO1–UXO9 / EN5–EN8: procedência do dado num chip próprio, abaixo do valor (nunca na mesma linha). */
 const NOMES: Record<string, string> = {
   SAUDE: 'Saúde', IPTU: 'IPTU', DIVIDA: 'Dívida Ativa', SIL: 'SIL (empresas)', EDUCACAO: 'Educação',
-  CADUNICO: 'CadÚnico', FINANCEIRO: 'Financeiro',
+  CADUNICO: 'CadÚnico', FINANCEIRO: 'Financeiro', CEMITERIO: 'Cemitério',
 }
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro',
   'novembro', 'dezembro']

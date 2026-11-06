@@ -259,7 +259,7 @@ CEMITERIO = Politica(
         "USUARIO_NOVO": ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "SEQUENCIA", "USUARIO", "PARENTESCO", "TIPO_DOC",
                          "DOCUMENTO"),
         "Ocorrencia_Sepultura": ("Cod_Cemiterio", "Quadra", "Sepultura", "Seq_Ocorrencia", "Dt_Inclusao"),
-        "Cemiterio": ("codcemite", "nome"),
+        "Cemiterio": ("codcemite", "nomecemite"),
     },
     apoio=frozenset({"AuxQuadra", "AuxSepultura", "Aux_Quadra", "Aux_EstCivil", "ALTERACAO"}),
     recusar=(r"^Novo_Cemiterio", r"CONGELADO", r"VELHO", r"Antigo", r"^AAA_NAO_UTILIZADO",

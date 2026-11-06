@@ -79,6 +79,7 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
         "dominio": "cemiterio", "chave": ("Cod_Cemiterio", "Quadra", "Sepultura", "DataVenda"),
         "campo_incremental": "DataVenda", "papel": "terceiro",
         "campos": {"nome": "Nome", "cpf": "CPF", "atualizado_em": "DataVenda"}},
+    ("CEMITERIO", "Cemiterio"): {"dominio": "cemiterio", "papel": "fato", "campos": {}, "chave": "codcemite", "campo_incremental": None},
 }
 
 NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
