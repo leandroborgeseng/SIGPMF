@@ -297,6 +297,10 @@ IPTU = Politica(
     proibidas=frozenset({"NOME", "Email", "RG", "Celular", "Telefone", "OBS", "Observacao"}),
 )
 
+# PK clustered já existente em dbo.Divida_Conta_Corrente. A página ordena por ela (seek/scan limitado).
+# Não é a identidade da bronze: essa continua CODI/SEQU/ANO/Sequencia, em mapeamentos.
+ORDEM_KEYSET_CC = ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO")
+
 DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",
     colunas={"Divida": ("CODI", "SEQU", "ANO", "Nr_Carne", "Cod_Nat", "DT_INSCR", "DT_VENC", "VR_ORIGEM", "VR_TOTA_DIVI",
@@ -304,6 +308,7 @@ DIVIDA = Politica(
                         "NR_PROC", "DT_CALCULO", "COMPO"),
              # DP-P20: pagamentos por linha do débito (CODI/SEQU/ANO); só valores, sem texto livre
              "Divida_Conta_Corrente": ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO", "Vr_Pago", "Compo")},
+    ordem={"Divida_Conta_Corrente": ORDEM_KEYSET_CC},
     recusar=(r"Planilha", r"Finalizados", r"Teste", r"SMS") + _RECUSA_COMUM,
     proibidas=frozenset({"OBS", "Info_Susp", "Moti_Extincao"}),
 )

@@ -189,6 +189,28 @@ describe('carga completa (CC1-CC6)', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Iniciar carga completa' }))
     await waitFor(() => expect(posts).toBe(1))  // dispara a carga completa (retoma pelos checkpoints no servidor)
   })
+
+  it('conta corrente fora do COUNT e selo sem afirmar que a PK foi contada', async () => {
+    mock((u) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/estimativa')) return [200, { tabelas: { Divida: 125, Divida_Conta_Corrente: null }, total: 125, sem_contagem: ['Divida_Conta_Corrente'] }]
+      return [200, sit({ execucao: { ...EX, status: 'sucesso', lidos: 125, gravados: 125, finalizado_em: '2026-10-26T15:02:00Z' },
+        reconciliacao: { Divida: { origem: 125, bronze: 125, ok: true },
+          Divida_Conta_Corrente: { origem: null, bronze: 0, ok: true, status: 'sem_contagem', prova: 'catalogo_pk' } } })]
+    })
+    montar('admin')
+    const c = await cartao()
+    const b = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
+    await waitFor(() => expect(b).toBeEnabled())
+    await userEvent.click(b)
+    const d = await screen.findByRole('dialog')
+    expect(within(d).getByText('125')).toBeInTheDocument()
+    expect(d).toHaveTextContent('Divida_Conta_Corrente não entra nessa conta')
+    expect(d).toHaveTextContent('não executa COUNT')
+    await userEvent.click(within(d).getByRole('button', { name: 'Cancelar' }))
+    expect(within(c).getByText(/sem COUNT: a PK do catálogo confirma a chave/)).toBeInTheDocument()
+    expect(within(c).queryByText('Bronze bate com a origem')).toBeNull()
+  })
 })
 
 describe('indicador de progresso (CC7)', () => {
