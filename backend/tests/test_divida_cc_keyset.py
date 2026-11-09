@@ -5,6 +5,7 @@ somente leitura, do DevOps/DBA. Estes testes não executam a consulta na origem.
 """
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -136,6 +137,42 @@ def test_primeira_pagina_e_amostra_ordenam_pela_pk_sem_sort_extra_no_texto():
     assert "ORDER BY [CODI], [SEQU], [ANO], [Sequencia]" not in amostra
 
 
+def _ramos_union(sql: str) -> list[str]:
+    """Membros do UNION ALL no interior de FROM ( ... ) AS [pagina], sem parser SQL."""
+    ini = sql.index(" FROM (") + len(" FROM (")
+    fim = sql.rindex(") AS [pagina] ORDER BY ")
+    miolo, ramos, inicio, depth, i = sql[ini:fim], [], 0, 0, 0
+    marca = " UNION ALL "
+    while i < len(miolo):
+        if miolo[i] == "(":
+            depth += 1
+        elif miolo[i] == ")":
+            depth -= 1
+        if depth == 0 and miolo.startswith(marca, i):
+            ramos.append(miolo[inicio:i])
+            i += len(marca)
+            inicio = i
+            continue
+        i += 1
+    ramos.append(miolo[inicio:])
+    return ramos
+
+
+def _profundidade_order_by(sql: str) -> list[int]:
+    achados, depth, i = [], 0, 0
+    while i < len(sql):
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+        elif sql.startswith("ORDER BY", i) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+            achados.append(depth)
+            i += len("ORDER BY")
+            continue
+        i += 1
+    return achados
+
+
 def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     cursor = (D1, 1, "A", "00", 2020)
     sql, params = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 1000, cursor)
@@ -148,10 +185,52 @@ def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     assert "[Data_Movimentacao] > %s" in sql
     assert ">=" not in sql and "IS NOT NULL" not in sql and "COUNT" not in sql.upper()
     assert sql.endswith("ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]")
+    ramos = _ramos_union(sql)
+    assert len(ramos) == 5
+    assert all(r.startswith("(") and r.endswith(")") and r.count("ORDER BY") == 1 for r in ramos)
+    resto = sql
+    for ramo in ramos:
+        resto = resto.replace(ramo, "", 1)
+    assert resto.count("ORDER BY") == 1
+    assert resto.endswith("ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]")
+    # ORDER BY do ramo fica dentro dos parênteses do ramo (profundidade 2); o único de profundidade 0 é o SELECT externo.
+    assert _profundidade_order_by(sql) == [2, 2, 2, 2, 2, 0]
     assert "x'; DROP TABLE y" not in sql
     ruim = (D1, 1, "x'; DROP TABLE y", "00", 2020)
     sql_ruim, params_ruim = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 5, ruim)
     assert garante_somente_leitura(sql_ruim) and "DROP" not in sql_ruim and ruim[2] in params_ruim
+    assert len(_ramos_union(sql_ruim)) == 5 and _profundidade_order_by(sql_ruim) == [2, 2, 2, 2, 2, 0]
+
+
+def _literal_tsql(valor) -> str:
+    if isinstance(valor, datetime):
+        return "'" + valor.strftime("%Y-%m-%dT%H:%M:%S") + "'"
+    if isinstance(valor, int) and not isinstance(valor, bool):
+        return str(valor)
+    if isinstance(valor, str):
+        return "N'" + valor.replace("'", "''") + "'"
+    raise AssertionError(type(valor))
+
+
+def _com_literais(sql: str, params: tuple) -> str:
+    for valor in params:
+        sql = sql.replace("%s", _literal_tsql(valor), 1)
+    assert "%s" not in sql and "SET " not in sql
+    return sql
+
+
+def test_script_somente_leitura_espelha_a_pagina_com_cursor():
+    """O arquivo para o DevOps é o SQL gerado, com literais sintéticos no lugar de %s. Não roda no SQL Server."""
+    cursor = (D1, 1, "A", "00", 2020)
+    sql, params = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 1000, cursor)
+    exemplo = _com_literais(sql, params)
+    assert len(_ramos_union(exemplo)) == 5
+    caminho = Path(__file__).resolve().parents[2] / "docs/evidencias/sigpmf-divida-cc-keyset/validar-sintaxe-pagina-cursor.sql"
+    texto = caminho.read_text(encoding="utf-8")
+    assert texto.count(exemplo) == 2
+    assert "SET PARSEONLY ON;" in texto and "SET PARSEONLY OFF;" in texto
+    assert "SET SHOWPLAN_XML ON;" in texto and "SET SHOWPLAN_XML OFF;" in texto
+    assert "GO" in texto  # SHOWPLAN_XML precisa ser o único comando do lote
 
 
 def test_fronteira_mesma_data_desempate_retomada_e_janela():
@@ -160,7 +239,8 @@ def test_fronteira_mesma_data_desempate_retomada_e_janela():
     assert len(vistos) == len({_chave(r) for r in vistos})
     chave_bronze = MAPEAMENTOS[("DIVIDA", TAB)]["chave"]
     mesma_divida = [r for r in vistos if _id(chave_bronze, r) == _id(chave_bronze, LINHAS[0])]
-    assert len(mesma_divida) == 2  # PK devolve as duas datas; a identidade de 4 colunas continua igual
+    # As duas datas saem do pager. A bronze segue com 4 colunas e colapsa o id: decisão pendente do TL, sem correção aqui.
+    assert len(mesma_divida) == 2
     meio = paginas[1]
     assert meio[2][0]["Data_Movimentacao"] == meio[1][0] == D1  # cursor e próxima linha na mesma data
     assert "[Data_Movimentacao] = %s" in meio[0] and "[ANO] > %s" in meio[0] and ">=" not in meio[0]

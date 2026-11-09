@@ -306,8 +306,9 @@ class SqlServerConnector:
         """Página cuja ordem é a PK clustered.
 
         Sem cursor: TOP + ORDER BY na ordem da PK (scan ordenado limitado; sem Sort e sem IS NOT NULL).
-        Com cursor: um ramo de seek por coluna (igualdade no prefixo e desigualdade na coluna seguinte,
-        UNION ALL). A ordenação externa cobre no máximo 5 × o lote, não a tabela.
+        Com cursor: um ramo de seek por coluna (igualdade no prefixo e desigualdade na coluna seguinte).
+        Cada ramo é `(SELECT TOP (n) ... ORDER BY <sufixo>)`: em T-SQL, ORDER BY dentro de UNION ALL
+        sem esses parênteses é erro de sintaxe. O SELECT externo limita e ordena no máximo 5 × o lote.
         A janela incremental só entra na primeira página, e só se o campo for a primeira coluna da PK.
         """
         cols = list(politica.colunas_select(tabela))
@@ -351,8 +352,9 @@ class SqlServerConnector:
             if recorte:
                 partes.append(recorte)
             ramo_ordem = ", ".join(_ident(c) for c in ordem[i:])
-            ramos.append(f"SELECT TOP ({int(limite)}) {lista} FROM {origem} WHERE {' AND '.join(partes)} "
-                         f"ORDER BY {ramo_ordem}")
+            # Parênteses obrigatórios: ORDER BY num membro de UNION ALL sem eles é erro de sintaxe no T-SQL.
+            ramos.append(f"(SELECT TOP ({int(limite)}) {lista} FROM {origem} WHERE {' AND '.join(partes)} "
+                         f"ORDER BY {ramo_ordem})")
         sql = (f"SELECT TOP ({int(limite)}) {lista} FROM (" + " UNION ALL ".join(ramos)
                + f") AS [pagina] ORDER BY {ordem_sql}")
         return garante_somente_leitura(sql), tuple(params)
