@@ -5,7 +5,7 @@ Papéis: pessoa (cadastro), cns_extra (CNS adicionais de uma pessoa), revisao (s
 terceiro (titular/autorizado/comprador: só CPF válido associa), obito (nunca associa sozinho).
 Um campo canônico pode juntar várias colunas (tupla) como texto livre.
 """
-from app.connectors.sqlserver.politicas import HISTORICAS_OBITO, ORDEM_KEYSET_CC
+from app.connectors.sqlserver.politicas import HISTORICAS_OBITO, ORDEM_KEYSET_CC, TIPOS_PK_CC
 
 CANONICOS = ("nome", "data_nascimento", "cpf", "nome_mae", "endereco", "atualizado_em")
 CHAVE_SEPULTAMENTO = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
@@ -33,11 +33,13 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
-    # Identidade da linha (bronze) preservada. O keyset v2 pagina pela PK clustered, não por esta chave.
-    # ordem_legada é só para reconhecer checkpoint antigo e recusá-lo; nunca é lida como cursor da PK.
-    ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia"),
+    # Identidade da bronze = as 5 colunas da PK. A data fica por último, em formato canônico, para o id
+    # antigo (CODI|SEQU|ANO|Sequencia, 3 separadores) continuar reconhecível e ficar fora da prata vigente.
+    # O keyset pagina na ordem da PK (Data_Movimentacao primeiro). ordem_legada só recusa checkpoint antigo.
+    ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia", "Data_Movimentacao"),
                                           "campo_incremental": "Data_Movimentacao",
-                                          "keyset": {"versao": 2, "ordem": ORDEM_KEYSET_CC, "prova": "catalogo_pk",
+                                          "keyset": {"versao": 2, "ordem": ORDEM_KEYSET_CC, "tipos": TIPOS_PK_CC,
+                                                     "prova": "catalogo_pk",
                                                      "ordem_legada": ("CODI", "SEQU", "ANO", "Sequencia")}},
     # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
     ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
@@ -92,10 +94,8 @@ NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cem
 
 
 def chave_origem(m: dict, dados: dict) -> str:
-    ch = m["chave"]
-    if isinstance(ch, tuple):
-        return "|".join("" if dados.get(c) is None else str(dados.get(c)) for c in ch)
-    return str(dados[ch])
+    from app.bronze.ingestao import _id
+    return _id(m["chave"], dados)
 
 
 def canonico(sistema: str, tabela: str, dados: dict) -> dict:

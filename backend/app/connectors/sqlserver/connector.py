@@ -7,7 +7,7 @@ Nesta entrega não há conexão com origem real.
 """
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.connectors.sqlserver.politicas import TabelaRecusada
@@ -96,6 +96,52 @@ def interpreta_catalogo_pk(linhas, ordem: tuple[str, ...]) -> dict:
         return base
     base.update(pk_ok=True, nulos=0, motivo=None, pk=list(ordem))
     return base
+
+
+# Só estes textos entram no CAST. Qualquer outro tipo é recusado, para o nome não virar SQL.
+_CAST_PK = {"datetime": "datetime", "int": "int", "varchar(4)": "varchar(4)", "varchar(22)": "varchar(22)"}
+
+
+def _tipos_keyset(politica, tabela: str) -> dict[str, str]:
+    from app.ingestion.mapeamentos import keyset_de
+    spec = keyset_de(getattr(politica, "sistema", ""), tabela) or {}
+    tipos = spec.get("tipos") or {}
+    if spec.get("prova") == "catalogo_pk":
+        faltam = [c for c in spec.get("ordem") or () if c not in tipos]
+        if faltam:
+            raise TabelaRecusada(f"Paginação alinhada sem tipo de parâmetro para: {', '.join(faltam)}")
+    return tipos
+
+
+def _cmp_pk(coluna: str, op: str, tipos: dict[str, str]) -> str:
+    """Compara a coluna com o parâmetro já convertido para o tipo dela. A coluna não é convertida."""
+    tipo = tipos.get(coluna)
+    if not tipo:
+        return f"{_ident(coluna)} {op} %s"
+    sql_tipo = _CAST_PK.get(tipo)
+    if sql_tipo is None:
+        raise TabelaRecusada(f"Tipo de parâmetro não permitido para {coluna}.")
+    return f"{_ident(coluna)} {op} CAST(%s AS {sql_tipo})"
+
+
+def _valor_pk(coluna: str, valor, tipos: dict[str, str]):
+    """Valor Python que o pymssql envia junto com o CAST (int e datetime nativos; texto para varchar)."""
+    tipo = tipos.get(coluna)
+    if tipo == "datetime":
+        if isinstance(valor, datetime):
+            dt = valor
+        elif isinstance(valor, date):
+            dt = datetime(valor.year, valor.month, valor.day)
+        else:
+            dt = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    if tipo == "int":
+        if isinstance(valor, bool):
+            raise ValueError(f"Parâmetro int inválido para {coluna}.")
+        return int(valor)
+    if tipo in _CAST_PK and tipo.startswith("varchar"):
+        return str(valor)
+    return valor
 
 
 def _ident(nome: str) -> str:
@@ -325,6 +371,7 @@ class SqlServerConnector:
         origem = _ident("dbo." + tabela.split(".")[-1])
         ordem_sql = ", ".join(_ident(c) for c in ordem)
         recorte = _recorte(politica, tabela)
+        tipos = _tipos_keyset(politica, tabela)
         if ultima is None:
             where, params = [], []
             if desde is not None:
@@ -334,8 +381,8 @@ class SqlServerConnector:
                 if campo != ordem[0]:
                     raise TabelaRecusada(
                         "A janela incremental da paginação alinhada à PK tem de ser a primeira coluna da chave.")
-                where.append(f"{_ident(campo)} >= %s")
-                params.append(valor)
+                where.append(_cmp_pk(campo, ">=", tipos))
+                params.append(_valor_pk(campo, valor, tipos))
             if recorte:
                 where.append(recorte)
             clausula = (" WHERE " + " AND ".join(where)) if where else ""
@@ -345,10 +392,10 @@ class SqlServerConnector:
         for i in range(len(ordem) - 1, -1, -1):
             partes = []
             for c, v in zip(ordem[:i], ultima[:i], strict=True):
-                partes.append(f"{_ident(c)} = %s")
-                params.append(v)
-            partes.append(f"{_ident(ordem[i])} > %s")
-            params.append(ultima[i])
+                partes.append(_cmp_pk(c, "=", tipos))
+                params.append(_valor_pk(c, v, tipos))
+            partes.append(_cmp_pk(ordem[i], ">", tipos))
+            params.append(_valor_pk(ordem[i], ultima[i], tipos))
             if recorte:
                 partes.append(recorte)
             ramo_ordem = ", ".join(_ident(c) for c in ordem[i:])

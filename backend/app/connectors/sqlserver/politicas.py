@@ -298,8 +298,13 @@ IPTU = Politica(
 )
 
 # PK clustered já existente em dbo.Divida_Conta_Corrente. A página ordena por ela (seek/scan limitado).
-# Não é a identidade da bronze: essa continua CODI/SEQU/ANO/Sequencia, em mapeamentos.
+# Identidade da bronze: CODI, SEQU, ANO, Sequencia, Data_Movimentacao (a data por último).
+# Tipos do predicado (CAST no parâmetro, não na coluna). Sem DDL da origem neste repositório:
+# CODI varchar(22) e SEQU varchar(4) são as larguras já gravadas na prata (silver.dividas);
+# ANO é int; Data_Movimentacao é datetime. Sequencia é int porque a fixture da origem sintética
+# grava número JSON, enquanto SEQU é o texto "00".
 ORDEM_KEYSET_CC = ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO")
+TIPOS_PK_CC = {"Data_Movimentacao": "datetime", "Sequencia": "int", "CODI": "varchar(22)", "SEQU": "varchar(4)", "ANO": "int"}
 
 DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",

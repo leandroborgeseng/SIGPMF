@@ -23,11 +23,24 @@ from app.models.camadas import DividaAtiva, EmpresaSil, Identificador, Imovel, I
 SISTEMAS = ("IPTU", "DIVIDA", "FINANCEIRO", "SIL")
 
 
+def id_conta_corrente_legado(id_origem: str | None) -> bool:
+    """True para o id de 4 colunas (CODI|SEQU|ANO|Sequencia), sem Data_Movimentacao.
+
+    A prata vigente não soma esse id. A linha continua na bronze: apagar ou reescrever a produção
+    não faz parte desta entrega e exige OK do Leandro. Três separadores distinguem o formato;
+    o id novo tem quatro (a data canônica no fim) e ids sintéticos sem `|` não são legado.
+    """
+    return str(id_origem or "").count("|") == 3
+
+
 def _ultimas(db: Session, sistema: str, tabela: str):
-    sub = (select(func.max(RegistroBronze.id))
-           .where(RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
-                  RegistroBronze.quarentena.is_(None), RegistroBronze.ambiente_origem == "producao")
-           .group_by(RegistroBronze.id_origem))
+    cond = [RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
+            RegistroBronze.quarentena.is_(None), RegistroBronze.ambiente_origem == "producao"]
+    if sistema == "DIVIDA" and tabela == "Divida_Conta_Corrente":
+        # length - length(replace) = quantidade de '|'. 3 = identidade antiga de 4 colunas.
+        pipes = func.length(RegistroBronze.id_origem) - func.length(func.replace(RegistroBronze.id_origem, "|", ""))
+        cond.append(pipes != 3)
+    sub = (select(func.max(RegistroBronze.id)).where(*cond).group_by(RegistroBronze.id_origem))
     q = (select(RegistroBronze.id_origem, RegistroBronze.dados).where(RegistroBronze.id.in_(sub))
          .order_by(RegistroBronze.id).execution_options(yield_per=5000))
     yield from db.execute(q)
@@ -169,7 +182,9 @@ def reconstruir(db: Session) -> dict[str, int]:
 
     # DP-P20: pago por linha do débito (CODI/SEQU/ANO) na Divida_Conta_Corrente, só Vr_Pago > 0
     pagos: dict[tuple, Decimal] = defaultdict(Decimal)
-    for _io, c in _ultimas(db, "DIVIDA", "Divida_Conta_Corrente"):
+    for io, c in _ultimas(db, "DIVIDA", "Divida_Conta_Corrente"):
+        if id_conta_corrente_legado(io):
+            continue
         v = _n(c.get("Vr_Pago"))
         if v is not None and v > 0:
             pagos[_chave_divida(c)] += v

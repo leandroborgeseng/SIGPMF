@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app.bronze.ingestao import _id
+from app.bronze.ingestao import _id, data_movimentacao_id
 from app.connectors.sqlserver.connector import (
     ConfigSqlServer,
     SqlServerConnector,
@@ -19,12 +19,12 @@ from app.connectors.sqlserver.connector import (
 from app.connectors.sqlserver.politicas import ORDEM_KEYSET_CC, TabelaRecusada, politica
 from app.core.config import Settings, get_settings
 from app.core.sql_guard import garante_somente_leitura
-from app.ingestion.mapeamentos import MAPEAMENTOS
+from app.ingestion.mapeamentos import MAPEAMENTOS, chave_origem
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
 from app.services.agenda import _tem_indisponivel
 from app.services.diagnostico import motivo
-from app.silver.tributario import COMPO_ABERTO, situacao_divida
+from app.silver.tributario import COMPO_ABERTO, id_conta_corrente_legado, situacao_divida
 
 TAB = "Divida_Conta_Corrente"
 POL = politica("DIVIDA")
@@ -102,13 +102,22 @@ class _Conn:
         return None
 
 
-def test_identidade_incremental_e_saldo_permanecem():
+def test_identidade_de_cinco_colunas_nao_colapsa_duas_datas():
     m = MAPEAMENTOS[("DIVIDA", TAB)]
-    assert m["chave"] == ("CODI", "SEQU", "ANO", "Sequencia")
+    assert m["chave"] == ("CODI", "SEQU", "ANO", "Sequencia", "Data_Movimentacao")
     assert m["campo_incremental"] == "Data_Movimentacao"
     assert ccomp.ordem("DIVIDA", "Divida") == ("CODI", "SEQU", "ANO")
     assert ccomp.ordem("DIVIDA", TAB) == ORDEM
-    assert _id(m["chave"], LINHAS[0]) == _id(m["chave"], {**LINHAS[0], "Data_Movimentacao": D2})
+    mesmo_dia = {**LINHAS[0], "Data_Movimentacao": "2024-01-01 00:00:00"}
+    outro_dia = {**LINHAS[0], "Data_Movimentacao": D2}
+    id_a, id_b = _id(m["chave"], LINHAS[0]), _id(m["chave"], outro_dia)
+    assert id_a != id_b
+    assert id_a == _id(m["chave"], mesmo_dia) == chave_origem(m, mesmo_dia)
+    assert id_a.endswith("|2024-01-01T00:00:00.000000") and id_a.count("|") == 4
+    assert data_movimentacao_id(D1) == data_movimentacao_id("2024-01-01T00:00:00")
+    assert id_conta_corrente_legado("ZZ|00|2024|1") is True
+    assert id_conta_corrente_legado(id_a) is False
+    assert id_conta_corrente_legado("zzteste-sem-pipe") is False
     assert COMPO_ABERTO == frozenset({"D", "G", "P", "B"})
     compo, liquido, aberto, qualidade = situacao_divida("D", Decimal("10"), Decimal("3"), False)
     assert (compo, liquido, aberto, qualidade) == ("D", Decimal("7"), True, None)
@@ -178,14 +187,20 @@ def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     sql, params = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 1000, cursor)
     assert params == (D1, 1, "A", "00", 2020, D1, 1, "A", "00", D1, 1, "A", D1, 1, D1)
     assert sql.count("UNION ALL") == 4
-    assert "[Data_Movimentacao] = %s AND [Sequencia] = %s AND [CODI] = %s AND [SEQU] = %s AND [ANO] > %s" in sql
-    assert "[Data_Movimentacao] = %s AND [Sequencia] = %s AND [CODI] = %s AND [SEQU] > %s" in sql
-    assert "[Data_Movimentacao] = %s AND [Sequencia] = %s AND [CODI] > %s" in sql
-    assert "[Data_Movimentacao] = %s AND [Sequencia] > %s" in sql
-    assert "[Data_Movimentacao] > %s" in sql
+    assert "nvarchar" not in sql.lower()
+    assert "[Data_Movimentacao] > CAST(%s AS datetime)" in sql
     assert ">=" not in sql and "IS NOT NULL" not in sql and "COUNT" not in sql.upper()
     assert sql.endswith("ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]")
     ramos = _ramos_union(sql)
+    tipos = ("datetime", "int", "varchar(22)", "varchar(4)", "int")
+    for i, ramo in enumerate(ramos):
+        coluna = len(ORDEM) - 1 - i
+        iguais = [f"[{c}] = CAST(%s AS {t})" for c, t in zip(ORDEM[:coluna], tipos[:coluna])]
+        pred = " AND ".join([*iguais, f"[{ORDEM[coluna]}] > CAST(%s AS {tipos[coluna]})"])
+        assert pred in ramo
+    py = (datetime, int, str, str, int)
+    esperados = [t for coluna in range(len(ORDEM) - 1, -1, -1) for t in py[:coluna + 1]]
+    assert [type(v) for v in params] == esperados
     assert len(ramos) == 5
     assert all(r.startswith("(") and r.endswith(")") and r.count("ORDER BY") == 1 for r in ramos)
     resto = sql
@@ -200,6 +215,12 @@ def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     sql_ruim, params_ruim = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 5, ruim)
     assert garante_somente_leitura(sql_ruim) and "DROP" not in sql_ruim and ruim[2] in params_ruim
     assert len(_ramos_union(sql_ruim)) == 5 and _profundidade_order_by(sql_ruim) == [2, 2, 2, 2, 2, 0]
+    texto, params_texto = _conector().montar_pagina_alinhada(
+        POL, TAB, ORDEM, 1000, ("2024-01-01 00:00:00", "1", "A", "00", "2020"))
+    assert params_texto[:5] == (D1, 1, "A", "00", 2020)
+    assert [type(v) for v in params_texto[:5]] == [datetime, int, str, str, int]
+    assert "CAST(%s AS varchar(22))" in texto and "CAST(%s AS varchar(4))" in texto
+    assert "CAST(%s AS nvarchar" not in texto
 
 
 def _literal_tsql(valor) -> str:
@@ -238,12 +259,12 @@ def test_fronteira_mesma_data_desempate_retomada_e_janela():
     assert [_chave(r) for r in vistos] == sorted(_chave(r) for r in LINHAS)
     assert len(vistos) == len({_chave(r) for r in vistos})
     chave_bronze = MAPEAMENTOS[("DIVIDA", TAB)]["chave"]
-    mesma_divida = [r for r in vistos if _id(chave_bronze, r) == _id(chave_bronze, LINHAS[0])]
-    # As duas datas saem do pager. A bronze segue com 4 colunas e colapsa o id: decisão pendente do TL, sem correção aqui.
-    assert len(mesma_divida) == 2
+    assert _id(chave_bronze, LINHAS[0]) != _id(chave_bronze, LINHAS[6])
+    assert len([r for r in vistos if _id(chave_bronze, r) == _id(chave_bronze, LINHAS[0])]) == 1
     meio = paginas[1]
     assert meio[2][0]["Data_Movimentacao"] == meio[1][0] == D1  # cursor e próxima linha na mesma data
-    assert "[Data_Movimentacao] = %s" in meio[0] and "[ANO] > %s" in meio[0] and ">=" not in meio[0]
+    assert "[Data_Movimentacao] = CAST(%s AS datetime)" in meio[0]
+    assert "[ANO] > CAST(%s AS int)" in meio[0] and ">=" not in meio[0]
     ja = vistos[:4]
     resto, _ = _anda(LINHAS, 2, cursor=_chave(ja[-1]))
     assert [_chave(r) for r in ja + resto] == sorted(_chave(r) for r in LINHAS)
@@ -253,7 +274,7 @@ def test_fronteira_mesma_data_desempate_retomada_e_janela():
     lidos, pags = _anda(janela, 1, desde=desde)
     assert [_chave(r) for r in lidos] == sorted(_chave(r) for r in janela)
     assert all(r["Data_Movimentacao"] >= D2 for r in lidos)
-    assert "WHERE [Data_Movimentacao] >= %s" in pags[0][0] and pags[0][1] == (D2,)
+    assert "WHERE [Data_Movimentacao] >= CAST(%s AS datetime)" in pags[0][0] and pags[0][1] == (D2,)
     assert all(">=" not in sql for sql, _, _ in pags[1:])
     with pytest.raises(TabelaRecusada):
         _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 10, None, desde=("CODI", "A"))
