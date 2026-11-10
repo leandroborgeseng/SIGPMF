@@ -3,13 +3,14 @@
 O SQL abaixo é o texto que o conector gera. O plano e o tempo ficam para um SHOWPLAN estimado,
 somente leitura, do DevOps/DBA. Estes testes não executam a consulta na origem.
 """
+import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from app.bronze.ingestao import _id, data_movimentacao_id
+from app.bronze.ingestao import _id, data_movimentacao_id, hash_registro
 from app.connectors.sqlserver.connector import (
     ConfigSqlServer,
     SqlServerConnector,
@@ -18,7 +19,7 @@ from app.connectors.sqlserver.connector import (
 )
 from app.connectors.sqlserver.politicas import ORDEM_KEYSET_CC, TabelaRecusada, politica
 from app.core.config import Settings, get_settings
-from app.core.sql_guard import garante_somente_leitura
+from app.core.sql_guard import executa_somente_leitura, garante_somente_leitura
 from app.ingestion.mapeamentos import MAPEAMENTOS, chave_origem
 from app.services import carga_completa as ccomp
 from app.services import carga_conector as cc
@@ -202,13 +203,18 @@ def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     esperados = [t for coluna in range(len(ORDEM) - 1, -1, -1) for t in py[:coluna + 1]]
     assert [type(v) for v in params] == esperados
     assert len(ramos) == 5
-    assert all(r.startswith("(") and r.endswith(")") and r.count("ORDER BY") == 1 for r in ramos)
+    for n, ramo in enumerate(ramos):
+        assert ramo.startswith("SELECT ") and ramo.endswith(f"AS [ramo{n}]")
+        assert ramo.count("ORDER BY") == 1 and ramo.count("SELECT TOP (") == 1
+        interno = ramo.split(" FROM (", 1)[1]
+        assert interno.startswith("SELECT TOP (") and " ORDER BY " in interno and interno.endswith(f") AS [ramo{n}]")
     resto = sql
     for ramo in ramos:
         resto = resto.replace(ramo, "", 1)
     assert resto.count("ORDER BY") == 1
     assert resto.endswith("ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]")
-    # ORDER BY do ramo fica dentro dos parênteses do ramo (profundidade 2); o único de profundidade 0 é o SELECT externo.
+    # ORDER BY do ramo fica na subconsulta com TOP (profundidade 2). O UNION ALL não tem ORDER BY.
+    # O único de profundidade 0 é o SELECT externo.
     assert _profundidade_order_by(sql) == [2, 2, 2, 2, 2, 0]
     assert "x'; DROP TABLE y" not in sql
     ruim = (D1, 1, "x'; DROP TABLE y", "00", 2020)
@@ -238,6 +244,59 @@ def _com_literais(sql: str, params: tuple) -> str:
         sql = sql.replace("%s", _literal_tsql(valor), 1)
     assert "%s" not in sql and "SET " not in sql
     return sql
+
+
+def conferir_unicidade_amostra(total: int, distintas: int) -> None:
+    """Falha se a amostra tiver mais linhas do que combinações da chave de 5 colunas."""
+    if total != distintas:
+        raise AssertionError(f"Amostra da PK divergiu: {total} linhas e {distintas} chaves distintas.")
+
+
+def test_amostra_readonly_compara_count_da_pk_de_cinco_colunas():
+    """SELECT de amostra. Sem escrita na origem. A comparação roda na amostra sintética e no SQL gerado."""
+    sql = _conector().montar_amostra_unicidade(POL, TAB, ORDEM, 1000)
+    assert sql == garante_somente_leitura(sql)
+    assert sql.startswith("SELECT ") and ";" not in sql
+    for palavra in ("INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "EXEC"):
+        assert palavra not in sql.upper()
+    assert sql.count("COUNT(*)") == 2
+    assert "SELECT DISTINCT [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]" in sql
+    assert sql.count("SELECT TOP (1000) [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]") == 2
+    assert "FROM [dbo].[Divida_Conta_Corrente] ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]" in sql
+    chaves = [_chave(r) for r in LINHAS]
+    assert len(chaves[0]) == 5
+    conferir_unicidade_amostra(len(chaves), len(set(chaves)))
+    with pytest.raises(AssertionError, match="divergiu"):
+        conferir_unicidade_amostra(3, 2)
+
+
+def test_duas_linhas_que_so_diferem_na_data_tem_identidades_distintas():
+    m = MAPEAMENTOS[("DIVIDA", TAB)]
+    assert tuple(m["chave"]) == ("CODI", "SEQU", "ANO", "Sequencia", "Data_Movimentacao")
+    assert set(m["chave"]) == set(ORDEM) and len(m["chave"]) == len(ORDEM) == 5
+    assert tuple(m["keyset"]["ordem"]) == ORDEM
+    a = dict(LINHAS[0])
+    b = {**a, "Data_Movimentacao": D2}
+    assert _id(m["chave"], a) != _id(m["chave"], b)
+    assert hash_registro(a) != hash_registro(b)
+    quatro = tuple(c for c in m["chave"] if c != "Data_Movimentacao")
+    assert len(quatro) == 4 and _id(quatro, a) == _id(quatro, b)
+
+
+@pytest.mark.skipif(os.environ.get("SIGPMF_AMOSTRA_CC_READONLY") != "1", reason=(
+    "Amostra na origem só com SIGPMF_AMOSTRA_CC_READONLY=1 e o login de leitura da DIVIDA. "
+    "Não grava. Fora disso, a comparação roda na amostra sintética."))
+def test_amostra_cc_na_origem_e_somente_leitura():
+    """SELECT TOP limitado. A execução termina em ROLLBACK. Falha se as duas contagens divergirem."""
+    s = get_settings()
+    conector = SqlServerConnector(ConfigSqlServer.para_conector(s, "divida")[0])
+    sql = conector.montar_amostra_unicidade(POL, TAB, ORDEM, min(int(s.amostra_limite), 1000))
+    conn = conector._conectar()
+    try:
+        linha = executa_somente_leitura(conn, sql, limite=1, como_dict=False)[0]
+    finally:
+        conn.close()
+    conferir_unicidade_amostra(int(linha[0]), int(linha[1]))
 
 
 def test_script_somente_leitura_espelha_a_pagina_com_cursor():
@@ -378,3 +437,20 @@ def _gate2(monkeypatch, db):
     assert fb is False and cfg.database == "Divida" and "SQLSERVER_DATABASE_DIVIDA" in msg
     assert "catálogo" not in msg
     get_settings.cache_clear()
+
+
+def test_catalogo_substitui_chave_de_quatro_colunas_pela_pk(db):
+    from sqlalchemy import select
+
+    from app.models.controle import Sistema, TabelaCatalogo
+    cc._garante_catalogo(db, "DIVIDA", [TAB])
+    sis = db.scalar(select(Sistema).where(Sistema.codigo == "DIVIDA"))
+    row = db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == TAB))
+    assert row.chave == "CODI,SEQU,ANO,Sequencia,Data_Movimentacao"
+    row.chave = "CODI,SEQU,ANO,Sequencia"
+    db.flush()
+    cc._garante_catalogo(db, "DIVIDA", [TAB])
+    db.flush()
+    db.refresh(row)
+    assert row.chave == "CODI,SEQU,ANO,Sequencia,Data_Movimentacao"
+    db.rollback()

@@ -180,7 +180,8 @@ def reconstruir(db: Session) -> dict[str, int]:
                              pago=pagamento is not None or pago_v > 0, status=_s(d.get("Status"), 50))
     n_lanc = _grava(db, Lancamento, lancamentos())
 
-    # DP-P20: pago por linha do débito (CODI/SEQU/ANO) na Divida_Conta_Corrente, só Vr_Pago > 0
+    # Cada movimento entra pela identidade de 5 colunas (id_origem). A soma do #85 agrupa esses
+    # movimentos na chave da dívida (CODI/SEQU/ANO), que é a PK de Divida, não uma PK menor da conta corrente.
     pagos: dict[tuple, Decimal] = defaultdict(Decimal)
     for io, c in _ultimas(db, "DIVIDA", "Divida_Conta_Corrente"):
         if id_conta_corrente_legado(io):

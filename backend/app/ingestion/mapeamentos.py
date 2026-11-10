@@ -33,9 +33,10 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
-    # Identidade da bronze = as 5 colunas da PK. A data fica por último, em formato canônico, para o id
-    # antigo (CODI|SEQU|ANO|Sequencia, 3 separadores) continuar reconhecível e ficar fora da prata vigente.
-    # O keyset pagina na ordem da PK (Data_Movimentacao primeiro). ordem_legada só recusa checkpoint antigo.
+    # Identidade da bronze = as 5 colunas da PK, nesta ordem (a data por último, em texto canônico).
+    # O id antigo (CODI|SEQU|ANO|Sequencia, 3 separadores) continua reconhecível e fica fora da prata vigente.
+    # O keyset pagina na ordem física da PK (Data_Movimentacao primeiro): as mesmas 5 colunas, sem chave menor.
+    # ordem_legada só recusa checkpoint antigo.
     ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia", "Data_Movimentacao"),
                                           "campo_incremental": "Data_Movimentacao",
                                           "keyset": {"versao": 2, "ordem": ORDEM_KEYSET_CC, "tipos": TIPOS_PK_CC,

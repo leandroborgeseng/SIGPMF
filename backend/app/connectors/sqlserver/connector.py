@@ -353,8 +353,9 @@ class SqlServerConnector:
 
         Sem cursor: TOP + ORDER BY na ordem da PK (scan ordenado limitado; sem Sort e sem IS NOT NULL).
         Com cursor: um ramo de seek por coluna (igualdade no prefixo e desigualdade na coluna seguinte).
-        Cada ramo é `(SELECT TOP (n) ... ORDER BY <sufixo>)`: em T-SQL, ORDER BY dentro de UNION ALL
-        sem esses parênteses é erro de sintaxe. O SELECT externo limita e ordena no máximo 5 × o lote.
+        Em T-SQL, ORDER BY só vale no fim do conjunto ou dentro de subconsulta/CTE que tenha TOP ou OFFSET.
+        Cada ramo é `SELECT colunas FROM (SELECT TOP (n) ... ORDER BY <sufixo>) AS [ramoN]`. O UNION ALL
+        não tem ORDER BY. O SELECT externo limita e ordena no máximo 5 × o lote.
         A janela incremental só entra na primeira página, e só se o campo for a primeira coluna da PK.
         """
         cols = list(politica.colunas_select(tabela))
@@ -399,12 +400,33 @@ class SqlServerConnector:
             if recorte:
                 partes.append(recorte)
             ramo_ordem = ", ".join(_ident(c) for c in ordem[i:])
-            # Parênteses obrigatórios: ORDER BY num membro de UNION ALL sem eles é erro de sintaxe no T-SQL.
-            ramos.append(f"(SELECT TOP ({int(limite)}) {lista} FROM {origem} WHERE {' AND '.join(partes)} "
-                         f"ORDER BY {ramo_ordem})")
+            interno = (f"SELECT TOP ({int(limite)}) {lista} FROM {origem} WHERE {' AND '.join(partes)} "
+                       f"ORDER BY {ramo_ordem}")
+            ramos.append(f"SELECT {lista} FROM ({interno}) AS [ramo{len(ramos)}]")
         sql = (f"SELECT TOP ({int(limite)}) {lista} FROM (" + " UNION ALL ".join(ramos)
                + f") AS [pagina] ORDER BY {ordem_sql}")
         return garante_somente_leitura(sql), tuple(params)
+
+    def montar_amostra_unicidade(self, politica, tabela: str, ordem: tuple[str, ...], limite: int) -> str:
+        """SELECT de amostra: COUNT(*) das linhas contra COUNT(*) das combinações distintas da PK.
+
+        SQL Server não aceita COUNT(DISTINCT de várias colunas). O equivalente é COUNT(*) sobre
+        SELECT DISTINCT das colunas da chave. As duas leituras ficam dentro de TOP (n) ordenado pela PK,
+        então a amostra não varre a tabela inteira. Não grava na origem e não entra na carga.
+        """
+        cols = list(politica.colunas_select(tabela))
+        if not ordem or any(c not in cols for c in ordem) or len(ordem) != len(set(ordem)):
+            raise TabelaRecusada("Amostra de unicidade fora das colunas da política.")
+        if isinstance(limite, bool) or not isinstance(limite, int) or not 1 <= limite <= 10000:
+            raise ValueError(f"Amostra inválida: {limite!r}")
+        chave = ", ".join(_ident(c) for c in ordem)
+        origem = _ident("dbo." + tabela.split(".")[-1])
+        ordem_sql = chave
+        amostra = (f"SELECT TOP ({int(limite)}) {chave} FROM {origem} ORDER BY {ordem_sql}")
+        sql = (f"SELECT (SELECT COUNT(*) FROM ({amostra}) AS [amostra]) AS [total], "
+               f"(SELECT COUNT(*) FROM (SELECT DISTINCT {chave} FROM ({amostra}) AS [amostra]) AS [distintas]) "
+               f"AS [distintas]")
+        return garante_somente_leitura(sql)
 
     def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,
                       ultima: tuple | None = None, desde: tuple[str, Any] | None = None) -> tuple[str, tuple]:

@@ -122,11 +122,15 @@ def _garante_catalogo(db: Session, sistema: str, tabelas: list[str]) -> None:
         db.add(sis)
         db.flush()
     for t in tabelas:
-        if db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == t)) is None:
-            m = MAPEAMENTOS[(sistema, t)]
-            ch = m["chave"]
-            db.add(TabelaCatalogo(sistema_id=sis.id, nome=t, chave=",".join(ch) if isinstance(ch, tuple) else ch,
-                                  campo_incremental=m["campo_incremental"]))
+        m = MAPEAMENTOS[(sistema, t)]
+        ch = m["chave"]
+        texto = ",".join(ch) if isinstance(ch, tuple) else ch
+        existente = db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == t))
+        if existente is None:
+            db.add(TabelaCatalogo(sistema_id=sis.id, nome=t, chave=texto, campo_incremental=m["campo_incremental"]))
+        elif sistema == "DIVIDA" and t == "Divida_Conta_Corrente" and existente.chave != texto:
+            # Catálogo antigo gravou 4 colunas. A identidade vigente é a PK inteira; não apaga bronze.
+            existente.chave = texto
 
 
 def amostra_reconciliada(db: Session, sistema: str) -> Execucao | None:
