@@ -31,6 +31,13 @@ class Cursor:
 
     def execute(self, sql, params=None):
         self.o.sqls.append((sql, params))
+        if "sys.indexes" in sql:  # catálogo da PK: a origem sintética ecoa a ordem declarada (não é o SQL Server)
+            from app.ingestion.mapeamentos import keyset_de
+            nome = params[1] if params and len(params) > 1 else ""
+            spec = keyset_de(self.o.sistema, nome)
+            self.res = ([] if not spec else
+                        [(col, i, 0, 0, 1, 1, "CLUSTERED") for i, col in enumerate(spec["ordem"], start=1)])
+            return
         tabela = _FROM.search(sql).group(1)
         linhas = self.o.linhas(tabela)
         chave = ccomp.ordem(self.o.sistema, tabela)
@@ -95,9 +102,9 @@ class Origem(SqlServerConnector):
         chave = ccomp.ordem(self.sistema, tabela)
         return sorted(rows, key=lambda r: _k(tuple(r.get(c) for c in chave)))
 
-    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite):
+    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite, desde=None, alinhada=False):
         self.ultima = ultima  # a origem sintética aplica o mesmo keyset que o SQL montado pelo conector
-        return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite)
+        return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite, desde=desde, alinhada=alinhada)
 
     def _conectar(self):
         return Conn(self)

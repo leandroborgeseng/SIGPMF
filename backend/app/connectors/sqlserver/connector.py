@@ -7,7 +7,7 @@ Nesta entrega não há conexão com origem real.
 """
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.connectors.sqlserver.politicas import TabelaRecusada
@@ -15,6 +15,150 @@ from app.core.config import Settings
 from app.core.sql_guard import executa_somente_leitura, garante_somente_leitura
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+# Uma linha por coluna de chave da PK. Sem COUNT e sem DISTINCT: a unicidade/NULL vêm do catálogo.
+_CATALOGO_PK = (
+    "SELECT c.name AS coluna, ic.key_ordinal AS ordinal, c.is_nullable AS anulavel, "
+    "i.is_disabled AS desabilitado, i.is_primary_key AS pk, i.is_unique AS unico, i.type_desc AS tipo "
+    "FROM sys.indexes AS i "
+    "INNER JOIN sys.tables AS t ON t.object_id = i.object_id "
+    "INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id "
+    "INNER JOIN sys.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id "
+    "INNER JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id "
+    "WHERE s.name = %s AND t.name = %s AND i.is_primary_key = 1 AND ic.is_included_column = 0 "
+    "AND ic.key_ordinal > 0 ORDER BY ic.key_ordinal"
+)
+
+
+def depois_da_chave(cursor: tuple | None, valores: tuple) -> bool:
+    """True se a linha vem depois do cursor na ordem da PK (comparação estrita, sem NULL)."""
+    if cursor is None:
+        return True
+    if len(cursor) != len(valores):
+        raise ValueError("Cursor e linha com tamanhos diferentes.")
+    for anterior, atual in zip(cursor, valores, strict=True):
+        if anterior is None or atual is None:
+            raise ValueError("PK alinhada não compara NULL.")
+        if atual > anterior:
+            return True
+        if atual < anterior:
+            return False
+    return False
+
+
+def _bit_ligado(v) -> bool:
+    return v in (1, True)
+
+
+def _bit_desligado(v) -> bool:
+    return v in (0, False)
+
+
+def interpreta_catalogo_pk(linhas, ordem: tuple[str, ...]) -> dict:
+    """Confere a PK habilitada, única, clustered e NOT NULL, na ordem pedida. Não olha linhas da tabela."""
+    base = {"por_catalogo": True, "total": None, "distintas": None, "pk_ok": False, "nulos": None, "motivo": None}
+    if not linhas:
+        base["motivo"] = ("Não há PK habilitada no catálogo (sys.indexes). "
+                          "A carga não executa COUNT nem DISTINCT e não segue com outra ordem.")
+        return base
+    if len(linhas) != len(ordem):
+        nomes = ", ".join(str(r[0]) for r in linhas)
+        base["motivo"] = (f"A PK do catálogo tem {len(linhas)} colunas ({nomes}); "
+                          f"a paginação exige {len(ordem)} ({', '.join(ordem)}).")
+        return base
+    try:
+        rows = sorted(linhas, key=lambda r: int(r[1]))
+        ordinais = [int(r[1]) for r in rows]
+    except (TypeError, ValueError):
+        base["motivo"] = "O catálogo da PK devolveu ordinal inválido. A ordem antiga não foi reutilizada."
+        return base
+    if ordinais != list(range(1, len(ordem) + 1)):
+        base["motivo"] = "A PK do catálogo não tem ordinais 1..n contínuos. Não foi usada outra ordem."
+        return base
+    nomes = [str(r[0]) for r in rows]
+    if [n.casefold() for n in nomes] != [c.casefold() for c in ordem]:
+        base["motivo"] = (f"A PK do catálogo está na ordem {', '.join(nomes)}; "
+                          f"a paginação exige {', '.join(ordem)}. A ordem antiga não foi reutilizada.")
+        return base
+    if any(not _bit_desligado(r[2]) for r in rows):
+        ruins = ", ".join(str(r[0]) for r in rows if not _bit_desligado(r[2]))
+        base["motivo"] = f"Coluna da PK aceita NULL ({ruins}). Nulos não são contados com COUNT."
+        return base
+    if any(not _bit_desligado(r[3]) for r in rows):
+        base["motivo"] = "A PK está desabilitada no catálogo. A unicidade não foi presumida."
+        return base
+    if any(not _bit_ligado(r[4]) or not _bit_ligado(r[5]) for r in rows):
+        base["motivo"] = "O índice do catálogo não está marcado como PK única."
+        return base
+    tipos = {str(r[6]).upper() for r in rows}
+    if tipos != {"CLUSTERED"}:
+        base["motivo"] = (f"A PK do catálogo não é clustered ({', '.join(sorted(tipos))}). "
+                          "O keyset alinhado não foi executado.")
+        return base
+    base.update(pk_ok=True, nulos=0, motivo=None, pk=list(ordem))
+    return base
+
+
+# varchar(n) só entra se o texto for exatamente esse formato. O número não vira SQL solto.
+_VARCHAR_PK = re.compile(r"varchar\(([1-9]\d{0,3})\)$")
+
+
+def _tipos_keyset(politica, tabela: str) -> dict[str, str]:
+    from app.ingestion.mapeamentos import keyset_de
+    spec = keyset_de(getattr(politica, "sistema", ""), tabela) or {}
+    tipos = spec.get("tipos") or {}
+    if spec.get("prova") == "catalogo_pk":
+        faltam = [c for c in spec.get("ordem") or () if c not in tipos]
+        if faltam:
+            raise TabelaRecusada(f"Paginação alinhada sem tipo de parâmetro para: {', '.join(faltam)}")
+    return tipos
+
+
+def _cmp_pk(coluna: str, op: str, tipos: dict[str, str]) -> str:
+    """Compara a coluna com o parâmetro já convertido para o tipo dela. A coluna não é convertida.
+
+    Data usa CONVERT estilo 126 (ISO 8601). CAST(datetime) e um literal sem estilo seguem o DATEFORMAT
+    da sessão: com login dmy, '2024-01-02' pode virar 1º de fevereiro.
+    """
+    tipo = tipos.get(coluna)
+    if not tipo:
+        return f"{_ident(coluna)} {op} %s"
+    if tipo == "datetime":
+        return f"{_ident(coluna)} {op} CONVERT(datetime, %s, 126)"
+    if tipo == "int":
+        return f"{_ident(coluna)} {op} CAST(%s AS int)"
+    varchar = _VARCHAR_PK.fullmatch(tipo)
+    if varchar:
+        return f"{_ident(coluna)} {op} CAST(%s AS varchar({varchar.group(1)}))"
+    raise TabelaRecusada(f"Tipo de parâmetro não permitido para {coluna}.")
+
+
+def _iso_126(valor) -> str:
+    """Texto estilo 126: `AAAA-MM-DDTHH:MM:SS.mmm`. Três dígitos, sem espaço e sem prefixo N."""
+    if isinstance(valor, datetime):
+        dt = valor
+    elif isinstance(valor, date):
+        dt = datetime(valor.year, valor.month, valor.day)
+    else:
+        dt = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
+
+
+def _valor_pk(coluna: str, valor, tipos: dict[str, str]):
+    """Valor enviado com o CONVERT/CAST. Data é texto ISO; int fica int; varchar fica str, sem N."""
+    tipo = tipos.get(coluna)
+    if tipo == "datetime":
+        return _iso_126(valor)
+    if tipo == "int":
+        if isinstance(valor, bool):
+            raise ValueError(f"Parâmetro int inválido para {coluna}.")
+        return int(valor)
+    if _VARCHAR_PK.fullmatch(tipo or ""):
+        return str(valor)
+    return valor
+
+
 def _ident(nome: str) -> str:
     partes = nome.split(".")
     if not 1 <= len(partes) <= 2 or not all(_IDENT.match(p) for p in partes):
@@ -218,6 +362,94 @@ class SqlServerConnector:
             termos.append("(" + " AND ".join(partes) + ")")
         return " WHERE (" + " OR ".join(termos) + ")", tuple(params)
 
+    def montar_pagina_alinhada(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,
+                               ultima: tuple | None = None, desde: tuple[str, Any] | None = None) -> tuple[str, tuple]:
+        """Página cuja ordem é a PK clustered.
+
+        Sem cursor: TOP + ORDER BY na ordem da PK (scan ordenado limitado; sem Sort e sem IS NOT NULL).
+        Com cursor: um ramo de seek por coluna (igualdade no prefixo e desigualdade na coluna seguinte).
+        Em T-SQL, ORDER BY só vale no fim do conjunto ou dentro de subconsulta/CTE que tenha TOP ou OFFSET.
+        Cada ramo é `SELECT colunas FROM (SELECT TOP (n) ... ORDER BY <sufixo>) AS [ramoN]`. O UNION ALL
+        não tem ORDER BY. O SELECT externo limita e ordena no máximo 5 × o lote.
+        A janela incremental só entra na primeira página, e só se o campo for a primeira coluna da PK.
+        """
+        cols = list(politica.colunas_select(tabela))
+        fora = [c for c in ordem if c not in cols]
+        if not ordem or fora:
+            raise TabelaRecusada(f"Ordenação da carga completa fora das colunas da política: {fora or 'vazia'}")
+        if isinstance(limite, bool) or not isinstance(limite, int) or limite < 1:
+            raise ValueError(f"Lote inválido: {limite!r}")
+        if ultima is not None and len(ultima) != len(ordem):
+            raise ValueError("Checkpoint com número de colunas diferente da chave.")
+        if ultima is not None and any(v is None for v in ultima):
+            raise ValueError("Cursor da PK alinhada não aceita NULL.")
+        lista = ", ".join(_ident(c) for c in cols)
+        origem = _ident("dbo." + tabela.split(".")[-1])
+        ordem_sql = ", ".join(_ident(c) for c in ordem)
+        recorte = _recorte(politica, tabela)
+        tipos = _tipos_keyset(politica, tabela)
+        if ultima is None:
+            where, params = [], []
+            if desde is not None:
+                campo, valor = desde
+                if campo not in cols:
+                    raise TabelaRecusada("Campo incremental fora das colunas da política.")
+                if campo != ordem[0]:
+                    raise TabelaRecusada(
+                        "A janela incremental da paginação alinhada à PK tem de ser a primeira coluna da chave.")
+                where.append(_cmp_pk(campo, ">=", tipos))
+                params.append(_valor_pk(campo, valor, tipos))
+            if recorte:
+                where.append(recorte)
+            clausula = (" WHERE " + " AND ".join(where)) if where else ""
+            sql = f"SELECT TOP ({int(limite)}) {lista} FROM {origem}{clausula} ORDER BY {ordem_sql}"
+            return garante_somente_leitura(sql), tuple(params)
+        ramos, params = [], []
+        for i in range(len(ordem) - 1, -1, -1):
+            partes = []
+            for c, v in zip(ordem[:i], ultima[:i], strict=True):
+                partes.append(_cmp_pk(c, "=", tipos))
+                params.append(_valor_pk(c, v, tipos))
+            partes.append(_cmp_pk(ordem[i], ">", tipos))
+            params.append(_valor_pk(ordem[i], ultima[i], tipos))
+            if recorte:
+                partes.append(recorte)
+            ramo_ordem = ", ".join(_ident(c) for c in ordem[i:])
+            interno = (f"SELECT TOP ({int(limite)}) {lista} FROM {origem} WHERE {' AND '.join(partes)} "
+                       f"ORDER BY {ramo_ordem}")
+            ramos.append(f"SELECT {lista} FROM ({interno}) AS [ramo{len(ramos)}]")
+        sql = (f"SELECT TOP ({int(limite)}) {lista} FROM (" + " UNION ALL ".join(ramos)
+               + f") AS [pagina] ORDER BY {ordem_sql}")
+        return garante_somente_leitura(sql), tuple(params)
+
+    def montar_amostra_unicidade(self, politica, tabela: str, ordem: tuple[str, ...], limite: int) -> str:
+        """SELECT de amostra: COUNT(*) , chaves distintas da PK e chaves distintas do id antigo de 4 colunas.
+
+        Um único TOP (n) na CTE. SQL Server não aceita COUNT(DISTINCT de várias colunas; cada contagem
+        distinta é COUNT(*) sobre SELECT DISTINCT. Não grava na origem e não entra na carga.
+        """
+        from app.ingestion.mapeamentos import MAPEAMENTOS
+        nome = tabela.split(".")[-1]
+        cols = list(politica.colunas_select(nome))
+        if not ordem or any(c not in cols for c in ordem) or len(ordem) != len(set(ordem)):
+            raise TabelaRecusada("Amostra de unicidade fora das colunas da política.")
+        if isinstance(limite, bool) or not isinstance(limite, int) or not 1 <= limite <= 10000:
+            raise ValueError(f"Amostra inválida: {limite!r}")
+        chave_id = (MAPEAMENTOS.get((getattr(politica, "sistema", ""), nome)) or {}).get("chave")
+        if not isinstance(chave_id, tuple) or set(chave_id) != set(ordem) or "Data_Movimentacao" not in chave_id:
+            raise TabelaRecusada("Amostra de unicidade exige a PK inteira, com Data_Movimentacao.")
+        curta = tuple(c for c in chave_id if c != "Data_Movimentacao")
+        pk = ", ".join(_ident(c) for c in ordem)
+        antiga = ", ".join(_ident(c) for c in curta)
+        origem = _ident("dbo." + nome)
+        sql = (
+            f"WITH [amostra] AS (SELECT TOP ({int(limite)}) {pk} FROM {origem} ORDER BY {pk}) "
+            f"SELECT (SELECT COUNT(*) FROM [amostra]) AS [total], "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {pk} FROM [amostra]) AS [distintas]) AS [distintas], "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {antiga} FROM [amostra]) AS [legadas]) AS [legadas]"
+        )
+        return garante_somente_leitura(sql)
+
     def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,
                       ultima: tuple | None = None, desde: tuple[str, Any] | None = None) -> tuple[str, tuple]:
         """Página da carga completa por keyset: colunas da política, WHERE chave > última, ORDER BY chave, TOP (lote).
@@ -258,12 +490,26 @@ class SqlServerConnector:
     def ler_nulos(self, conn, tabela: str, politica, ordem: tuple[str, ...], limite: int) -> list[dict]:
         return executa_somente_leitura(conn, self.montar_nulos(politica, tabela, ordem, limite), limite=limite)
 
+    def _sem_varredura(self, politica, tabela: str) -> None:
+        from app.ingestion.mapeamentos import keyset_de
+        spec = keyset_de(getattr(politica, "sistema", ""), tabela)
+        if spec and spec.get("prova") == "catalogo_pk":
+            raise TabelaRecusada(
+                f"{tabela.split('.')[-1]}: COUNT e DISTINCT não são emitidos; a chave é a PK do catálogo.",
+                "contagem_proibida")
+
+    def montar_catalogo_pk(self, tabela: str) -> str:
+        _ident(tabela.split(".")[-1])
+        return garante_somente_leitura(_CATALOGO_PK)
+
     def montar_contagem(self, politica, tabela: str) -> str:
+        self._sem_varredura(politica, tabela)
         politica.colunas_select(tabela)  # só tabela autorizada, com colunas aprovadas
         return garante_somente_leitura(f"SELECT COUNT(*) FROM {_ident('dbo.' + tabela.split('.')[-1])}{_onde(politica, tabela)}")
 
     def montar_assinatura(self, politica, tabela: str, campo_incremental: str | None) -> str:
         """AG3: COUNT(*) e MAX(campo incremental) — uma linha por tabela, sem ler nenhum registro."""
+        self._sem_varredura(politica, tabela)
         cols = politica.colunas_select(tabela)
         t = _ident("dbo." + tabela.split(".")[-1])
         if campo_incremental and campo_incremental in cols:
@@ -271,12 +517,18 @@ class SqlServerConnector:
         return garante_somente_leitura(f"SELECT COUNT(*), NULL FROM {t}{_onde(politica, tabela)}")
 
     def assinatura(self, conn, tabela: str, politica, campo_incremental: str | None) -> list:
+        from app.ingestion.mapeamentos import keyset_de
+        spec = keyset_de(politica.sistema, tabela)
+        if spec and spec.get("prova") == "catalogo_pk":
+            # Sem COUNT: a agenda não trata a assinatura como estável e não pula a carga.
+            return [None, "indisponivel"]
         total, maximo = executa_somente_leitura(conn, self.montar_assinatura(politica, tabela, campo_incremental),
                                                 limite=1, como_dict=False)[0]
         return [int(total or 0), None if maximo is None else str(maximo)]
 
     def montar_verificacao_chave(self, politica, tabela: str, ordem: tuple[str, ...]) -> tuple[str, str]:
         """Keyset exige chave única e sem NULL: (total + linhas com NULL na chave, combinações distintas da chave)."""
+        self._sem_varredura(politica, tabela)
         cols = politica.colunas_select(tabela)
         if not ordem or any(c not in cols for c in ordem):
             raise TabelaRecusada("Chave da carga completa fora das colunas da política.")
@@ -289,6 +541,19 @@ class SqlServerConnector:
         return garante_somente_leitura(q1), garante_somente_leitura(q2)
 
     def verificar_chave(self, conn, tabela: str, politica, ordem: tuple[str, ...]) -> dict:
+        from app.ingestion.mapeamentos import keyset_de
+        spec = keyset_de(politica.sistema, tabela)
+        if spec and spec.get("prova") == "catalogo_pk":
+            if tuple(ordem) != tuple(spec["ordem"]):
+                return {"por_catalogo": True, "pk_ok": False, "total": None, "nulos": None, "distintas": None,
+                        "motivo": "A ordem pedida não é a PK declarada para o catálogo. COUNT não foi executado."}
+            nome = tabela.split(".")[-1]
+            linhas = executa_somente_leitura(conn, self.montar_catalogo_pk(nome), ("dbo", nome),
+                                             limite=32, como_dict=False)
+            if len(linhas) >= 32:
+                return {"por_catalogo": True, "pk_ok": False, "total": None, "nulos": None, "distintas": None,
+                        "motivo": "O catálogo devolveu colunas demais para a PK. COUNT não foi executado."}
+            return interpreta_catalogo_pk(linhas, tuple(spec["ordem"]))
         q1, q2 = self.montar_verificacao_chave(politica, tabela, ordem)
         total, nulos = executa_somente_leitura(conn, q1, limite=1, como_dict=False)[0]
         distintas = executa_somente_leitura(conn, q2, limite=1, como_dict=False)[0][0]
@@ -303,8 +568,9 @@ class SqlServerConnector:
         return int(r[0][0]) if r else 0
 
     def ler_pagina(self, conn, tabela: str, politica, ordem: tuple[str, ...], ultima: tuple | None,
-                   limite: int, desde: tuple[str, Any] | None = None) -> list[dict]:
-        sql, params = self.montar_pagina(politica, tabela, ordem, limite, ultima, desde=desde)
+                   limite: int, desde: tuple[str, Any] | None = None, alinhada: bool = False) -> list[dict]:
+        montar = self.montar_pagina_alinhada if alinhada else self.montar_pagina
+        sql, params = montar(politica, tabela, ordem, limite, ultima, desde=desde)
         return executa_somente_leitura(conn, sql, params or None, limite=limite)
 
     def ler_amostra(self, tabela: str, politica, campo_incremental: str | None = None,

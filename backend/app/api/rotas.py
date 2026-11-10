@@ -587,6 +587,10 @@ def completa_estimativa(conector: str, req: Request, u: Usuario = Depends(admin_
         raise HTTPException(409, motivo)
     try:
         return ccomp.estimativa(db, conector)
+    except ccomp.CheckpointIncompativel as exc:
+        audita(db, u.email, "carga_completa_checkpoint_incompativel", f"conector:{conector}",
+               {"motivo": "checkpoint_ordem_antiga"}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
     except ccomp.ChaveInvalida as exc:
         audita(db, u.email, "carga_completa_chave_invalida", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
         raise HTTPException(409, str(exc)) from None

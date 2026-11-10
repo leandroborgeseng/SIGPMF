@@ -297,6 +297,23 @@ IPTU = Politica(
     proibidas=frozenset({"NOME", "Email", "RG", "Celular", "Telefone", "OBS", "Observacao"}),
 )
 
+# PK clustered já existente em dbo.Divida_Conta_Corrente. A página ordena por ela (seek/scan limitado).
+# Identidade da bronze: CODI, SEQU, ANO, Sequencia, Data_Movimentacao (a data por último).
+# Tipos do predicado (CAST/CONVERT no parâmetro, não na coluna).
+# Leitura de 09/11/2026 na origem: CODI varchar(22), SEQU varchar(2), ANO int.
+# Sequencia e Data_Movimentacao ainda não foram confirmados nessa leitura.
+# Sequencia fica só nesta entrada: hoje "int", porque a fixture sintética grava número JSON.
+# Data_Movimentacao fica "datetime": o SQL manda CONVERT estilo 126, não CAST.
+# silver.dividas.sequ continua String(4); o predicado usa a largura lida na origem.
+ORDEM_KEYSET_CC = ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO")
+TIPOS_PK_CC = {
+    "Data_Movimentacao": "datetime",
+    "Sequencia": "int",
+    "CODI": "varchar(22)",
+    "SEQU": "varchar(2)",
+    "ANO": "int",
+}
+
 DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",
     colunas={"Divida": ("CODI", "SEQU", "ANO", "Nr_Carne", "Cod_Nat", "DT_INSCR", "DT_VENC", "VR_ORIGEM", "VR_TOTA_DIVI",
@@ -304,6 +321,7 @@ DIVIDA = Politica(
                         "NR_PROC", "DT_CALCULO", "COMPO"),
              # DP-P20: pagamentos por linha do débito (CODI/SEQU/ANO); só valores, sem texto livre
              "Divida_Conta_Corrente": ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO", "Vr_Pago", "Compo")},
+    ordem={"Divida_Conta_Corrente": ORDEM_KEYSET_CC},
     recusar=(r"Planilha", r"Finalizados", r"Teste", r"SMS") + _RECUSA_COMUM,
     proibidas=frozenset({"OBS", "Info_Susp", "Moti_Extincao"}),
 )

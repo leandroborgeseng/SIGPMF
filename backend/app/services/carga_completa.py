@@ -36,7 +36,7 @@ from app.core.audit import audita
 from app.core.config import get_settings
 from app.core.db import SessionLocal, get_engine
 from app.gold import visao
-from app.ingestion.mapeamentos import MAPEAMENTOS
+from app.ingestion.mapeamentos import MAPEAMENTOS, keyset_de
 from app.models.camadas import CorrelacaoPendente, RegistroBronze, Vinculo
 from app.models.controle import CheckpointCarga, Execucao, Log
 from app.services import carga_conector as cc
@@ -118,10 +118,18 @@ class ChaveInvalida(RuntimeError):
     """Tabela cuja chave não serve para keyset (repetida ou com NULL na origem)."""
 
 
+class CheckpointIncompativel(RuntimeError):
+    """Cursor gravado noutra ordem ou sem a versão da PK. O valor não é reutilizado."""
+
+
 def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
     """CC9: chave nula vai para a quarentena; a carga só para se os nulos passarem de SIGPMF_CARGA_NULOS_LIMITE_PCT
     (padrão 1%) E de SIGPMF_CARGA_NULOS_LIMITE_MIN linhas (padrão 10). Tabela pequena com poucas nulas não bloqueia,
-    mas 100% de nulos (total > 0) sempre bloqueia."""
+    mas 100% de nulos (total > 0) sempre bloqueia. Tabela provada pelo catálogo da PK não passa por COUNT/DISTINCT."""
+    if v.get("por_catalogo"):
+        if v.get("pk_ok") and v.get("nulos") == 0:
+            return None
+        return v.get("motivo") or (f"Tabela {tabela}: o catálogo não confirmou a PK ({', '.join(ordem_)}).")
     chave = ", ".join(ordem_)
     s = get_settings()
     limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
@@ -262,6 +270,10 @@ def _chave_lock(sistema: str) -> int:
 
 
 def ordem(sistema: str, tabela: str) -> tuple[str, ...]:
+    """Ordem do keyset. Na conta corrente é a PK clustered; nas demais tabelas, a chave da bronze."""
+    spec = keyset_de(sistema, tabela)
+    if spec and spec.get("ordem"):
+        return tuple(spec["ordem"])
     ch = MAPEAMENTOS[(sistema, tabela)]["chave"]
     return tuple(ch) if isinstance(ch, tuple) else (ch,)
 
@@ -387,8 +399,12 @@ def leitor_padrao(conector: str, db: Session):
 
 
 def estimativa(db: Session, conector: str, leitor=None) -> dict:
-    """CC2: COUNT(*) por tabela da política (pelo guard), para a confirmação."""
+    """CC2: COUNT(*) por tabela da política (pelo guard), para a confirmação.
+    Tabela provada pelo catálogo da PK fica de fora da soma (sem COUNT)."""
     sistema = _sistema(conector)
+    bloqueio = mensagem_cursor_bloqueado(db, sistema)
+    if bloqueio:
+        raise CheckpointIncompativel(bloqueio)
     pol = politica(sistema)
     leitor = leitor or leitor_padrao(conector, db)
     conn = leitor.abrir()
@@ -396,7 +412,11 @@ def estimativa(db: Session, conector: str, leitor=None) -> dict:
         tabs = verificar_chaves(leitor, conn, sistema, pol)  # ChaveInvalida -> 409 na rota
     finally:
         conn.close()
-    return {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
+    sem = [t for t, v in tabs.items() if v is None and (keyset_de(sistema, t) or {}).get("prova") == "catalogo_pk"]
+    out = {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
+    if sem:
+        out["sem_contagem"] = sem
+    return out
 
 
 def ativa(db: Session, sistema: str) -> Execucao | None:
@@ -534,6 +554,10 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
     if modo not in MODOS:
         raise ValueError(f"Modo de carga inválido: {modo!r}")
     sistema = _sistema(conector)
+    if not somente_camadas and modo == "completa":
+        bloqueio = mensagem_cursor_bloqueado(db, sistema)
+        if bloqueio:
+            raise Bloqueado(bloqueio)
     motivo = motivo_bloqueio(db, conector)
     if motivo:
         raise Bloqueado(motivo)
@@ -587,7 +611,7 @@ def cancelar(db: Session, conector: str) -> Execucao | None:
     return ex
 
 
-def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, CheckpointCarga]:
+def _checkpoints(db: Session, sistema: str, tabelas: list[str], ex_id: int | None = None) -> dict[str, CheckpointCarga]:
     cps = {c.tabela: c for c in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema)))}
     for t in tabelas:
         if t not in cps:
@@ -595,8 +619,12 @@ def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, Che
                                      concluida=False)
             db.add(cps[t])
     cps = {t: cps[t] for t in tabelas}
-    if all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
+    if cps and all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
         for c in cps.values():
+            if ex_id and c.ultima_chave is not None and _cursor_recusado(sistema, c.tabela, c.ultima_chave):
+                _log_duravel(ex_id, "INFO",
+                             f"{sistema}.{c.tabela}: ciclo encerrado; checkpoint de ordem antiga descartado "
+                             "porque a leitura recomeça do início. A tupla não foi usada como cursor.")
             c.posicao, c.concluida, c.ultima_chave = 0, False, None
     db.flush()
     return cps
@@ -694,7 +722,7 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.registra_erro(exc)
             ex.tabela_atual = None
             _registra_erro_sil(db, ex, exc)
-            motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente) else ex.erro_publico()["motivo"]
+            motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente | CheckpointIncompativel) else ex.erro_publico()["motivo"]
             _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
     finally:
@@ -709,20 +737,29 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     pol = politica(sistema)
     tabelas = cc.tabelas_do_conector(sistema)
     cc._garante_catalogo(db, sistema, tabelas)
-    cps = _checkpoints(db, sistema, tabelas)
+    cps = _checkpoints(db, sistema, tabelas, ex.id)
     db.commit()
+    _registra_origem(ex.id, conector, db, sistema, tabelas, "completa")
+    for t, cp in cps.items():
+        abre_cursor(sistema, t, cp.ultima_chave)  # ordem antiga: recusa antes de abrir a origem
     conn = leitor.abrir()
     pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         det = verificar_chaves(leitor, conn, sistema, pol, detalhe=True)  # repetida/NULL acima do limite: falha
         for t, cp in cps.items():
             cp.total_origem = det[t]["total"]
-        ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
+        # Tabela sem COUNT (PK no catálogo) deixa o total da execução vazio: 0 pareceria perda.
+        if any((keyset_de(sistema, t) or {}).get("prova") == "catalogo_pk" for t in cps):
+            ex.total_origem = None
+        else:
+            ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
         retoma = sum(c.posicao for c in cps.values())
+        origem_txt = ("total da origem não contado (PK conferida no catálogo)" if ex.total_origem is None
+                      else f"{ex.total_origem} linhas na origem")
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
-            f"Carga completa de {conector}: {ex.total_origem} linhas na origem, lote={s.carga_lote}, "
+            f"Carga completa de {conector}: {origem_txt}, lote={s.carga_lote}, "
             f"pausa={s.carga_pausa_ms}ms" + (f", retomando do checkpoint ({retoma} já gravadas)" if retoma else ""))))
-        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA['leitura']}: início ({ex.total_origem} linhas)"))
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA['leitura']}: início ({origem_txt})"))
         ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.atualizado_em = "leitura", retoma, ex.total_origem, datetime.now(UTC)
         t_leitura = time.monotonic()
         db.commit()
@@ -732,6 +769,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
             m = MAPEAMENTOS[(sistema, t)]
             cols = pol.colunas_select(t)
             ord_ = ordem(sistema, t)
+            cursor = abre_cursor(sistema, t, cp.ultima_chave)
             ex.tabela_atual = t
             if cp.posicao == 0 and det[t]["nulos"]:  # CC9: SELECT separado e limitado das chaves nulas
                 q = _quarentena(db, ex, sistema, t, [linha_json(r, cols) for r in
@@ -752,11 +790,11 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
                 sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
                 _subetapa_leitura(ex.id, t, cp.posicao, cp.total_origem)
-                brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
+                brutas, cursor, persistido = le_proxima_pagina(leitor, conn, sistema, t, pol, cursor, s.carga_lote)
                 boas, pulos = separa_pulos_sil(brutas)
                 linhas = [linha_json(r, cols) for r in boas]
-                if brutas:  # o checkpoint passa da Sequencia pulada (mesma transação da quarentena)
-                    cp.ultima_chave = codifica_chave(_valores_chave(brutas[-1], ord_, cols))
+                if persistido is not None:  # o checkpoint passa da Sequencia pulada (mesma transação da quarentena)
+                    cp.ultima_chave = persistido
                     quarentena_pulos_sil(db, ex, sistema, t, pulos)
                 if linhas:
                     c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id, s.carga_lote,
@@ -810,6 +848,38 @@ def _fim_etapa(db: Session, ex: Execucao, etapa: str, t0: float, res: dict) -> N
     seg = time.monotonic() - t0
     db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA[etapa]}: fim em {seg:.1f}s {res}"))
     log.info("carga completa %s: etapa %s fim em %.1fs", ex.id, etapa, seg)
+
+
+def _log_duravel(ex_id: int, nivel: str, mensagem: str) -> None:
+    """Log numa conexão separada: sobrevive ao rollback da carga."""
+    with get_engine().begin() as c:
+        c.execute(Log.__table__.insert().values(execucao_id=ex_id, nivel=nivel, mensagem=mensagem))
+
+
+def _registra_origem(ex_id: int, conector: str, db: Session, sistema: str, tabelas: list[str], modo: str) -> None:
+    """Gate 2: banco resolvido (env, catálogo ou fallback) e, na conta corrente, o que a leitura vai consultar."""
+    desc = cc.descreve_banco(conector, db)
+    if desc:
+        _log_duravel(ex_id, desc[0], desc[1])
+    s = get_settings()
+    for t in tabelas:
+        spec = keyset_de(sistema, t)
+        if not spec or spec.get("prova") != "catalogo_pk":
+            continue
+        ident = MAPEAMENTOS[(sistema, t)]["chave"]
+        ident_txt = ", ".join(ident if isinstance(ident, tuple) else (ident,))
+        if modo == "completa":
+            prova = ("Nesta leitura a unicidade e a ausência de NULL vêm do catálogo da PK habilitada "
+                     "(sys.indexes, sys.index_columns, sys.columns). ")
+        else:
+            prova = ("Nesta leitura incremental não há COUNT, DISTINCT nem novo catálogo; "
+                     "as páginas seguem a mesma PK a partir da marca d'água. ")
+        _log_duravel(
+            ex_id, "INFO",
+            f"{sistema}.{t}: keyset v{spec['versao']} em {', '.join(spec['ordem'])}. {prova}"
+            "Sem COUNT, sem DISTINCT e sem índice novo. "
+            f"Login {int(s.sqlserver_timeout)}s e consulta {int(s.sqlserver_consulta_timeout)}s. "
+            f"Identidade na bronze: {ident_txt}. Incremental: {MAPEAMENTOS[(sistema, t)].get('campo_incremental')}.")
 
 
 def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) -> None:
@@ -899,6 +969,105 @@ def _valores_chave(r, ord_: tuple[str, ...], cols: tuple[str, ...]) -> tuple:
     return tuple(r[cols.index(c)] for c in ord_)
 
 
+def _msg_lista_antiga(tabela: str, spec: dict, bruto: list) -> str:
+    legada = tuple(spec.get("ordem_legada") or ())
+    if legada and len(bruto) == len(legada):
+        return (f"Checkpoint de {tabela} está na ordem antiga ({', '.join(legada)}), sem versão, "
+                f"com {len(bruto)} valores. Essa tupla não traz todas as colunas da PK "
+                f"({', '.join(spec['ordem'])}) e não foi migrada nem reinterpretada. "
+                "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+                "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda; reler não troca o id.")
+    return (f"Checkpoint de {tabela} é uma lista sem versão ({len(bruto)} valores) e não é a PK versionada "
+            f"({', '.join(spec['ordem'])}). Não foi reinterpretado. "
+            "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa.")
+
+
+def fecha_cursor(sistema: str, tabela: str, valores: tuple):
+    """JSON do checkpoint. Tabela com keyset versionado grava o envelope; as demais, a lista de sempre."""
+    spec = keyset_de(sistema, tabela)
+    cod = codifica_chave(valores)
+    if not spec:
+        return cod
+    return {"v": int(spec["versao"]), "ordem": list(spec["ordem"]), "valores": cod}
+
+
+def abre_cursor(sistema: str, tabela: str, bruto):
+    """Tupla do keyset, ou None no início. Ordem/versão diferente levanta CheckpointIncompativel sem reler o valor."""
+    spec = keyset_de(sistema, tabela)
+    if not spec:
+        return decodifica_chave(bruto)
+    if bruto is None:
+        return None
+    if isinstance(bruto, list):
+        raise CheckpointIncompativel(_msg_lista_antiga(tabela, spec, bruto))
+    if not isinstance(bruto, dict) or set(bruto) != {"v", "ordem", "valores"}:
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} não está no envelope versionado (v, ordem, valores). "
+            "Não foi reinterpretado. Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda.")
+    if bruto.get("v") != spec["versao"] or list(bruto.get("ordem") or []) != list(spec["ordem"]):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} está na versão {bruto.get('v')!r}, diferente da versão {spec['versao']} "
+            f"({', '.join(spec['ordem'])}). Não foi reinterpretado. "
+            "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda.")
+    vals = bruto["valores"]
+    if not isinstance(vals, list) or len(vals) != len(spec["ordem"]):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} versão {spec['versao']} não tem {len(spec['ordem'])} valores. "
+            "Não foi reinterpretado. Zere ultima_chave desta tabela.")
+    cursor = decodifica_chave(vals)
+    if any(v is None for v in cursor):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} contém NULL na PK. Não há seek seguro e o valor não foi reinterpretado. "
+            "Zere ultima_chave desta tabela.")
+    return cursor
+
+
+def _cursor_recusado(sistema: str, tabela: str, bruto) -> bool:
+    try:
+        abre_cursor(sistema, tabela, bruto)
+    except CheckpointIncompativel:
+        return True
+    return False
+
+
+def mensagem_cursor_bloqueado(db: Session, sistema: str) -> str | None:
+    """Texto da recusa quando um checkpoint parcial usaria a ordem antiga. Ciclo todo concluído recomeça e não bloqueia."""
+    tabelas = cc.tabelas_do_conector(sistema)
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
+    por = {c.tabela: c for c in cps}
+    if tabelas and all(por.get(t) is not None and por[t].concluida for t in tabelas):
+        return None
+    for t in tabelas:
+        c = por.get(t)
+        if c is None or c.ultima_chave is None:
+            continue
+        try:
+            abre_cursor(sistema, t, c.ultima_chave)
+        except CheckpointIncompativel as exc:
+            return str(exc)
+    return None
+
+
+def le_proxima_pagina(leitor, conn, sistema: str, tabela: str, pol, cursor: tuple | None, limite: int,
+                      desde: tuple | None = None):
+    """Lê uma página. Devolve (linhas, próximo cursor em memória, JSON para o checkpoint ou None)."""
+    spec = keyset_de(sistema, tabela)
+    kw = {}
+    if desde is not None:
+        kw["desde"] = desde
+    if spec:
+        kw["alinhada"] = True
+    brutas = leitor.ler_pagina(conn, tabela, pol, ordem(sistema, tabela), cursor, limite, **kw)
+    if not brutas:
+        return brutas, cursor, None
+    cols = pol.colunas_select(tabela)
+    valores = _valores_chave(brutas[-1], ordem(sistema, tabela), cols)
+    return brutas, valores, fecha_cursor(sistema, tabela, valores)
+
+
 def codifica_chave(valores: tuple) -> list:
     """Valor da chave -> JSON com o tipo preservado (datetime/date/Decimal/bytes) para reenviar como parâmetro."""
     out = []
@@ -944,9 +1113,11 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
         oc = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
             RegistroBronze.quarentena == QUAR_OCULTA)) or 0)
-        if cp.total_origem is None:  # origem sem contagem (API SIL): não há com o que comparar
-            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ocultas": oc, "ok": True,
-                              "status": "sem_contagem"}
+        if cp.total_origem is None:  # origem sem contagem (API SIL ou PK só no catálogo): não há com o que comparar
+            item = {"origem": None, "bronze": b, "quarentena": q, "ocultas": oc, "ok": True, "status": "sem_contagem"}
+            if (keyset_de(sistema, cp.tabela) or {}).get("prova") == "catalogo_pk":
+                item["prova"] = "catalogo_pk"
+            out[cp.tabela] = item
             continue
         ok = b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
         out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ocultas": oc, "ok": ok,
@@ -1057,6 +1228,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
     pol = politica(sistema)
     tabelas = cc.tabelas_do_conector(sistema)
     cc._garante_catalogo(db, sistema, tabelas)
+    _registra_origem(ex.id, conector, db, sistema, tabelas, "incremental")
     ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.total_origem = "leitura", 0, None, None
     ex.atualizado_em = datetime.now(UTC)
     db.commit()
@@ -1067,7 +1239,6 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
         for t in tabelas:
             m = MAPEAMENTOS[(sistema, t)]
             cols = pol.colunas_select(t)
-            ord_ = ordem(sistema, t)
             campo = m.get("campo_incremental")
             marca = marca_dagua(db, sistema, t) if campo and campo in cols else None
             desde = (campo, marca) if marca is not None else None
@@ -1089,12 +1260,11 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                     return _finaliza(db, ex, "pausada", f"Carga incremental pausada: {disco}")
                 sinal_de_vida(ex.id, "leitura", ex.processadas_etapa, None)
                 _subetapa_leitura(ex.id, t, ex.processadas_etapa, None)
-                brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
-                          else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
+                brutas, ultima, _persistido = le_proxima_pagina(
+                    leitor, conn, sistema, t, pol, ultima, s.carga_lote, desde=desde)
                 boas, pulos = separa_pulos_sil(brutas)
                 linhas = [linha_json(r, cols) for r in boas]
                 if brutas:
-                    ultima = _valores_chave(brutas[-1], ord_, cols)
                     quarentena_pulos_sil(db, ex, sistema, t, pulos)
                 if linhas:
                     c = ingere(db, sistema, t, m["chave"], campo, linhas, ex.id, s.carga_lote,

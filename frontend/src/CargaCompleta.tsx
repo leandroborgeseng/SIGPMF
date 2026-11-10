@@ -25,11 +25,11 @@ export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
   camadas: { bronze: number | null; prata: number | null; pendencias: number | null; gerados_prata?: number | null }
-  reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string }> | null
+  reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string; prova?: string }> | null
   quarentena?: number | null
 }
 type LinhaQuarentena = { id: number; tabela: string; motivo: string; campos_nulos: string[]; referencia: string; extraido_em: string | null }
-type Estimativa = { tabelas: Record<string, number>; total: number }
+type Estimativa = { tabelas: Record<string, number | null>; total: number; sem_contagem?: string[] }
 
 export const INTERVALO_MS = 5000
 export const ERRO_ATUALIZAR = 'Não foi possível atualizar o andamento da carga. Tentando de novo…'
@@ -219,7 +219,8 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
             <h3 id={`t-cc-${conector}`}>Carregar todos os registros de {nome}? Isso pode levar alguns minutos.</h3>
             {est ? (
               <p>A origem tem <strong className="num">{milhar(est.total)}</strong> linhas em {Object.keys(est.tabelas).length} tabelas.
-                A leitura é só de consulta, em lotes; nada é apagado e dá para cancelar.</p>
+                {est.sem_contagem?.length ? ` ${est.sem_contagem.join(', ')} não entra nessa conta: a chave é a PK do catálogo e a carga não executa COUNT.` : ''}
+                {' '}A leitura é só de consulta, em lotes; nada é apagado e dá para cancelar.</p>
             ) : estErro ? <p className="erro-texto">{estErro}</p> : <p aria-busy="true">Contando as linhas…</p>}
             <div className="acoes">
               <button ref={cancelarModal} className="btn secundario" onClick={() => setModal(false)}>Cancelar</button>
@@ -309,8 +310,10 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           {sit.reconciliacao && (
             Object.values(sit.reconciliacao).every((r) => r.ok)
               ? <p><span className="selo pronto"><i aria-hidden="true" />
-                {Object.values(sit.reconciliacao).some((r) => (r.quarentena ?? 0) > 0)
-                  ? 'Bronze + quarentena batem com a origem (ok com pendências)' : 'Bronze bate com a origem'}</span></p>
+                {Object.entries(sit.reconciliacao).some(([, r]) => r.prova === 'catalogo_pk')
+                  ? `Tabelas contadas batem com a origem. ${Object.entries(sit.reconciliacao).filter(([, r]) => r.prova === 'catalogo_pk').map(([t]) => t).join(', ')} sem COUNT: a PK do catálogo confirma a chave.`
+                  : Object.values(sit.reconciliacao).some((r) => (r.quarentena ?? 0) > 0)
+                    ? 'Bronze + quarentena batem com a origem (ok com pendências)' : 'Bronze bate com a origem'}</span></p>
               : <p className="aviso-ambar">Bronze diferente da origem em: {Object.entries(sit.reconciliacao).filter(([, r]) => !r.ok)
                 .map(([t, r]) => `${t} (origem ${milhar(r.origem)}, bronze ${milhar(r.bronze)})`).join('; ')}</p>
           )}

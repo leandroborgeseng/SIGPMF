@@ -134,6 +134,42 @@ def test_migracao_0046_aditiva(db):
     assert "ADD COLUMN IF NOT EXISTS" in sqls and "DROP" not in sqls and "DELETE" not in sqls
 
 
+def test_movimentos_na_mesma_chave_e_id_legado_nao_duplicam_o_saldo(db):
+    """Dois movimentos que só diferem na data entram os dois. O id de 4 colunas fica na bronze e some da soma."""
+    assert "_test" in db.bind.url.database
+    from app.bronze.ingestao import _id
+    from app.ingestion.mapeamentos import MAPEAMENTOS
+    from app.models.controle import Execucao
+    cod = "ZZTESTECC0001"
+    chave = MAPEAMENTOS[("DIVIDA", "Divida_Conta_Corrente")]["chave"]
+    dia_a = {"Data_Movimentacao": "2024-01-01 00:00:00", "Sequencia": 1, "CODI": cod, "SEQU": "00", "ANO": 2024,
+             "Vr_Pago": 12.0, "Compo": "D"}
+    dia_b = {**dia_a, "Data_Movimentacao": "2024-06-01T00:00:00", "Vr_Pago": 25.0}
+    id_a, id_b = _id(chave, dia_a), _id(chave, dia_b)
+    assert id_a != id_b and id_a.count("|") == 4 and not tributario.id_conta_corrente_legado(id_a)
+    ex = Execucao(tipo="zzteste-cc", sistema="DIVIDA", status="sucesso")
+    db.add(ex)
+    db.flush()
+    linhas = [
+        ("Divida", f"zz-{cod}", {"CODI": cod, "SEQU": "00", "ANO": 2024, "VR_TOTA_DIVI": 100.0, "COMPO": "D",
+                                  "DT_INSCR": "2024-01-01 00:00:00"}),
+        ("Divida_Conta_Corrente", id_a, {**dia_a, "Vr_Pago": 10.0}),
+        ("Divida_Conta_Corrente", id_a, dia_a),
+        ("Divida_Conta_Corrente", id_b, dia_b),
+        ("Divida_Conta_Corrente", f"{cod}|00|2024|1", {**dia_a, "Vr_Pago": 10.0}),
+        ("Divida_Conta_Corrente", f"{cod}|00|2024|9", {**dia_a, "Sequencia": 9, "Vr_Pago": 40.0}),
+    ]
+    for n, (tabela, origem, dados) in enumerate(linhas):
+        db.add(RegistroBronze(sistema_origem="DIVIDA", tabela=tabela, ambiente_origem="producao", execucao_id=ex.id,
+                              id_origem=origem, dados=dados, hash=f"zzcc{n}"))
+    db.flush()
+    tributario.reconstruir(db)
+    db.flush()
+    divida = db.scalar(select(DividaAtiva).where(DividaAtiva.codi == cod))
+    assert (float(divida.pago_conta_corrente), float(divida.saldo), divida.em_aberto) == (37.0, 63.0, True)
+    db.rollback()
+
+
 def test_origem_divida_sem_iptu_fixo():
     from app.api.rotas import _origem_divida
     assert _origem_divida("ISS", "0111") == "ISS — imóvel 0111"
