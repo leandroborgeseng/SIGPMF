@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select
@@ -42,9 +43,41 @@ def data_movimentacao_id(valor: Any) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 
+# Colunas int da PK da conta corrente. SEQU e CODI são varchar e não passam por aqui.
+# Sequencia é a mesma suposição de TIPOS_PK_CC: int, ainda não confirmada na origem.
+_COLUNAS_INTEIRAS_ID = frozenset({"ANO", "Sequencia"})
+
+
+def inteiro_id(valor: Any) -> str:
+    """Inteiro da PK sem casa decimal: 1, 1.0, Decimal('1.00') e '1' viram '1'."""
+    if valor is None or valor == "":
+        return ""
+    if isinstance(valor, bool):
+        raise ValueError("Identidade inteira não aceita bool.")
+    if isinstance(valor, int):
+        return str(valor)
+    if isinstance(valor, float):
+        if not valor.is_integer():
+            return str(valor)
+        return str(int(valor))
+    if isinstance(valor, Decimal):
+        numero = valor
+    else:
+        texto = str(valor).strip()
+        try:
+            numero = Decimal(texto)
+        except InvalidOperation:
+            return texto
+    if numero != numero.to_integral_value():
+        return format(numero, "f")
+    return str(int(numero))
+
+
 def _parte_id(coluna: str, valor: Any) -> str:
     if coluna == "Data_Movimentacao":
         return data_movimentacao_id(valor)
+    if coluna in _COLUNAS_INTEIRAS_ID:
+        return inteiro_id(valor)
     return "" if valor is None else str(valor)
 
 

@@ -98,8 +98,8 @@ def interpreta_catalogo_pk(linhas, ordem: tuple[str, ...]) -> dict:
     return base
 
 
-# Só estes textos entram no CAST. Qualquer outro tipo é recusado, para o nome não virar SQL.
-_CAST_PK = {"datetime": "datetime", "int": "int", "varchar(4)": "varchar(4)", "varchar(22)": "varchar(22)"}
+# varchar(n) só entra se o texto for exatamente esse formato. O número não vira SQL solto.
+_VARCHAR_PK = re.compile(r"varchar\(([1-9]\d{0,3})\)$")
 
 
 def _tipos_keyset(politica, tabela: str) -> dict[str, str]:
@@ -114,32 +114,47 @@ def _tipos_keyset(politica, tabela: str) -> dict[str, str]:
 
 
 def _cmp_pk(coluna: str, op: str, tipos: dict[str, str]) -> str:
-    """Compara a coluna com o parâmetro já convertido para o tipo dela. A coluna não é convertida."""
+    """Compara a coluna com o parâmetro já convertido para o tipo dela. A coluna não é convertida.
+
+    Data usa CONVERT estilo 126 (ISO 8601). CAST(datetime) e um literal sem estilo seguem o DATEFORMAT
+    da sessão: com login dmy, '2024-01-02' pode virar 1º de fevereiro.
+    """
     tipo = tipos.get(coluna)
     if not tipo:
         return f"{_ident(coluna)} {op} %s"
-    sql_tipo = _CAST_PK.get(tipo)
-    if sql_tipo is None:
-        raise TabelaRecusada(f"Tipo de parâmetro não permitido para {coluna}.")
-    return f"{_ident(coluna)} {op} CAST(%s AS {sql_tipo})"
+    if tipo == "datetime":
+        return f"{_ident(coluna)} {op} CONVERT(datetime, %s, 126)"
+    if tipo == "int":
+        return f"{_ident(coluna)} {op} CAST(%s AS int)"
+    varchar = _VARCHAR_PK.fullmatch(tipo)
+    if varchar:
+        return f"{_ident(coluna)} {op} CAST(%s AS varchar({varchar.group(1)}))"
+    raise TabelaRecusada(f"Tipo de parâmetro não permitido para {coluna}.")
+
+
+def _iso_126(valor) -> str:
+    """Texto estilo 126: `AAAA-MM-DDTHH:MM:SS.mmm`. Três dígitos, sem espaço e sem prefixo N."""
+    if isinstance(valor, datetime):
+        dt = valor
+    elif isinstance(valor, date):
+        dt = datetime(valor.year, valor.month, valor.day)
+    else:
+        dt = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}"
 
 
 def _valor_pk(coluna: str, valor, tipos: dict[str, str]):
-    """Valor Python que o pymssql envia junto com o CAST (int e datetime nativos; texto para varchar)."""
+    """Valor enviado com o CONVERT/CAST. Data é texto ISO; int fica int; varchar fica str, sem N."""
     tipo = tipos.get(coluna)
     if tipo == "datetime":
-        if isinstance(valor, datetime):
-            dt = valor
-        elif isinstance(valor, date):
-            dt = datetime(valor.year, valor.month, valor.day)
-        else:
-            dt = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
-        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        return _iso_126(valor)
     if tipo == "int":
         if isinstance(valor, bool):
             raise ValueError(f"Parâmetro int inválido para {coluna}.")
         return int(valor)
-    if tipo in _CAST_PK and tipo.startswith("varchar"):
+    if _VARCHAR_PK.fullmatch(tipo or ""):
         return str(valor)
     return valor
 
@@ -408,24 +423,31 @@ class SqlServerConnector:
         return garante_somente_leitura(sql), tuple(params)
 
     def montar_amostra_unicidade(self, politica, tabela: str, ordem: tuple[str, ...], limite: int) -> str:
-        """SELECT de amostra: COUNT(*) das linhas contra COUNT(*) das combinações distintas da PK.
+        """SELECT de amostra: COUNT(*) , chaves distintas da PK e chaves distintas do id antigo de 4 colunas.
 
-        SQL Server não aceita COUNT(DISTINCT de várias colunas). O equivalente é COUNT(*) sobre
-        SELECT DISTINCT das colunas da chave. As duas leituras ficam dentro de TOP (n) ordenado pela PK,
-        então a amostra não varre a tabela inteira. Não grava na origem e não entra na carga.
+        Um único TOP (n) na CTE. SQL Server não aceita COUNT(DISTINCT de várias colunas; cada contagem
+        distinta é COUNT(*) sobre SELECT DISTINCT. Não grava na origem e não entra na carga.
         """
-        cols = list(politica.colunas_select(tabela))
+        from app.ingestion.mapeamentos import MAPEAMENTOS
+        nome = tabela.split(".")[-1]
+        cols = list(politica.colunas_select(nome))
         if not ordem or any(c not in cols for c in ordem) or len(ordem) != len(set(ordem)):
             raise TabelaRecusada("Amostra de unicidade fora das colunas da política.")
         if isinstance(limite, bool) or not isinstance(limite, int) or not 1 <= limite <= 10000:
             raise ValueError(f"Amostra inválida: {limite!r}")
-        chave = ", ".join(_ident(c) for c in ordem)
-        origem = _ident("dbo." + tabela.split(".")[-1])
-        ordem_sql = chave
-        amostra = (f"SELECT TOP ({int(limite)}) {chave} FROM {origem} ORDER BY {ordem_sql}")
-        sql = (f"SELECT (SELECT COUNT(*) FROM ({amostra}) AS [amostra]) AS [total], "
-               f"(SELECT COUNT(*) FROM (SELECT DISTINCT {chave} FROM ({amostra}) AS [amostra]) AS [distintas]) "
-               f"AS [distintas]")
+        chave_id = (MAPEAMENTOS.get((getattr(politica, "sistema", ""), nome)) or {}).get("chave")
+        if not isinstance(chave_id, tuple) or set(chave_id) != set(ordem) or "Data_Movimentacao" not in chave_id:
+            raise TabelaRecusada("Amostra de unicidade exige a PK inteira, com Data_Movimentacao.")
+        curta = tuple(c for c in chave_id if c != "Data_Movimentacao")
+        pk = ", ".join(_ident(c) for c in ordem)
+        antiga = ", ".join(_ident(c) for c in curta)
+        origem = _ident("dbo." + nome)
+        sql = (
+            f"WITH [amostra] AS (SELECT TOP ({int(limite)}) {pk} FROM {origem} ORDER BY {pk}) "
+            f"SELECT (SELECT COUNT(*) FROM [amostra]) AS [total], "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {pk} FROM [amostra]) AS [distintas]) AS [distintas], "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {antiga} FROM [amostra]) AS [legadas]) AS [legadas]"
+        )
         return garante_somente_leitura(sql)
 
     def montar_pagina(self, politica, tabela: str, ordem: tuple[str, ...], limite: int,

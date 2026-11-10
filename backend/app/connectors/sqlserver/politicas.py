@@ -299,12 +299,20 @@ IPTU = Politica(
 
 # PK clustered já existente em dbo.Divida_Conta_Corrente. A página ordena por ela (seek/scan limitado).
 # Identidade da bronze: CODI, SEQU, ANO, Sequencia, Data_Movimentacao (a data por último).
-# Tipos do predicado (CAST no parâmetro, não na coluna). Sem DDL da origem neste repositório:
-# CODI varchar(22) e SEQU varchar(4) são as larguras já gravadas na prata (silver.dividas);
-# ANO é int; Data_Movimentacao é datetime. Sequencia é int porque a fixture da origem sintética
-# grava número JSON, enquanto SEQU é o texto "00".
+# Tipos do predicado (CAST/CONVERT no parâmetro, não na coluna).
+# Leitura de 09/11/2026 na origem: CODI varchar(22), SEQU varchar(2), ANO int.
+# Sequencia e Data_Movimentacao ainda não foram confirmados nessa leitura.
+# Sequencia fica só nesta entrada: hoje "int", porque a fixture sintética grava número JSON.
+# Data_Movimentacao fica "datetime": o SQL manda CONVERT estilo 126, não CAST.
+# silver.dividas.sequ continua String(4); o predicado usa a largura lida na origem.
 ORDEM_KEYSET_CC = ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO")
-TIPOS_PK_CC = {"Data_Movimentacao": "datetime", "Sequencia": "int", "CODI": "varchar(22)", "SEQU": "varchar(4)", "ANO": "int"}
+TIPOS_PK_CC = {
+    "Data_Movimentacao": "datetime",
+    "Sequencia": "int",
+    "CODI": "varchar(22)",
+    "SEQU": "varchar(2)",
+    "ANO": "int",
+}
 
 DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",

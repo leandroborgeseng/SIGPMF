@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app.bronze.ingestao import _id, data_movimentacao_id, hash_registro
+from app.bronze.ingestao import _id, _parte_id, data_movimentacao_id, hash_registro
 from app.connectors.sqlserver.connector import (
     ConfigSqlServer,
     SqlServerConnector,
@@ -32,6 +32,9 @@ POL = politica("DIVIDA")
 ORDEM = ORDEM_KEYSET_CC
 D1 = datetime(2024, 1, 1)
 D2 = datetime(2024, 1, 2)
+ISO1 = "2024-01-01T00:00:00.000"
+ISO2 = "2024-01-02T00:00:00.000"
+TIPOS_CURSOR = ("datetime", "int", "varchar(22)", "varchar(2)", "int")
 
 
 def _conector():
@@ -116,6 +119,7 @@ def test_identidade_de_cinco_colunas_nao_colapsa_duas_datas():
     assert id_a == _id(m["chave"], mesmo_dia) == chave_origem(m, mesmo_dia)
     assert id_a.endswith("|2024-01-01T00:00:00.000000") and id_a.count("|") == 4
     assert data_movimentacao_id(D1) == data_movimentacao_id("2024-01-01T00:00:00")
+    assert data_movimentacao_id(D1).endswith(".000000")
     assert id_conta_corrente_legado("ZZ|00|2024|1") is True
     assert id_conta_corrente_legado(id_a) is False
     assert id_conta_corrente_legado("zzteste-sem-pipe") is False
@@ -183,23 +187,30 @@ def _profundidade_order_by(sql: str) -> list[int]:
     return achados
 
 
+def _cmp_cursor(coluna: str, op: str, tipo: str) -> str:
+    if tipo == "datetime":
+        return f"[{coluna}] {op} CONVERT(datetime, %s, 126)"
+    return f"[{coluna}] {op} CAST(%s AS {tipo})"
+
+
 def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     cursor = (D1, 1, "A", "00", 2020)
     sql, params = _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 1000, cursor)
-    assert params == (D1, 1, "A", "00", 2020, D1, 1, "A", "00", D1, 1, "A", D1, 1, D1)
+    assert params == (ISO1, 1, "A", "00", 2020, ISO1, 1, "A", "00", ISO1, 1, "A", ISO1, 1, ISO1)
     assert sql.count("UNION ALL") == 4
-    assert "nvarchar" not in sql.lower()
-    assert "[Data_Movimentacao] > CAST(%s AS datetime)" in sql
+    assert "nvarchar" not in sql.lower() and "N'" not in sql
+    assert "[Data_Movimentacao] > CONVERT(datetime, %s, 126)" in sql
+    assert "CAST(%s AS datetime)" not in sql and "varchar(4)" not in sql
     assert ">=" not in sql and "IS NOT NULL" not in sql and "COUNT" not in sql.upper()
     assert sql.endswith("ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]")
     ramos = _ramos_union(sql)
-    tipos = ("datetime", "int", "varchar(22)", "varchar(4)", "int")
     for i, ramo in enumerate(ramos):
         coluna = len(ORDEM) - 1 - i
-        iguais = [f"[{c}] = CAST(%s AS {t})" for c, t in zip(ORDEM[:coluna], tipos[:coluna])]
-        pred = " AND ".join([*iguais, f"[{ORDEM[coluna]}] > CAST(%s AS {tipos[coluna]})"])
+        iguais = [_cmp_cursor(c, "=", t) for c, t in zip(ORDEM[:coluna], TIPOS_CURSOR[:coluna])]
+        pred = " AND ".join([*iguais, _cmp_cursor(ORDEM[coluna], ">", TIPOS_CURSOR[coluna])])
         assert pred in ramo
-    py = (datetime, int, str, str, int)
+        assert "CONVERT(datetime, %s, 126)" in ramo
+    py = (str, int, str, str, int)
     esperados = [t for coluna in range(len(ORDEM) - 1, -1, -1) for t in py[:coluna + 1]]
     assert [type(v) for v in params] == esperados
     assert len(ramos) == 5
@@ -223,19 +234,20 @@ def test_pagina_com_cursor_e_seek_por_prefixo_sem_residual():
     assert len(_ramos_union(sql_ruim)) == 5 and _profundidade_order_by(sql_ruim) == [2, 2, 2, 2, 2, 0]
     texto, params_texto = _conector().montar_pagina_alinhada(
         POL, TAB, ORDEM, 1000, ("2024-01-01 00:00:00", "1", "A", "00", "2020"))
-    assert params_texto[:5] == (D1, 1, "A", "00", 2020)
-    assert [type(v) for v in params_texto[:5]] == [datetime, int, str, str, int]
-    assert "CAST(%s AS varchar(22))" in texto and "CAST(%s AS varchar(4))" in texto
-    assert "CAST(%s AS nvarchar" not in texto
+    assert params_texto[:5] == (ISO1, 1, "A", "00", 2020)
+    assert [type(v) for v in params_texto[:5]] == [str, int, str, str, int]
+    assert "CAST(%s AS varchar(22))" in texto and "CAST(%s AS varchar(2))" in texto
+    assert "CAST(%s AS nvarchar" not in texto and "varchar(4)" not in texto
 
 
 def _literal_tsql(valor) -> str:
-    if isinstance(valor, datetime):
-        return "'" + valor.strftime("%Y-%m-%dT%H:%M:%S") + "'"
-    if isinstance(valor, int) and not isinstance(valor, bool):
+    """Literal varchar ou int, sem prefixo N. Data já chega como texto ISO 8601."""
+    if isinstance(valor, bool):
+        raise AssertionError(type(valor))
+    if isinstance(valor, int):
         return str(valor)
     if isinstance(valor, str):
-        return "N'" + valor.replace("'", "''") + "'"
+        return "'" + valor.replace("'", "''") + "'"
     raise AssertionError(type(valor))
 
 
@@ -246,28 +258,39 @@ def _com_literais(sql: str, params: tuple) -> str:
     return sql
 
 
-def conferir_unicidade_amostra(total: int, distintas: int) -> None:
-    """Falha se a amostra tiver mais linhas do que combinações da chave de 5 colunas."""
+def conferir_unicidade_amostra(total: int, distintas: int, legadas: int | None = None) -> None:
+    """Imprime as três contagens e falha se a PK de 5 colunas não bater com COUNT(*)."""
+    print(f"amostra_cc total={total} distintas_5={distintas} distintas_4={legadas}")
     if total != distintas:
-        raise AssertionError(f"Amostra da PK divergiu: {total} linhas e {distintas} chaves distintas.")
+        raise AssertionError(
+            f"Amostra da PK divergiu: {total} linhas, {distintas} chaves de 5 colunas, {legadas} de 4.")
+
+
+def _contagens_amostra(linhas: list[dict]) -> tuple[int, int, int]:
+    cinco = {_chave(r) for r in linhas}
+    quatro = {(r["CODI"], r["SEQU"], r["ANO"], r["Sequencia"]) for r in linhas}
+    return len(linhas), len(cinco), len(quatro)
 
 
 def test_amostra_readonly_compara_count_da_pk_de_cinco_colunas():
     """SELECT de amostra. Sem escrita na origem. A comparação roda na amostra sintética e no SQL gerado."""
     sql = _conector().montar_amostra_unicidade(POL, TAB, ORDEM, 1000)
     assert sql == garante_somente_leitura(sql)
-    assert sql.startswith("SELECT ") and ";" not in sql
+    assert sql.startswith("WITH [amostra] AS (SELECT TOP (1000) ") and ";" not in sql
     for palavra in ("INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "EXEC"):
         assert palavra not in sql.upper()
-    assert sql.count("COUNT(*)") == 2
+    assert sql.count("COUNT(*)") == 3 and sql.count("SELECT TOP (1000) ") == 1
     assert "SELECT DISTINCT [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]" in sql
-    assert sql.count("SELECT TOP (1000) [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]") == 2
-    assert "FROM [dbo].[Divida_Conta_Corrente] ORDER BY [Data_Movimentacao], [Sequencia], [CODI], [SEQU], [ANO]" in sql
-    chaves = [_chave(r) for r in LINHAS]
-    assert len(chaves[0]) == 5
-    conferir_unicidade_amostra(len(chaves), len(set(chaves)))
+    assert "SELECT DISTINCT [CODI], [SEQU], [ANO], [Sequencia]" in sql
+    assert "CONVERT(datetime" not in sql  # a amostra não filtra data; não há parâmetro para converter
+    total, distintas, legadas = _contagens_amostra(LINHAS)
+    assert (total, distintas, legadas) == (7, 7, 6)
+    conferir_unicidade_amostra(total, distintas, legadas)
+    par = [LINHAS[0], {**LINHAS[0], "Data_Movimentacao": D2}]
+    assert _contagens_amostra(par) == (2, 2, 1)
+    conferir_unicidade_amostra(*_contagens_amostra(par))
     with pytest.raises(AssertionError, match="divergiu"):
-        conferir_unicidade_amostra(3, 2)
+        conferir_unicidade_amostra(3, 2, 2)
 
 
 def test_duas_linhas_que_so_diferem_na_data_tem_identidades_distintas():
@@ -283,6 +306,22 @@ def test_duas_linhas_que_so_diferem_na_data_tem_identidades_distintas():
     assert len(quatro) == 4 and _id(quatro, a) == _id(quatro, b)
 
 
+def test_inteiros_da_pk_normalizam_o_id_sem_mexer_na_data():
+    m = MAPEAMENTOS[("DIVIDA", TAB)]["chave"]
+    base = {"CODI": "A", "SEQU": "00", "ANO": 1, "Sequencia": 1, "Data_Movimentacao": D1, "Vr_Pago": 1}
+    formas = [
+        {**base, "ANO": 1, "Sequencia": 1},
+        {**base, "ANO": 1.0, "Sequencia": 1.0},
+        {**base, "ANO": Decimal("1.00"), "Sequencia": Decimal("1.00")},
+        {**base, "ANO": "1", "Sequencia": "1"},
+    ]
+    assert len({_id(m, r) for r in formas}) == 1
+    assert _parte_id("ANO", Decimal("1.00")) == "1"
+    assert _parte_id("SEQU", "00") == "00" and _parte_id("CODI", "1.0") == "1.0"
+    assert _parte_id("Data_Movimentacao", D1) == "2024-01-01T00:00:00.000000"
+    assert _parte_id("Data_Movimentacao", "2024-01-01 00:00:00") == _parte_id("Data_Movimentacao", D1)
+
+
 @pytest.mark.skipif(os.environ.get("SIGPMF_AMOSTRA_CC_READONLY") != "1", reason=(
     "Amostra na origem só com SIGPMF_AMOSTRA_CC_READONLY=1 e o login de leitura da DIVIDA. "
     "Não grava. Fora disso, a comparação roda na amostra sintética."))
@@ -296,7 +335,8 @@ def test_amostra_cc_na_origem_e_somente_leitura():
         linha = executa_somente_leitura(conn, sql, limite=1, como_dict=False)[0]
     finally:
         conn.close()
-    conferir_unicidade_amostra(int(linha[0]), int(linha[1]))
+    total, distintas, legadas = (int(v) for v in linha)
+    conferir_unicidade_amostra(total, distintas, legadas)
 
 
 def test_script_somente_leitura_espelha_a_pagina_com_cursor():
@@ -308,6 +348,9 @@ def test_script_somente_leitura_espelha_a_pagina_com_cursor():
     caminho = Path(__file__).resolve().parents[2] / "docs/evidencias/sigpmf-divida-cc-keyset/validar-sintaxe-pagina-cursor.sql"
     texto = caminho.read_text(encoding="utf-8")
     assert texto.count(exemplo) == 2
+    assert "CONVERT(datetime, '2024-01-01T00:00:00.000', 126)" in exemplo
+    assert "CAST('A' AS varchar(22))" in exemplo and "CAST('00' AS varchar(2))" in exemplo
+    assert "N'" not in exemplo and "nvarchar" not in exemplo.lower() and "varchar(4)" not in exemplo
     assert "SET PARSEONLY ON;" in texto and "SET PARSEONLY OFF;" in texto
     assert "SET SHOWPLAN_XML ON;" in texto and "SET SHOWPLAN_XML OFF;" in texto
     assert "GO" in texto  # SHOWPLAN_XML precisa ser o único comando do lote
@@ -321,8 +364,8 @@ def test_fronteira_mesma_data_desempate_retomada_e_janela():
     assert _id(chave_bronze, LINHAS[0]) != _id(chave_bronze, LINHAS[6])
     assert len([r for r in vistos if _id(chave_bronze, r) == _id(chave_bronze, LINHAS[0])]) == 1
     meio = paginas[1]
-    assert meio[2][0]["Data_Movimentacao"] == meio[1][0] == D1  # cursor e próxima linha na mesma data
-    assert "[Data_Movimentacao] = CAST(%s AS datetime)" in meio[0]
+    assert meio[2][0]["Data_Movimentacao"] == D1 and meio[1][0] == ISO1
+    assert "[Data_Movimentacao] = CONVERT(datetime, %s, 126)" in meio[0]
     assert "[ANO] > CAST(%s AS int)" in meio[0] and ">=" not in meio[0]
     ja = vistos[:4]
     resto, _ = _anda(LINHAS, 2, cursor=_chave(ja[-1]))
@@ -333,7 +376,7 @@ def test_fronteira_mesma_data_desempate_retomada_e_janela():
     lidos, pags = _anda(janela, 1, desde=desde)
     assert [_chave(r) for r in lidos] == sorted(_chave(r) for r in janela)
     assert all(r["Data_Movimentacao"] >= D2 for r in lidos)
-    assert "WHERE [Data_Movimentacao] >= CAST(%s AS datetime)" in pags[0][0] and pags[0][1] == (D2,)
+    assert "WHERE [Data_Movimentacao] >= CONVERT(datetime, %s, 126)" in pags[0][0] and pags[0][1] == (ISO2,)
     assert all(">=" not in sql for sql, _, _ in pags[1:])
     with pytest.raises(TabelaRecusada):
         _conector().montar_pagina_alinhada(POL, TAB, ORDEM, 10, None, desde=("CODI", "A"))
