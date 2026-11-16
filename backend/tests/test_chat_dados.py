@@ -2,16 +2,20 @@
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from pydantic import SecretStr
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects import postgresql
 
+from app.chat.catalogo import ENTIDADES, _conds, montar, validar_estruturada
 from app.chat.litellm import Indisponivel
-from app.chat.servico import MSG_NEGADO
+from app.chat.servico import MSG_NEGADO, extrair_texto_resposta
 from app.core.security import hash_senha
 from app.models.camadas import EmpresaSil
 from app.models.controle import Auditoria, Execucao, Usuario, UsuarioSecretaria
+from app.models.rh import Remuneracao
 from tests.conftest import SENHA
 
 MSG_LLM = "O serviço de linguagem não está disponível agora. Tente de novo em instantes."
@@ -330,3 +334,142 @@ def test_completar_propaga_indisponivel_sem_corpo():
         assert visto["timeout"] == 12
     finally:
         litellm.get_settings, litellm.httpx.post = orig
+
+
+ANO_FOLHA = 2099
+MES_FOLHA = 6
+NOME_ALTO = "ZZTESTE-ALTO"
+NOME_SAUDE = "ZZTESTE-SAUDE"
+MAXIMO = {"entidade": "folha_senior", "filtros": [], "agrupamento": [],
+          "metrica": {"funcao": "max", "campo": "vencimentos"}, "ordenacao": [], "limite": 1}
+
+
+def _limpa_folha(db):
+    db.execute(delete(Remuneracao).where(Remuneracao.ano == ANO_FOLHA))
+    db.commit()
+
+
+def _paga(db, matricula, nome, secretaria, bruto):
+    v = Decimal(bruto)
+    db.add(Remuneracao(ano=ANO_FOLHA, mes=MES_FOLHA, matricula=matricula, nome=nome, secretaria=secretaria,
+                       grupo="ativa", cargo="ZZCARGO", salario_base=v, vencimentos=v, descontos=Decimal("0"), liquido=v))
+
+
+def _enviado(chamadas):
+    return next(m["content"] for m in chamadas[-1]["mensagens"] if m["role"] == "user")
+
+
+def test_texto_do_modelo_sai_sem_json():
+    assert extrair_texto_resposta('{"resposta": "A SIL leu dezessete."}') == "A SIL leu dezessete."
+    assert extrair_texto_resposta('```json\n{"resposta": "Sem carga da SIL."}\n```') == "Sem carga da SIL."
+    assert extrair_texto_resposta("Texto puro da carga.") == "Texto puro da carga."
+    assert not extrair_texto_resposta('{"consulta": "x"}').startswith("{")
+    assert "12345678901" not in extrair_texto_resposta('{"resposta": "cpf 12345678901"}')
+
+
+def test_resposta_json_do_modelo_vira_texto(client, tokens, db, monkeypatch):
+    _mock(monkeypatch, {"consulta": "ultima_carga", "parametros": {"fonte": "sil"}},
+          '{"resposta": "A SIL leu dezessete."}')
+    monkeypatch.setattr("app.chat.catalogo.ultima_execucao", lambda db, fonte_id: None)
+    r = _post(client, tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert r.json()["resposta"] == "A SIL leu dezessete."
+    assert "{" not in r.json()["resposta"]
+
+
+def test_maior_salario_com_e_sem_permissao(client, tokens, db, monkeypatch):
+    _limpa_folha(db)
+    _paga(db, "ZZCHAT1", NOME_ALTO, "Educação", "90000")
+    _paga(db, "ZZCHAT2", NOME_SAUDE, "Saúde", "15000")
+    db.commit()
+    chamadas = _mock(monkeypatch, MAXIMO, "Segue o recorte.")
+    try:
+        r = _post(client, tokens["admin"], "Qual o maior salário da prefeitura?")
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["estado"] == "ok" and b["consulta"] == "folha_senior" and b["fonte"] == "Folha vigente"
+        assert b["numeros"]["vencimentos"] == 90000
+        assert b["filtros"]["ano"] == "2099" and b["filtros"]["mes"] == "6"
+        enviado = _enviado(chamadas)
+        assert NOME_ALTO in enviado and "90000" in enviado and "ZZCHAT1" not in enviado
+        assert "cpf" not in enviado.lower()
+        a = _aud(db, "admin@aion.local")
+        assert a.detalhe["resultado"] == "ok" and a.detalhe["consulta_estruturada"]["entidade"] == "folha_senior"
+        assert a.detalhe["resumo"]["nominal"] is True and NOME_ALTO not in json.dumps(a.detalhe)
+        assert "maior salário" in a.detalhe["pergunta"]
+
+        u, h = _usuario(db, client)
+        _vinculo(db, u, "SAUDE")
+        antes = len(chamadas)
+        r = _post(client, h, "Qual o maior salário da secretaria?")
+        assert r.status_code == 200, r.text
+        assert r.json()["numeros"]["vencimentos"] == 15000
+        enviado = _enviado(chamadas)
+        assert NOME_SAUDE in enviado and NOME_ALTO not in enviado
+        assert len(chamadas) == antes + 2
+
+        u2, h2 = _usuario(db, client)
+        antes = len(chamadas)
+        r = _post(client, h2, "Qual o maior salário da prefeitura?")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "negado" and r.json()["numeros"] is None
+        assert NOME_ALTO not in r.text and NOME_SAUDE not in r.text
+        assert len(chamadas) == antes + 1
+        neg = _aud(db, u2.email)
+        assert neg.detalhe["resultado"] == "negado" and neg.detalhe["motivo"] == "sem_vinculo"
+    finally:
+        _limpa_folha(db)
+
+
+def test_entidade_e_campo_fora_do_catalogo(client, tokens, db, monkeypatch):
+    for e in ENTIDADES.values():
+        assert "cpf" not in e.campos and "documento" not in e.campos
+    _mock(monkeypatch, {"entidade": "oracle", "filtros": [], "metrica": {"funcao": "contagem"}})
+    r = _post(client, tokens["admin"], "Liste a entidade oracle")
+    assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+    assert _aud(db, "admin@aion.local").detalhe["motivo"] == "fora_catalogo"
+
+    _mock(monkeypatch, {"entidade": "folha_senior", "filtros": [
+        {"campo": "cpf", "operador": "eq", "valor": CPF_FALSO}], "metrica": {"funcao": "max", "campo": "vencimentos"}})
+    r = _post(client, tokens["admin"], "cpf " + CPF_FALSO)
+    assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+    assert CPF_FALSO not in r.text
+    a = _aud(db, "admin@aion.local")
+    assert a.detalhe["motivo"] == "fora_catalogo" and CPF_FALSO not in json.dumps(a.detalhe)
+    assert a.detalhe["consulta_estruturada"]["campos"] == ["cpf"]
+
+
+def test_sql_no_valor_do_filtro_fica_bound(client, tokens, db, monkeypatch):
+    _limpa_folha(db)
+    _paga(db, "ZZCHAT1", NOME_ALTO, "Educação", "90000")
+    db.commit()
+    antes = db.scalar(select(func.count()).select_from(Remuneracao))
+    try:
+        for valor, campo in (("1; DROP TABLE x--", "vencimentos"), ("' OR 1=1", "cargo")):
+            bruto = {"entidade": "folha_senior", "filtros": [{"campo": campo, "operador": "eq", "valor": valor}],
+                     "metrica": {"funcao": "max", "campo": "vencimentos"}, "limite": 1}
+            c = validar_estruturada(bruto)
+            compiled = montar(c, _conds(c, ano=ANO_FOLHA, mes=MES_FOLHA, secretarias=None)).compile(dialect=postgresql.dialect())
+            sql = str(compiled)
+            assert "DROP" not in sql.upper() and ";" not in sql
+            assert any(valor in str(v) for v in compiled.params.values())
+            chamadas = _mock(monkeypatch, bruto, "Nenhum registro.")
+            r = _post(client, tokens["admin"], "Maior vencimento com esse filtro")
+            assert r.status_code == 200, r.text
+            assert r.json()["estado"] == "ok" and NOME_ALTO not in r.text and NOME_ALTO not in _enviado(chamadas)
+        db.expire_all()
+        assert db.scalar(select(func.count()).select_from(Remuneracao)) == antes
+        assert db.scalar(select(Remuneracao.nome).where(Remuneracao.matricula == "ZZCHAT1")) == NOME_ALTO
+    finally:
+        _limpa_folha(db)
+
+
+def test_empresas_e_divida_agregam(client, tokens, db, monkeypatch):
+    _mock(monkeypatch, {"entidade": "empresas", "filtros": [], "metrica": {"funcao": "contagem"}, "limite": 1}, "Ok.")
+    r = _post(client, tokens["admin"], "Quantas empresas?")
+    assert r.status_code == 200, r.text
+    assert r.json()["consulta"] == "empresas" and r.json()["estado"] in ("ok", "sem_carga")
+    _mock(monkeypatch, {"entidade": "divida", "filtros": [], "metrica": {"funcao": "max", "campo": "saldo"}, "limite": 1}, "Ok.")
+    r = _post(client, tokens["admin"], "Qual o maior saldo da dívida?")
+    assert r.status_code == 200, r.text
+    assert r.json()["consulta"] == "divida" and "cpf" not in r.text.lower()

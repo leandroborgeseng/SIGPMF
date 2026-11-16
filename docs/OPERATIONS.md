@@ -74,7 +74,7 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   (`GET /api/contagens/{id}/cpfs-repetidos`), auditada.
 
 ## Chat de dados
-Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo só escolhe uma consulta do catálogo; o backend executa e devolve fonte, filtros e data da carga. Sem chave configurada, ou com o LiteLLM fora, a rota responde 503 sem stack.
+Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo não escreve SQL: devolve uma consulta do catálogo (carga) ou uma consulta estruturada (entidade, filtros, agrupamento, métrica, ordenação, limite). O backend valida entidade, campo, operador e o tipo do valor, monta um SELECT parametrizado e executa em transação somente leitura, com limite de 50 linhas e `statement_timeout` de 8s. A resposta traz fonte, filtros e data da carga fora do texto. Sem chave, ou com o LiteLLM fora, a rota responde 503 sem stack.
 
 | Variável | Uso |
 |---|---|
@@ -83,7 +83,9 @@ Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo só escolhe 
 | `LITELLM_API_KEY` | chave. Só no Coolify. O cliente manda apenas `Authorization: Bearer` |
 | `LITELLM_TIMEOUT_S` | opcional, padrão 30 (entre 5 e 120). Não crie a variável vazia |
 
-Consultas: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes — os mesmos números do card da base). O escopo é o dos painéis: admin e vínculo `TODAS` veem todas as fontes; os demais, só a secretaria dona do domínio. Cada pergunta grava `chat_consulta` na auditoria (usuário, consulta, parâmetros, fonte, resultado), sem o texto da pergunta.
+Consultas de carga: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes). Consulta estruturada: `folha_senior` (folha vigente — último mês comum do portal; o Senior ainda não tem tabela própria), `folha_legada` (histórico), `empresas` (SIL) e `divida`. Só campos da allowlist. CPF não está no catálogo e é removido da resposta.
+
+Escopo: admin e vínculo `TODAS` veem tudo. Nos demais, a carga, as empresas e a dívida seguem a secretaria dona do domínio. Na folha, nome e valor individual — e também o agregado — usam `escopo_do_usuario` (a mesma regra das telas): sem vínculo, recusa; com vínculo, só as secretarias dele. Cada pergunta grava `chat_consulta` na auditoria (pergunta sem CPF, consulta estruturada, usuário, resultado resumido, recusa).
 
 ## Variáveis numéricas no Coolify (nota do Tester, #45)
 - **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o

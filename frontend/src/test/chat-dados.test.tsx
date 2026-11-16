@@ -74,4 +74,19 @@ describe('Chat de dados', () => {
     expect(await screen.findByText(/fora das consultas disponíveis/)).toBeInTheDocument()
     expect(screen.queryByText(/não está disponível agora/)).toBeNull()
   })
+
+  it('mostra só o texto quando a resposta vem como JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      resposta: '```json\n{ "resposta": "Só o texto da folha." }\n```',
+      estado: 'ok', consulta: 'folha_senior', fonte: 'Folha vigente', filtros: { ano: '2099', mes: '6' },
+      carga_em: null, status_carga: null, numeros: { vencimentos: 90000 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    montar()
+    await userEvent.type(screen.getByLabelText('Pergunta'), 'Qual o maior salário da prefeitura?')
+    await userEvent.click(screen.getByRole('button', { name: 'Perguntar' }))
+    expect(await screen.findByText('Só o texto da folha.')).toBeInTheDocument()
+    expect(screen.queryByText(/\{/)).toBeNull()
+    expect(screen.getByText('Fonte').nextElementSibling).toHaveTextContent('Folha vigente')
+    expect(screen.getByText(/Vencimentos 90/)).toBeInTheDocument()
+  })
 })

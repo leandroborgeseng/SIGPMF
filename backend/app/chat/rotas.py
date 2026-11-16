@@ -14,7 +14,8 @@ chat = APIRouter(prefix="/chat", tags=["chat"], dependencies=[Depends(usuario_at
 
 MSG_LLM = "O serviço de linguagem não está disponível agora. Tente de novo em instantes."
 MSG_FORA = ("Essa pergunta está fora das consultas disponíveis. Dá para perguntar a última carga de uma fonte, "
-            "as empresas da última carga (SIL ou ISS) ou os registros de uma fonte.")
+            "as empresas da última carga (SIL ou ISS), os registros de uma fonte, a folha vigente ou o histórico, "
+            "empresas e dívida ativa. CPF não entra na consulta.")
 
 
 class PerguntaIn(BaseModel):
