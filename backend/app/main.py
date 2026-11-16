@@ -9,6 +9,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
+from app.chat.rotas import chat
 from app.connectors.sei.rotas import sei
 from app.contagens.rotas import contagens
 from app.core.config import VERSION, get_settings
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
     app.include_router(paineis, prefix="/api")  # onda 0: shell de painéis (P01–P08, K01–K04)
+    app.include_router(chat, prefix="/api")  # chat de dados: agregados somente leitura
 
     return app
 

@@ -25,6 +25,7 @@ const GRUPOS: { titulo: string; itens: Item[] }[] = [
     { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
     { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },
     { to: '/politicas', rotulo: 'Políticas de dados', curto: 'Políticas' },
+    { to: '/chat', rotulo: 'Chat de dados', curto: 'Chat' },
   ] },
   { titulo: 'TI', itens: [
     { to: '/ti/acesso-secretaria', rotulo: 'Acesso por secretaria', curto: 'Acesso', perfis: ['admin'] },

@@ -47,7 +47,7 @@ describe('acesso', () => {
     const links = within(nav).getAllByRole('link')
     expect(links.map((l) => l.textContent)).toEqual(['Visão geral', 'Saúde', 'Fazenda', 'Finanças', 'IEG-M (TCE)', 'Recursos Humanos', 'Cobertura de planos', 'Cruzamentos', 'Folha (modelo · exemplo)', 'Dashboard das cargas', 'Monitor de cargas',
       'Conectores', 'Andamento das cargas', 'Portal do Cidadão', 'Explorar dados', 'Explorador de vínculos', 'Políticas de dados',
-      'Acesso por secretaria'])  // PR-06: grupo TI só para admin
+      'Chat de dados', 'Acesso por secretaria'])  // PR-06: grupo TI só para admin
     expect(links[9]).toHaveAttribute('aria-current', 'page')
     expect(links[0]).not.toHaveAttribute('aria-current')  // /painel não fica ativo em outras rotas (end)
   })
