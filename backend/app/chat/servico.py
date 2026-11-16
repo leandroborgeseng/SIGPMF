@@ -1,10 +1,27 @@
 """Liga a pergunta ao catálogo: o modelo escolhe, o backend confere escopo, executa e só então pede o texto."""
 import json
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
-from app.chat.catalogo import CONSULTAS, FONTES, ForaDoCatalogo, validar
+from app.chat.catalogo import (
+    CONSULTAS,
+    ENTIDADES,
+    FOLHA_POR_CODIGO,
+    FONTES,
+    ConsultaEstruturada,
+    ForaDoCatalogo,
+    campos_para_modelo,
+    consulta_agregada,
+    consulta_nominal,
+    entidades,
+    executar_estruturada,
+    resumo_para_modelo,
+    secretaria_fora_do_escopo,
+    validar,
+    validar_estruturada,
+)
 from app.chat.catalogo import executar as executar_consulta
 from app.chat.litellm import Indisponivel, ToolsRecusadas, completar
 from app.core.audit import audita
@@ -18,13 +35,20 @@ ACAO = "chat_consulta"
 MSG_NEGADO = {
     "sem_vinculo": "Sem vínculo vigente com uma secretaria.",
     "outra_secretaria": "Sem acesso aos dados desta fonte.",
+    "sem_folha": "Sem acesso à folha desta secretaria. Nome e valor individual só aparecem para quem já vê a folha.",
+    "so_agregado": "Essa fonte ainda só responde com números agregados (contagem, soma, média, máximo ou mínimo).",
 }
 _TOOL = "consultar_dados"
-TOOLS = [{
+_ENTIDADE = "consultar_entidade"
+_ESCOLHER = "escolher_entidades"
+_FUNCOES = {_TOOL, _ENTIDADE, _ESCOLHER}
+_CPF_FMT = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
+_CPF_DIG = re.compile(r"\b\d{11}\b")
+_TOOL_CARGA = {
     "type": "function",
     "function": {
         "name": _TOOL,
-        "description": "Escolhe uma consulta agregada do catálogo e a fonte.",
+        "description": "Escolhe uma consulta agregada de carga e a fonte.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -40,30 +64,135 @@ TOOLS = [{
             "required": ["consulta", "parametros"],
         },
     },
-}]
-_SISTEMA = (
-    "Você escolhe uma consulta do catálogo do SIGPMF e nada além dela. "
-    "ultima_carga: última carga de uma fonte. "
-    "empresas_ultima_carga: quantidade de empresas na última carga; fonte só sil ou iss. "
-    "registros_por_fonte: registros agregados (bronze, prata, ouro, pendentes) de uma fonte. "
-    f"Fontes: {', '.join(sorted(FONTES))}. "
-    f"Chame a função {_TOOL}. Se não puder usar funções, responda somente com um JSON "
-    '{"consulta":"...","parametros":{"fonte":"..."}}. '
-    'Se a pergunta não couber no catálogo, responda somente {"consulta": null, "parametros": {}}. '
-    "Não peça nem repita dado pessoal."
-)
-_JSON = _SISTEMA + " Responda somente o JSON, sem texto antes ou depois."
+}
+_TOOL_ESCOLHA = {
+    "type": "function",
+    "function": {
+        "name": _ESCOLHER,
+        "description": "Escolhe até 4 entidades pelo resumo. Não invente campo nem escreva SQL.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"entidades": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
+            "required": ["entidades"],
+        },
+    },
+}
+_TOOL_ESTRUTURADA = {
+    "type": "function",
+    "function": {
+        "name": _ENTIDADE,
+        "description": "Consulta estruturada só de leitura, só com os campos recebidos. Não escreva SQL.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "entidade": {"type": "string"},
+                "filtros": {"type": "array"},
+                "agrupamento": {"type": "array"},
+                "metrica": {"type": "object"},
+                "ordenacao": {"type": "array"},
+                "limite": {"type": "integer"},
+            },
+            "required": ["entidade"],
+        },
+    },
+}
 _REDIGIR = (
     "Redija em português, em até três frases, usando somente o JSON recebido. "
-    "Não invente número, data, nome, documento ou endereço. "
+    "Responda só com texto, sem JSON. "
+    "Não invente número, data ou nome. Não escreva CPF. "
     "Se estado for sem_carga, diga que não há carga desta fonte. "
-    "Cite a fonte, os filtros e a data da carga quando existirem."
+    "Se houver nome e um valor, cite os dois. "
+    "Não repita a data da carga: a tela mostra fonte, filtros e data."
 )
 
 
-def _msgs(pergunta: str, *, json_estrito: bool) -> list[dict]:
-    return [{"role": "system", "content": _JSON if json_estrito else _SISTEMA},
-            {"role": "user", "content": pergunta}]
+def _sem_cpf(texto: str) -> str:
+    return _CPF_DIG.sub("[removido]", _CPF_FMT.sub("[removido]", texto or ""))
+
+
+def extrair_texto_resposta(texto: str) -> str:
+    """O modelo às vezes devolve `{"resposta": "..."}` puro ou dentro de ```json. A API fica só com o texto."""
+    bruto = (texto or "").strip()
+    if not bruto or "Traceback" in bruto:
+        return ""
+    candidato = _sem_cerca(bruto)
+    obj = _json_objeto(candidato)
+    if isinstance(obj, dict):
+        resp = obj.get("resposta")
+        if not isinstance(resp, str):
+            return ""
+        if resp.strip().startswith("{") or resp.strip().startswith("```"):
+            interno = extrair_texto_resposta(resp)
+            if interno:
+                resp = interno
+        bruto = resp
+    else:
+        bruto = candidato
+    return _sem_cpf(" ".join(bruto.split()))[:1500]
+
+
+def _sem_cerca(t: str) -> str:
+    s = t.strip()
+    if not s.startswith("```"):
+        return s
+    linhas = s.splitlines()
+    if linhas and linhas[0].startswith("```"):
+        linhas = linhas[1:]
+    if linhas and linhas[-1].strip().startswith("```"):
+        linhas = linhas[:-1]
+    return "\n".join(linhas).strip()
+
+
+def _json_objeto(t: str) -> dict | None:
+    t = t.strip()
+    try:
+        v = json.loads(t)
+    except json.JSONDecodeError:
+        i, j = t.find("{"), t.rfind("}")
+        if i < 0 or j <= i:
+            return None
+        try:
+            v = json.loads(t[i:j + 1])
+        except json.JSONDecodeError:
+            return None
+    return v if isinstance(v, dict) else None
+
+
+def _prompt_etapa1(json_estrito: bool) -> str:
+    base = (
+        "Você consulta o SIGPMF. Não escreva SQL. Não peça nem repita CPF. "
+        "Se a pergunta for sobre carga, chame consultar_dados. "
+        "Consultas: ultima_carga, empresas_ultima_carga (fonte só sil ou iss) ou registros_por_fonte. "
+        f"Fontes: {', '.join(sorted(FONTES))}. "
+        "Se a pergunta for sobre dados, chame escolher_entidades com no máximo 4 ids do resumo. "
+        "Não invente entidade e não peça campos nesta etapa. "
+        f"Resumo: {resumo_para_modelo()} "
+        'Se não couber no catálogo, responda somente {"consulta": null, "parametros": {}}. '
+    )
+    if json_estrito:
+        base += "Responda somente o JSON, sem texto antes ou depois."
+    return base
+
+
+def _prompt_etapa2(ids: list[str], json_estrito: bool) -> str:
+    base = (
+        "Monte a consulta estruturada só com as entidades e os campos abaixo. Não escreva SQL. Não use CPF. "
+        "Chame consultar_entidade. JSON com entidade, filtros (campo, operador eq|ne|gt|gte|lt|lte, valor), "
+        "agrupamento, metrica (funcao max|min|soma|media|contagem e campo), ordenacao (campo, direcao asc|desc) "
+        "e limite. Na folha, maior ou menor valor de uma pessoa: metrica max ou min, sem agrupamento. "
+        "Entidade sem regra de linha: use só metrica agregada, sem listar registros. "
+        f"{campos_para_modelo(ids)} "
+        'Se não couber, responda somente {"consulta": null, "parametros": {}}. '
+    )
+    if json_estrito:
+        base += "Responda somente o JSON, sem texto antes ou depois."
+    return base
+
+
+def _msgs(pergunta: str, conteudo: str) -> list[dict]:
+    return [{"role": "system", "content": conteudo}, {"role": "user", "content": pergunta}]
 
 
 def _mensagem(resp: dict) -> dict:
@@ -98,7 +227,7 @@ def _json_texto(texto) -> dict | None:
 def _da_mensagem(msg: dict) -> dict | None:
     for chamada in msg.get("tool_calls") or []:
         fn = (chamada or {}).get("function") or {}
-        if fn.get("name") != _TOOL:
+        if fn.get("name") not in _FUNCOES:
             continue
         args = fn.get("arguments")
         if isinstance(args, str):
@@ -108,18 +237,61 @@ def _da_mensagem(msg: dict) -> dict | None:
     return _json_texto(msg.get("content"))
 
 
+def _consulta_pronta(bruto) -> bool:
+    """A resposta já é consulta de carga ou estruturada. Nesse caso não há segunda etapa."""
+    if not isinstance(bruto, dict):
+        return False
+    if "consulta" in bruto and isinstance(bruto.get("parametros"), dict):
+        return True
+    return isinstance(bruto.get("entidade"), str) and any(
+        k in bruto for k in ("filtros", "metrica", "agrupamento", "ordenacao", "limite"))
+
+
+def _ids_escolhidos(bruto) -> list[str]:
+    from app.chat.catalogo import _norm_ent
+    if not isinstance(bruto, dict):
+        return []
+    lista = bruto.get("entidades")
+    if not isinstance(lista, list):
+        lista = [bruto.get("entidade")]
+    out = []
+    for item in lista:
+        if not isinstance(item, str):
+            continue
+        eid = _norm_ent(item)
+        if eid and eid not in out:
+            out.append(eid)
+        if len(out) == 4:
+            break
+    return out
+
+
 def escolher(pergunta: str) -> dict:
-    """Tool calling; se o modelo recusar tools ou não devolver chamada, uma segunda ida pede JSON estrito."""
+    """1ª etapa: só o resumo das entidades. 2ª: campos só das escolhidas. Consulta já pronta não faz a 2ª."""
     try:
-        resp = completar(_msgs(pergunta, json_estrito=False), TOOLS)
+        resp = completar(_msgs(pergunta, _prompt_etapa1(False)), [_TOOL_CARGA, _TOOL_ESCOLHA])
     except ToolsRecusadas:
         resp = None
     bruto = _da_mensagem(_mensagem(resp)) if resp is not None else None
     if bruto is None:
-        bruto = _da_mensagem(_mensagem(completar(_msgs(pergunta, json_estrito=True), None)))
+        bruto = _da_mensagem(_mensagem(completar(_msgs(pergunta, _prompt_etapa1(True)), None)))
     if bruto is None:
         raise ForaDoCatalogo()
-    return bruto
+    if _consulta_pronta(bruto):
+        return bruto
+    ids = _ids_escolhidos(bruto)
+    if not ids:
+        raise ForaDoCatalogo()
+    try:
+        resp2 = completar(_msgs(pergunta, _prompt_etapa2(ids, False)), [_TOOL_ESTRUTURADA])
+    except ToolsRecusadas:
+        resp2 = None
+    fino = _da_mensagem(_mensagem(resp2)) if resp2 is not None else None
+    if not _consulta_pronta(fino):
+        fino = _da_mensagem(_mensagem(completar(_msgs(pergunta, _prompt_etapa2(ids, True)), None)))
+    if not _consulta_pronta(fino):
+        raise ForaDoCatalogo()
+    return fino
 
 
 def _autorizada(db: Session, u: Usuario, fonte_id: str) -> tuple[bool, str]:
@@ -135,8 +307,23 @@ def _autorizada(db: Session, u: Usuario, fonte_id: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _folha_permissao(db: Session, u: Usuario) -> tuple[str, list[str] | None]:
+    """A mesma função das telas (`escopo_do_usuario`): None = todas; lista = secretarias da folha; motivo = recusa."""
+    esc = escopo_do_usuario(db, u)
+    if esc is None:
+        return "", None
+    if not esc:
+        return "sem_vinculo", None
+    nomes = [FOLHA_POR_CODIGO[c] for c in sorted(esc) if c in FOLHA_POR_CODIGO]
+    if not nomes:
+        return "sem_folha", None
+    return "", nomes
+
+
 def _nome_curto(bruto) -> str | None:
-    n = bruto.get("consulta") if isinstance(bruto, dict) else None
+    if not isinstance(bruto, dict):
+        return None
+    n = bruto.get("entidade") or bruto.get("consulta")
     if isinstance(n, str) and n.replace("_", "").isalnum() and 1 <= len(n) <= 40:
         return n
     return None
@@ -151,11 +338,69 @@ def _params_auditoria(bruto) -> dict:
     return {}
 
 
+def _token(v, n=40) -> str | None:
+    if not isinstance(v, str):
+        return None
+    t = " ".join(v.split())
+    if 1 <= len(t) <= n and all(ch.isalnum() or ch in "_-" for ch in t):
+        return t
+    return None
+
+
+def _resumo_recusa(bruto) -> dict | None:
+    if not isinstance(bruto, dict) or "entidade" not in bruto:
+        return None
+    out = {}
+    ent = _token(bruto.get("entidade"))
+    if ent:
+        out["entidade"] = ent
+    filtros = bruto.get("filtros")
+    if isinstance(filtros, list):
+        campos = []
+        for item in filtros:
+            if isinstance(item, dict):
+                campo = _token(item.get("campo"))
+                if campo:
+                    campos.append(campo)
+        if campos:
+            out["campos"] = campos[:8]
+    return out or None
+
+
+def _valor_aud(v):
+    if isinstance(v, str):
+        return _sem_cpf(v)[:80]
+    if isinstance(v, (int, float, bool)):
+        return v
+    return _sem_cpf(str(v))[:40]
+
+
+def _consulta_aud(c: ConsultaEstruturada) -> dict:
+    return {
+        "entidade": c.entidade,
+        "filtros": [{"campo": f.campo, "operador": f.operador, "valor": _valor_aud(f.valor)} for f in c.filtros],
+        "agrupamento": list(c.agrupamento),
+        "metrica": {"funcao": c.metrica.funcao, "campo": c.metrica.campo} if c.metrica else None,
+        "ordenacao": [{"campo": o.campo, "direcao": o.direcao} for o in c.ordenacao],
+        "limite": c.limite,
+    }
+
+
+def _pergunta_aud(pergunta: str) -> str:
+    return _sem_cpf(" ".join((pergunta or "").split()))[:500]
+
+
 def _audita(db: Session, u: Usuario, ip: str | None, consulta: str | None, params: dict,
-            fonte: str | None, resultado: str, motivo: str | None = None) -> None:
-    det = {"consulta": consulta, "parametros": params, "fonte": fonte, "resultado": resultado}
+            fonte: str | None, resultado: str, pergunta: str, motivo: str | None = None,
+            estruturada: dict | None = None, resumo: dict | None = None) -> None:
+    det = {"consulta": consulta, "parametros": params, "fonte": fonte, "resultado": resultado,
+           "pergunta": _pergunta_aud(pergunta)}
     if motivo:
         det["motivo"] = motivo
+    if estruturada:
+        det["consulta_estruturada"] = estruturada
+    if resumo:
+        det["resumo"] = resumo
     audita(db, u.email, ACAO, f"chat:{consulta or '-'}", det, ip)
 
 
@@ -168,19 +413,30 @@ def _frase(ag: dict) -> str:
     return f"{ag['fonte']}: {pedacos}. Carga em {quando}. Filtro: fonte {ag['fonte']}."
 
 
-def _limpa_texto(texto: str) -> str:
-    t = " ".join((texto or "").split())
-    if not t or "Traceback" in t:
-        return ""
-    return t[:1500]
+def _linhas_publicas(linhas: list[dict]) -> list[dict]:
+    out = []
+    for linha in linhas:
+        out.append({k: _sem_cpf(v) if isinstance(v, str) else v for k, v in linha.items()})
+    return out
 
 
-def _redigir(ag: dict) -> str:
+def _frase_linhas(fonte: str, estado: str, linhas: list[dict]) -> str:
+    if estado == "sem_carga":
+        return f"Não há carga registrada para {fonte}."
+    if not linhas:
+        return f"Não há registros de {fonte} com esses filtros."
+    if len(linhas) == 1:
+        pedacos = ", ".join(f"{k} {v}" for k, v in linhas[0].items())
+        return f"{pedacos}."
+    return f"{len(linhas)} linhas no recorte de {fonte}."
+
+
+def _redigir(ag: dict, fallback: str | None = None) -> str:
     resp = completar([
         {"role": "system", "content": _REDIGIR},
         {"role": "user", "content": json.dumps(ag, ensure_ascii=False)},
     ], None)
-    return _limpa_texto(str(_mensagem(resp).get("content") or "")) or _frase(ag)
+    return extrair_texto_resposta(str(_mensagem(resp).get("content") or "")) or fallback or _frase(ag)
 
 
 def _saida(ag, resposta: str) -> dict:
@@ -188,17 +444,78 @@ def _saida(ag, resposta: str) -> dict:
             "filtros": ag.filtros, "carga_em": ag.carga_em, "status_carga": ag.status_carga, "numeros": ag.numeros}
 
 
+def _negado(consulta: str, fonte: str, motivo: str) -> dict:
+    return {"resposta": MSG_NEGADO[motivo], "estado": "negado", "consulta": consulta, "fonte": fonte,
+            "filtros": {}, "carga_em": None, "status_carga": None, "numeros": None}
+
+
+def _responder_entidade(db: Session, u: Usuario, pergunta: str, ip: str | None, bruto: dict) -> dict:
+    try:
+        consulta = validar_estruturada(bruto)
+    except ForaDoCatalogo as exc:
+        origem = exc.bruto if exc.bruto is not None else bruto
+        _audita(db, u, ip, _nome_curto(origem), _params_auditoria(origem), None, "negado", pergunta,
+                "fora_catalogo", _resumo_recusa(origem))
+        raise ForaDoCatalogo() from None
+    ent = ENTIDADES[consulta.entidade]
+    estruturada = _consulta_aud(consulta)
+    if ent.folha:
+        motivo, nomes = _folha_permissao(db, u)
+        if not motivo and secretaria_fora_do_escopo(consulta, nomes):
+            motivo = "sem_folha"
+        if motivo:
+            _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "negado", pergunta,
+                    motivo, estruturada, {"nominal": consulta_nominal(consulta)})
+            return _negado(consulta.entidade, ent.rotulo, motivo)
+    elif ent.somente_agregados or not ent.fonte_id:
+        if not consulta_agregada(consulta):
+            _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "negado", pergunta,
+                    "so_agregado", estruturada)
+            return _negado(consulta.entidade, ent.rotulo, "so_agregado")
+        nomes = None
+    else:
+        ok, motivo = _autorizada(db, u, ent.fonte_id)
+        if not ok:
+            _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "negado", pergunta,
+                    motivo, estruturada)
+            return _negado(consulta.entidade, ent.rotulo, motivo)
+        nomes = None
+    res = executar_estruturada(db, consulta, secretarias=nomes)
+    linhas = _linhas_publicas(res.linhas)
+    payload = {"estado": res.estado, "entidade": res.consulta, "filtros": res.filtros, "linhas": linhas}
+    if res.metrica:
+        payload["metrica"] = res.metrica
+    try:
+        texto = _redigir(payload, _frase_linhas(res.fonte, res.estado, linhas))
+    except Indisponivel:
+        _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "erro_llm", pergunta,
+                estruturada=estruturada)
+        raise
+    _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, res.estado, pergunta,
+            estruturada=estruturada, resumo={"linhas": len(linhas), "nominal": res.nominal, "metrica": res.metrica})
+    log.info("chat %s resultado=%s linhas=%s", consulta.entidade, res.estado, len(linhas))
+    return {"resposta": texto, "estado": res.estado, "consulta": res.consulta, "fonte": res.fonte,
+            "filtros": res.filtros, "carga_em": res.carga_em, "status_carga": res.status_carga, "numeros": res.numeros}
+
+
 def responder(db: Session, u: Usuario, pergunta: str, ip: str | None) -> dict:
     bruto = None
     try:
+        entidades(db)
         bruto = escolher(pergunta)
-        consulta, params = validar(bruto)
     except Indisponivel:
-        _audita(db, u, ip, _nome_curto(bruto) if bruto else None, {}, None, "erro_llm")
+        _audita(db, u, ip, None, {}, None, "erro_llm", pergunta)
         raise
+    except ForaDoCatalogo:
+        _audita(db, u, ip, None, {}, None, "negado", pergunta, "fora_catalogo")
+        raise ForaDoCatalogo() from None
+    if isinstance(bruto, dict) and bruto.get("entidade"):
+        return _responder_entidade(db, u, pergunta, ip, bruto)
+    try:
+        consulta, params = validar(bruto)
     except ForaDoCatalogo as exc:
         origem = exc.bruto if exc.bruto is not None else bruto
-        _audita(db, u, ip, _nome_curto(origem), _params_auditoria(origem), None, "negado", "fora_catalogo")
+        _audita(db, u, ip, _nome_curto(origem), _params_auditoria(origem), None, "negado", pergunta, "fora_catalogo")
         raise ForaDoCatalogo() from None
     fonte_id = params["fonte"]
     ok, motivo = _autorizada(db, u, fonte_id)
@@ -208,7 +525,7 @@ def responder(db: Session, u: Usuario, pergunta: str, ip: str | None) -> dict:
             rotulo = _progresso(fonte_id).nome
         except ForaDoCatalogo:
             rotulo = fonte_id
-        _audita(db, u, ip, consulta, params, rotulo, "negado", motivo)
+        _audita(db, u, ip, consulta, params, rotulo, "negado", pergunta, motivo)
         return {"resposta": MSG_NEGADO[motivo], "estado": "negado", "consulta": consulta, "fonte": rotulo,
                 "filtros": {"fonte": rotulo}, "carga_em": None, "status_carga": None, "numeros": None}
     ag = executar_consulta(db, consulta, params)
@@ -217,8 +534,8 @@ def responder(db: Session, u: Usuario, pergunta: str, ip: str | None) -> dict:
     try:
         texto = _redigir(payload)
     except Indisponivel:
-        _audita(db, u, ip, consulta, params, ag.rotulo, "erro_llm")
+        _audita(db, u, ip, consulta, params, ag.rotulo, "erro_llm", pergunta)
         raise
-    _audita(db, u, ip, consulta, params, ag.rotulo, ag.estado)
+    _audita(db, u, ip, consulta, params, ag.rotulo, ag.estado, pergunta)
     log.info("chat %s fonte=%s resultado=%s", consulta, fonte_id, ag.estado)
     return _saida(ag, texto)

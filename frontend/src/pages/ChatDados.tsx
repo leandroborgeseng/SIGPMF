@@ -17,8 +17,28 @@ type Resp = {
 const ROTULO: Record<string, string> = {
   lidos: 'Lidos', novos: 'Novos', atualizados: 'Atualizados', ignorados: 'Ignorados',
   empresas: 'Empresas', bronze: 'Bronze', prata: 'Prata', ouro: 'Ouro', pendentes: 'Pendentes',
+  vencimentos: 'Vencimentos', liquido: 'Líquido', salario_base: 'Salário base', descontos: 'Descontos',
+  saldo: 'Saldo', contagem: 'Contagem', protestos: 'Protestos',
 }
 const MSG_LLM = 'O serviço de linguagem não está disponível agora. Tente de novo em instantes.'
+
+/** Se o modelo (ou um proxy) devolver o JSON `{ "resposta": "..." }`, a tela fica só com o texto. */
+export function textoResposta(bruto: string): string {
+  let atual = (bruto ?? '').trim()
+  for (let i = 0; i < 2; i++) {
+    let t = atual.trim()
+    if (t.startsWith('```')) t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+    if (!(t.startsWith('{') && t.endsWith('}'))) return atual
+    try {
+      const j = JSON.parse(t) as { resposta?: unknown }
+      if (!j || typeof j.resposta !== 'string') return atual
+      atual = j.resposta
+    } catch {
+      return atual
+    }
+  }
+  return atual
+}
 
 function filtrosTexto(f: Record<string, string> | null | undefined) {
   const itens = Object.entries(f ?? {})
@@ -54,12 +74,12 @@ export default function ChatDados() {
       <header className="page-head">
         <p className="kicker">Consulta</p>
         <h1 id="t-chat">Chat de dados</h1>
-        <p className="sutil">Perguntas sobre cargas e contagens agregadas. A resposta traz a fonte, os filtros e a data da carga.</p>
+        <p className="sutil">Perguntas sobre os dados carregados no SIGPMF. A resposta traz a fonte, os filtros e a data da carga.</p>
       </header>
       <form className="form" onSubmit={(e) => { e.preventDefault(); void consultar(pergunta) }}>
         <label htmlFor="pergunta-chat">Pergunta</label>
         <textarea id="pergunta-chat" rows={3} maxLength={500} value={pergunta}
-          placeholder="Ex.: qual foi a última carga da SIL?"
+          placeholder="Ex.: qual o maior salário da prefeitura?"
           onChange={(e) => setPergunta(e.target.value)} />
         <div className="acoes">
           <button className="btn" type="submit" disabled={enviando || !pergunta.trim()}>Perguntar</button>
@@ -73,8 +93,8 @@ export default function ChatDados() {
           <>
             {resp.estado === 'sem_carga' && <div className="vazio"><p>Não há carga concluída desta fonte.</p></div>}
             {resp.estado === 'negado'
-              ? <div role="alert" className="aviso erro"><p>{resp.resposta}</p></div>
-              : <p className="ultima">{resp.resposta}</p>}
+              ? <div role="alert" className="aviso erro"><p>{textoResposta(resp.resposta)}</p></div>
+              : <p className="ultima">{textoResposta(resp.resposta)}</p>}
             <dl className="camadas">
               <div><dt>Fonte</dt><dd>{resp.fonte ?? '—'}</dd></div>
               <div><dt>Filtros</dt><dd>{filtrosTexto(resp.filtros)}</dd></div>

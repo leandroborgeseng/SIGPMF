@@ -1,1 +1,1 @@
-"""Chat de dados: consultas agregadas e somente leitura, escolhidas por um catálogo fechado."""
+"""Chat de dados: consultas somente leitura. O modelo escolhe no catálogo; o backend valida e executa."""

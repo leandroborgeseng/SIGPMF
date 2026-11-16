@@ -2,16 +2,21 @@
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import httpx
 from pydantic import SecretStr
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects import postgresql
 
+from app.chat.catalogo import _conds, entidades, montar, validar_estruturada
 from app.chat.litellm import Indisponivel
-from app.chat.servico import MSG_NEGADO
+from app.chat.schema_cat import invalidar, tabela_negada
+from app.chat.servico import MSG_NEGADO, extrair_texto_resposta
 from app.core.security import hash_senha
 from app.models.camadas import EmpresaSil
 from app.models.controle import Auditoria, Execucao, Usuario, UsuarioSecretaria
+from app.models.rh import Remuneracao
 from tests.conftest import SENHA
 
 MSG_LLM = "O serviço de linguagem não está disponível agora. Tente de novo em instantes."
@@ -330,3 +335,268 @@ def test_completar_propaga_indisponivel_sem_corpo():
         assert visto["timeout"] == 12
     finally:
         litellm.get_settings, litellm.httpx.post = orig
+
+
+ANO_FOLHA = 2099
+MES_FOLHA = 6
+NOME_ALTO = "ZZTESTE-ALTO"
+NOME_SAUDE = "ZZTESTE-SAUDE"
+MAXIMO = {"entidade": "folha_senior", "filtros": [], "agrupamento": [],
+          "metrica": {"funcao": "max", "campo": "vencimentos"}, "ordenacao": [], "limite": 1}
+
+
+def _limpa_folha(db):
+    db.execute(delete(Remuneracao).where(Remuneracao.ano == ANO_FOLHA))
+    db.commit()
+
+
+def _paga(db, matricula, nome, secretaria, bruto):
+    v = Decimal(bruto)
+    db.add(Remuneracao(ano=ANO_FOLHA, mes=MES_FOLHA, matricula=matricula, nome=nome, secretaria=secretaria,
+                       grupo="ativa", cargo="ZZCARGO", salario_base=v, vencimentos=v, descontos=Decimal("0"), liquido=v))
+
+
+def _enviado(chamadas):
+    return next(m["content"] for m in chamadas[-1]["mensagens"] if m["role"] == "user")
+
+
+def test_texto_do_modelo_sai_sem_json():
+    assert extrair_texto_resposta('{"resposta": "A SIL leu dezessete."}') == "A SIL leu dezessete."
+    assert extrair_texto_resposta('```json\n{"resposta": "Sem carga da SIL."}\n```') == "Sem carga da SIL."
+    assert extrair_texto_resposta("Texto puro da carga.") == "Texto puro da carga."
+    assert not extrair_texto_resposta('{"consulta": "x"}').startswith("{")
+    assert "12345678901" not in extrair_texto_resposta('{"resposta": "cpf 12345678901"}')
+
+
+def test_resposta_json_do_modelo_vira_texto(client, tokens, db, monkeypatch):
+    _mock(monkeypatch, {"consulta": "ultima_carga", "parametros": {"fonte": "sil"}},
+          '{"resposta": "A SIL leu dezessete."}')
+    monkeypatch.setattr("app.chat.catalogo.ultima_execucao", lambda db, fonte_id: None)
+    r = _post(client, tokens["admin"])
+    assert r.status_code == 200, r.text
+    assert r.json()["resposta"] == "A SIL leu dezessete."
+    assert "{" not in r.json()["resposta"]
+
+
+def test_maior_salario_com_e_sem_permissao(client, tokens, db, monkeypatch):
+    _limpa_folha(db)
+    _paga(db, "ZZCHAT1", NOME_ALTO, "Educação", "90000")
+    _paga(db, "ZZCHAT2", NOME_SAUDE, "Saúde", "15000")
+    db.commit()
+    chamadas = _mock(monkeypatch, MAXIMO, "Segue o recorte.")
+    try:
+        r = _post(client, tokens["admin"], "Qual o maior salário da prefeitura?")
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["estado"] == "ok" and b["consulta"] == "folha_senior" and b["fonte"] == "Folha vigente"
+        assert b["numeros"]["vencimentos"] == 90000
+        assert b["filtros"]["ano"] == "2099" and b["filtros"]["mes"] == "6"
+        enviado = _enviado(chamadas)
+        assert NOME_ALTO in enviado and "90000" in enviado and "ZZCHAT1" not in enviado
+        assert "cpf" not in enviado.lower()
+        a = _aud(db, "admin@aion.local")
+        assert a.detalhe["resultado"] == "ok" and a.detalhe["consulta_estruturada"]["entidade"] == "folha_senior"
+        assert a.detalhe["resumo"]["nominal"] is True and NOME_ALTO not in json.dumps(a.detalhe)
+        assert "maior salário" in a.detalhe["pergunta"]
+
+        u, h = _usuario(db, client)
+        _vinculo(db, u, "SAUDE")
+        antes = len(chamadas)
+        r = _post(client, h, "Qual o maior salário da secretaria?")
+        assert r.status_code == 200, r.text
+        assert r.json()["numeros"]["vencimentos"] == 15000
+        enviado = _enviado(chamadas)
+        assert NOME_SAUDE in enviado and NOME_ALTO not in enviado
+        assert len(chamadas) == antes + 2
+
+        u2, h2 = _usuario(db, client)
+        antes = len(chamadas)
+        r = _post(client, h2, "Qual o maior salário da prefeitura?")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "negado" and r.json()["numeros"] is None
+        assert NOME_ALTO not in r.text and NOME_SAUDE not in r.text
+        assert len(chamadas) == antes + 1
+        neg = _aud(db, u2.email)
+        assert neg.detalhe["resultado"] == "negado" and neg.detalhe["motivo"] == "sem_vinculo"
+    finally:
+        _limpa_folha(db)
+
+
+def test_entidade_e_campo_fora_do_catalogo(client, tokens, db, monkeypatch):
+    cat = entidades(db)
+    assert {"folha_senior", "folha_legada", "empresas", "divida"} <= set(cat)
+    for e in cat.values():
+        assert "cpf" not in e.campos and "documento" not in e.campos
+        assert not tabela_negada(e.id.split(".")[-1])
+    _mock(monkeypatch, {"entidade": "oracle", "filtros": [], "metrica": {"funcao": "contagem"}})
+    r = _post(client, tokens["admin"], "Liste a entidade oracle")
+    assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+    assert _aud(db, "admin@aion.local").detalhe["motivo"] == "fora_catalogo"
+
+    _mock(monkeypatch, {"entidade": "folha_senior", "filtros": [
+        {"campo": "cpf", "operador": "eq", "valor": CPF_FALSO}], "metrica": {"funcao": "max", "campo": "vencimentos"}})
+    r = _post(client, tokens["admin"], "cpf " + CPF_FALSO)
+    assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+    assert CPF_FALSO not in r.text
+    a = _aud(db, "admin@aion.local")
+    assert a.detalhe["motivo"] == "fora_catalogo" and CPF_FALSO not in json.dumps(a.detalhe)
+    assert a.detalhe["consulta_estruturada"]["campos"] == ["cpf"]
+
+
+def test_sql_no_valor_do_filtro_fica_bound(client, tokens, db, monkeypatch):
+    _limpa_folha(db)
+    _paga(db, "ZZCHAT1", NOME_ALTO, "Educação", "90000")
+    db.commit()
+    antes = db.scalar(select(func.count()).select_from(Remuneracao))
+    try:
+        entidades(db)
+        for valor, campo in (("1; DROP TABLE x--", "vencimentos"), ("' OR 1=1", "cargo")):
+            bruto = {"entidade": "folha_senior", "filtros": [{"campo": campo, "operador": "eq", "valor": valor}],
+                     "metrica": {"funcao": "max", "campo": "vencimentos"}, "limite": 1}
+            c = validar_estruturada(bruto)
+            compiled = montar(c, _conds(c, ano=ANO_FOLHA, mes=MES_FOLHA, secretarias=None)).compile(dialect=postgresql.dialect())
+            sql = str(compiled)
+            assert "DROP" not in sql.upper() and ";" not in sql
+            assert any(valor in str(v) for v in compiled.params.values())
+            chamadas = _mock(monkeypatch, bruto, "Nenhum registro.")
+            r = _post(client, tokens["admin"], "Maior vencimento com esse filtro")
+            assert r.status_code == 200, r.text
+            assert r.json()["estado"] == "ok" and NOME_ALTO not in r.text and NOME_ALTO not in _enviado(chamadas)
+        db.expire_all()
+        assert db.scalar(select(func.count()).select_from(Remuneracao)) == antes
+        assert db.scalar(select(Remuneracao.nome).where(Remuneracao.matricula == "ZZCHAT1")) == NOME_ALTO
+    finally:
+        _limpa_folha(db)
+
+
+def test_empresas_e_divida_agregam(client, tokens, db, monkeypatch):
+    _mock(monkeypatch, {"entidade": "empresas", "filtros": [], "metrica": {"funcao": "contagem"}, "limite": 1}, "Ok.")
+    r = _post(client, tokens["admin"], "Quantas empresas?")
+    assert r.status_code == 200, r.text
+    assert r.json()["consulta"] == "empresas" and r.json()["estado"] in ("ok", "sem_carga")
+    _mock(monkeypatch, {"entidade": "divida", "filtros": [], "metrica": {"funcao": "max", "campo": "saldo"}, "limite": 1}, "Ok.")
+    r = _post(client, tokens["admin"], "Qual o maior saldo da dívida?")
+    assert r.status_code == 200, r.text
+    assert r.json()["consulta"] == "divida" and "cpf" not in r.text.lower()
+
+
+def _ddl(db, sql):
+    db.execute(text(sql))
+    db.commit()
+
+
+def test_tabela_nova_responde_sem_codigo_e_so_agrega(client, tokens, db, monkeypatch):
+    """Tabela criada no teste entra no catálogo sem alterar o código e, sem domínio, só agrega."""
+    _ddl(db, "DROP TABLE IF EXISTS silver.zz_chat_nova")
+    _ddl(db, """CREATE TABLE silver.zz_chat_nova (
+        id integer PRIMARY KEY, rotulo text, zzmarcador text, cpf text, valor numeric)""")
+    _ddl(db, "COMMENT ON TABLE silver.zz_chat_nova IS 'Painel de teste do chat'")
+    _ddl(db, "COMMENT ON COLUMN silver.zz_chat_nova.zzmarcador IS 'Marcador livre'")
+    _ddl(db, """INSERT INTO silver.zz_chat_nova (id, rotulo, zzmarcador, cpf, valor)
+                VALUES (1, 'ZZTESTE-NAO-LISTAR', 'marcado', '12345678901', 42)""")
+    invalidar()
+    chamadas = []
+
+    def completar(mensagens, tools=None):
+        chamadas.append({"tools": tools, "mensagens": mensagens})
+        if len(chamadas) == 1:
+            return {"choices": [{"message": {"tool_calls": [{"function": {
+                "name": "escolher_entidades",
+                "arguments": json.dumps({"entidades": ["silver.zz_chat_nova"]})}}]}}]}
+        if len(chamadas) == 2:
+            return {"choices": [{"message": {"tool_calls": [{"function": {
+                "name": "consultar_entidade",
+                "arguments": json.dumps({"entidade": "silver.zz_chat_nova", "filtros": [],
+                                         "metrica": {"funcao": "max", "campo": "valor"}, "limite": 1})}}]}}]}
+        return {"choices": [{"message": {"content": "O máximo é 42."}}]}
+
+    monkeypatch.setattr("app.chat.servico.completar", completar)
+    try:
+        ent = entidades(db)["silver.zz_chat_nova"]
+        assert ent.somente_agregados and "zzmarcador" in ent.campos and "cpf" not in ent.campos
+        assert "teste do chat" in ent.significado.lower()
+        assert "marcador" in ent.campos["zzmarcador"].significado.lower()
+        r = _post(client, tokens["admin"], "Qual o maior valor da tabela nova?")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "ok" and r.json()["consulta"] == "silver.zz_chat_nova"
+        assert r.json()["numeros"]["valor"] == 42
+        assert "ZZTESTE-NAO-LISTAR" not in r.text and "12345678901" not in r.text
+        pacote = json.dumps(chamadas, ensure_ascii=False)
+        assert "ZZTESTE-NAO-LISTAR" not in pacote and "12345678901" not in pacote
+        etapa1 = json.dumps(chamadas[0], ensure_ascii=False)
+        etapa2 = json.dumps(chamadas[1], ensure_ascii=False)
+        assert "silver.zz_chat_nova" in etapa1 and "zzmarcador" not in etapa1
+        assert "zzmarcador" in etapa2 and "vencimentos" not in etapa2 and "folha_senior" not in etapa2
+        assert chamadas[2]["tools"] is None
+
+        ch = _mock(monkeypatch, {"entidade": "silver.zz_chat_nova", "filtros": [], "limite": 5}, "nao")
+        r = _post(client, tokens["admin"], "Liste a tabela nova")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "negado" and r.json()["resposta"] == MSG_NEGADO["so_agregado"]
+        assert "ZZTESTE-NAO-LISTAR" not in r.text and len(ch) == 1
+    finally:
+        _ddl(db, "DROP TABLE IF EXISTS silver.zz_chat_nova")
+        invalidar()
+
+
+def test_tabela_da_denylist_nao_entra(client, tokens, db, monkeypatch):
+    _ddl(db, "DROP TABLE IF EXISTS silver.zz_chat_auditoria")
+    _ddl(db, "CREATE TABLE silver.zz_chat_auditoria (id integer PRIMARY KEY, valor numeric)")
+    _ddl(db, "INSERT INTO silver.zz_chat_auditoria (id, valor) VALUES (1, 7)")
+    invalidar()
+    try:
+        cat = entidades(db)
+        assert "silver.zz_chat_auditoria" not in cat
+        assert not any(e.id.startswith("controle.") or e.id.endswith("usuarios") for e in cat.values())
+        _mock(monkeypatch, {"entidade": "silver.zz_chat_auditoria", "filtros": [],
+                            "metrica": {"funcao": "max", "campo": "valor"}, "limite": 1})
+        r = _post(client, tokens["admin"], "Qual o valor da auditoria?")
+        assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+        _mock(monkeypatch, {"entidade": "usuarios", "filtros": [], "metrica": {"funcao": "contagem"}})
+        r = _post(client, tokens["admin"], "Quantos usuários?")
+        assert r.status_code == 422 and r.json()["detail"].startswith(MSG_FORA)
+        assert "usuarios" not in entidades(db)
+    finally:
+        _ddl(db, "DROP TABLE IF EXISTS silver.zz_chat_auditoria")
+        invalidar()
+
+
+def test_campo_sensivel_so_com_permissao_do_dominio(client, tokens, db, monkeypatch):
+    _ddl(db, "DROP TABLE IF EXISTS silver.zz_educacao_painel")
+    _ddl(db, """CREATE TABLE silver.zz_educacao_painel (
+        id integer PRIMARY KEY, nome text, telefone text, cpf text, valor numeric)""")
+    _ddl(db, """INSERT INTO silver.zz_educacao_painel (id, nome, telefone, cpf, valor)
+                VALUES (1, 'ZZTESTE-ALUNO', 'ZZFONE-3499', '12345678901', 10)""")
+    invalidar()
+    consulta = {"entidade": "silver.zz_educacao_painel",
+                "filtros": [{"campo": "nome", "operador": "eq", "valor": "ZZTESTE-ALUNO"}], "limite": 1}
+    try:
+        ent = entidades(db)["silver.zz_educacao_painel"]
+        assert ent.fonte_id == "educacao" and not ent.somente_agregados
+        assert ent.campos["telefone"].sensivel and "cpf" not in ent.campos
+        chamadas = _mock(monkeypatch, consulta, "Recorte da educação.")
+        u, h = _usuario(db, client)
+        _vinculo(db, u, "EDUCACAO")
+        r = _post(client, h, "Qual o contato desse aluno?")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "ok"
+        enviado = _enviado(chamadas)
+        assert "ZZTESTE-ALUNO" in enviado and "ZZFONE-3499" in enviado
+        assert "12345678901" not in enviado and "12345678901" not in r.text
+
+        u2, h2 = _usuario(db, client)
+        antes = len(chamadas)
+        r = _post(client, h2, "Qual o contato desse aluno?")
+        assert r.status_code == 200, r.text
+        assert r.json()["estado"] == "negado" and r.json()["resposta"] == MSG_NEGADO["sem_vinculo"]
+        assert "ZZTESTE-ALUNO" not in r.text and "ZZFONE-3499" not in r.text
+        assert len(chamadas) == antes + 1
+
+        u3, h3 = _usuario(db, client)
+        _vinculo(db, u3, "SAUDE")
+        r = _post(client, h3, "Qual o contato desse aluno?")
+        assert r.json()["estado"] == "negado" and r.json()["resposta"] == MSG_NEGADO["outra_secretaria"]
+        assert "ZZFONE-3499" not in r.text and "ZZTESTE-ALUNO" not in r.text
+    finally:
+        _ddl(db, "DROP TABLE IF EXISTS silver.zz_educacao_painel")
+        invalidar()
