@@ -4,6 +4,7 @@ import { useAuth } from './auth'
 import Layout from './Layout'
 import AcessoSecretaria from './pages/AcessoSecretaria'
 import Cargas from './pages/Cargas'
+import ChatDados from './pages/ChatDados'
 import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
@@ -48,6 +49,7 @@ export default function App() {
         <Route path="/monitor" element={<MonitorCargas />} />
         <Route path="/vinculos" element={<Vinculos />} />
         <Route path="/politicas" element={<Politicas />} />
+        <Route path="/chat" element={<ChatDados />} />
         <Route path="/ti/acesso-secretaria" element={<AcessoSecretaria />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

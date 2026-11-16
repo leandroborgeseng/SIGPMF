@@ -83,3 +83,7 @@ do checkpoint, e não avance o checkpoint à mão: isso descartaria andamentos s
    `restrito` e o checkpoint avança; se esgotar de novo, o alerta volta e o caso sobe para o Tech Lead.
 
 Não registre protocolo, nome ou outro dado do processo no `detalhe` da auditoria nem no chamado; use só o `id` interno.
+
+## Chat de dados (LiteLLM)
+
+Só o backend fala com o LiteLLM: `POST {LITELLM_BASE_URL}/v1/chat/completions`, modelo `LITELLM_MODEL`, cabeçalho `Authorization: Bearer` com `LITELLM_API_KEY`. Não há outro cabeçalho de identificação. A chave não tem valor padrão e não entra no repositório (`.env.example` traz o nome vazio). Timeout padrão 30 s (`LITELLM_TIMEOUT_S`). Fora do ar ou sem as três variáveis, `POST /api/chat` responde 503, sem stack.

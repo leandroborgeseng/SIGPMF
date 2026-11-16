@@ -115,8 +115,14 @@ class Settings(BaseSettings):
     smtp_starttls: bool = Field(True, alias="SMTP_STARTTLS")
     alerta_de: str | None = Field(None, alias="ALERTA_DE")
     alerta_para: str = Field("", alias="ALERTA_PARA")  # e-mails separados por vírgula
+    # Chat de dados. A chave não tem padrão e não entra em log (repr=False). Vazio = chat responde 503.
+    litellm_base_url: str | None = Field(None, alias="LITELLM_BASE_URL")
+    litellm_model: str | None = Field(None, alias="LITELLM_MODEL")
+    litellm_api_key: SecretStr | None = Field(None, alias="LITELLM_API_KEY", repr=False)
+    litellm_timeout_s: int = Field(30, alias="LITELLM_TIMEOUT_S", ge=5, le=120)
 
-    @field_validator("financeiro_exercicio_min", "ge_port", mode="before")
+    @field_validator("financeiro_exercicio_min", "ge_port", "litellm_base_url", "litellm_model", "litellm_api_key",
+                     mode="before")
     @classmethod
     def _vazio_e_nulo(cls, v):
         """Variável presente e vazia no .env (como no .env.example) = não definida."""

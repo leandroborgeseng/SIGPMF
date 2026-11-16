@@ -73,6 +73,18 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   `CONTAGENS_CPF_REPETIDO_TOP` (padrão 100) por tabela. Leitura só `admin_lgpd`
   (`GET /api/contagens/{id}/cpfs-repetidos`), auditada.
 
+## Chat de dados
+Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo só escolhe uma consulta do catálogo; o backend executa e devolve fonte, filtros e data da carga. Sem chave configurada, ou com o LiteLLM fora, a rota responde 503 sem stack.
+
+| Variável | Uso |
+|---|---|
+| `LITELLM_BASE_URL` | URL base do LiteLLM, sem barra no fim. O backend chama `{LITELLM_BASE_URL}/v1/chat/completions` |
+| `LITELLM_MODEL` | nome do modelo |
+| `LITELLM_API_KEY` | chave. Só no Coolify. O cliente manda apenas `Authorization: Bearer` |
+| `LITELLM_TIMEOUT_S` | opcional, padrão 30 (entre 5 e 120). Não crie a variável vazia |
+
+Consultas: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes — os mesmos números do card da base). O escopo é o dos painéis: admin e vínculo `TODAS` veem todas as fontes; os demais, só a secretaria dona do domínio. Cada pergunta grava `chat_consulta` na auditoria (usuário, consulta, parâmetros, fonte, resultado), sem o texto da pergunta.
+
 ## Variáveis numéricas no Coolify (nota do Tester, #45)
 - **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o
   padrão: a validação falha e o backend **não sobe** (ex.: `SIGPMF_RELEITURA_SAUDE_PORTA` vazia impediu a subida).
