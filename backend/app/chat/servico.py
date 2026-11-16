@@ -12,7 +12,10 @@ from app.chat.catalogo import (
     FONTES,
     ConsultaEstruturada,
     ForaDoCatalogo,
+    campos_para_modelo,
+    consulta_agregada,
     consulta_nominal,
+    entidades,
     executar_estruturada,
     resumo_para_modelo,
     secretaria_fora_do_escopo,
@@ -33,68 +36,68 @@ MSG_NEGADO = {
     "sem_vinculo": "Sem vínculo vigente com uma secretaria.",
     "outra_secretaria": "Sem acesso aos dados desta fonte.",
     "sem_folha": "Sem acesso à folha desta secretaria. Nome e valor individual só aparecem para quem já vê a folha.",
+    "so_agregado": "Essa fonte ainda só responde com números agregados (contagem, soma, média, máximo ou mínimo).",
 }
 _TOOL = "consultar_dados"
 _ENTIDADE = "consultar_entidade"
-_FUNCOES = {_TOOL, _ENTIDADE}
+_ESCOLHER = "escolher_entidades"
+_FUNCOES = {_TOOL, _ENTIDADE, _ESCOLHER}
 _CPF_FMT = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
 _CPF_DIG = re.compile(r"\b\d{11}\b")
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": _TOOL,
-            "description": "Escolhe uma consulta agregada de carga e a fonte.",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "consulta": {"type": "string", "enum": sorted(CONSULTAS)},
-                    "parametros": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {"fonte": {"type": "string", "enum": sorted(FONTES)}},
-                        "required": ["fonte"],
-                    },
+_TOOL_CARGA = {
+    "type": "function",
+    "function": {
+        "name": _TOOL,
+        "description": "Escolhe uma consulta agregada de carga e a fonte.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "consulta": {"type": "string", "enum": sorted(CONSULTAS)},
+                "parametros": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"fonte": {"type": "string", "enum": sorted(FONTES)}},
+                    "required": ["fonte"],
                 },
-                "required": ["consulta", "parametros"],
             },
+            "required": ["consulta", "parametros"],
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": _ENTIDADE,
-            "description": "Consulta estruturada só de leitura. Não escreva SQL.",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "entidade": {"type": "string", "enum": sorted(ENTIDADES)},
-                    "filtros": {"type": "array"},
-                    "agrupamento": {"type": "array"},
-                    "metrica": {"type": "object"},
-                    "ordenacao": {"type": "array"},
-                    "limite": {"type": "integer"},
-                },
-                "required": ["entidade"],
-            },
+}
+_TOOL_ESCOLHA = {
+    "type": "function",
+    "function": {
+        "name": _ESCOLHER,
+        "description": "Escolhe até 4 entidades pelo resumo. Não invente campo nem escreva SQL.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"entidades": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
+            "required": ["entidades"],
         },
     },
-]
-_SISTEMA = (
-    "Você consulta o SIGPMF só pelo catálogo. Não escreva SQL. Não peça nem repita CPF. "
-    "Cargas: chame consultar_dados. ultima_carga, empresas_ultima_carga (fonte só sil ou iss) "
-    "ou registros_por_fonte. "
-    f"Fontes: {', '.join(sorted(FONTES))}. "
-    "Folha, empresas ou dívida: chame consultar_entidade. JSON com entidade, filtros "
-    "(campo, operador eq|ne|gt|gte|lt|lte, valor), agrupamento, metrica "
-    "(funcao max|min|soma|media|contagem e campo), ordenacao (campo, direcao asc|desc) e limite. "
-    "Maior ou menor valor de uma pessoa: metrica max ou min, sem agrupamento. "
-    + resumo_para_modelo()
-    + ' Se não couber no catálogo, responda somente {"consulta": null, "parametros": {}}. '
-)
-_JSON = _SISTEMA + " Responda somente o JSON, sem texto antes ou depois."
+}
+_TOOL_ESTRUTURADA = {
+    "type": "function",
+    "function": {
+        "name": _ENTIDADE,
+        "description": "Consulta estruturada só de leitura, só com os campos recebidos. Não escreva SQL.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "entidade": {"type": "string"},
+                "filtros": {"type": "array"},
+                "agrupamento": {"type": "array"},
+                "metrica": {"type": "object"},
+                "ordenacao": {"type": "array"},
+                "limite": {"type": "integer"},
+            },
+            "required": ["entidade"],
+        },
+    },
+}
 _REDIGIR = (
     "Redija em português, em até três frases, usando somente o JSON recebido. "
     "Responda só com texto, sem JSON. "
@@ -157,9 +160,39 @@ def _json_objeto(t: str) -> dict | None:
     return v if isinstance(v, dict) else None
 
 
-def _msgs(pergunta: str, *, json_estrito: bool) -> list[dict]:
-    return [{"role": "system", "content": _JSON if json_estrito else _SISTEMA},
-            {"role": "user", "content": pergunta}]
+def _prompt_etapa1(json_estrito: bool) -> str:
+    base = (
+        "Você consulta o SIGPMF. Não escreva SQL. Não peça nem repita CPF. "
+        "Se a pergunta for sobre carga, chame consultar_dados. "
+        "Consultas: ultima_carga, empresas_ultima_carga (fonte só sil ou iss) ou registros_por_fonte. "
+        f"Fontes: {', '.join(sorted(FONTES))}. "
+        "Se a pergunta for sobre dados, chame escolher_entidades com no máximo 4 ids do resumo. "
+        "Não invente entidade e não peça campos nesta etapa. "
+        f"Resumo: {resumo_para_modelo()} "
+        'Se não couber no catálogo, responda somente {"consulta": null, "parametros": {}}. '
+    )
+    if json_estrito:
+        base += "Responda somente o JSON, sem texto antes ou depois."
+    return base
+
+
+def _prompt_etapa2(ids: list[str], json_estrito: bool) -> str:
+    base = (
+        "Monte a consulta estruturada só com as entidades e os campos abaixo. Não escreva SQL. Não use CPF. "
+        "Chame consultar_entidade. JSON com entidade, filtros (campo, operador eq|ne|gt|gte|lt|lte, valor), "
+        "agrupamento, metrica (funcao max|min|soma|media|contagem e campo), ordenacao (campo, direcao asc|desc) "
+        "e limite. Na folha, maior ou menor valor de uma pessoa: metrica max ou min, sem agrupamento. "
+        "Entidade sem regra de linha: use só metrica agregada, sem listar registros. "
+        f"{campos_para_modelo(ids)} "
+        'Se não couber, responda somente {"consulta": null, "parametros": {}}. '
+    )
+    if json_estrito:
+        base += "Responda somente o JSON, sem texto antes ou depois."
+    return base
+
+
+def _msgs(pergunta: str, conteudo: str) -> list[dict]:
+    return [{"role": "system", "content": conteudo}, {"role": "user", "content": pergunta}]
 
 
 def _mensagem(resp: dict) -> dict:
@@ -204,18 +237,61 @@ def _da_mensagem(msg: dict) -> dict | None:
     return _json_texto(msg.get("content"))
 
 
+def _consulta_pronta(bruto) -> bool:
+    """A resposta já é consulta de carga ou estruturada. Nesse caso não há segunda etapa."""
+    if not isinstance(bruto, dict):
+        return False
+    if "consulta" in bruto and isinstance(bruto.get("parametros"), dict):
+        return True
+    return isinstance(bruto.get("entidade"), str) and any(
+        k in bruto for k in ("filtros", "metrica", "agrupamento", "ordenacao", "limite"))
+
+
+def _ids_escolhidos(bruto) -> list[str]:
+    from app.chat.catalogo import _norm_ent
+    if not isinstance(bruto, dict):
+        return []
+    lista = bruto.get("entidades")
+    if not isinstance(lista, list):
+        lista = [bruto.get("entidade")]
+    out = []
+    for item in lista:
+        if not isinstance(item, str):
+            continue
+        eid = _norm_ent(item)
+        if eid and eid not in out:
+            out.append(eid)
+        if len(out) == 4:
+            break
+    return out
+
+
 def escolher(pergunta: str) -> dict:
-    """Tool calling; se o modelo recusar tools ou não devolver chamada, uma segunda ida pede JSON estrito."""
+    """1ª etapa: só o resumo das entidades. 2ª: campos só das escolhidas. Consulta já pronta não faz a 2ª."""
     try:
-        resp = completar(_msgs(pergunta, json_estrito=False), TOOLS)
+        resp = completar(_msgs(pergunta, _prompt_etapa1(False)), [_TOOL_CARGA, _TOOL_ESCOLHA])
     except ToolsRecusadas:
         resp = None
     bruto = _da_mensagem(_mensagem(resp)) if resp is not None else None
     if bruto is None:
-        bruto = _da_mensagem(_mensagem(completar(_msgs(pergunta, json_estrito=True), None)))
+        bruto = _da_mensagem(_mensagem(completar(_msgs(pergunta, _prompt_etapa1(True)), None)))
     if bruto is None:
         raise ForaDoCatalogo()
-    return bruto
+    if _consulta_pronta(bruto):
+        return bruto
+    ids = _ids_escolhidos(bruto)
+    if not ids:
+        raise ForaDoCatalogo()
+    try:
+        resp2 = completar(_msgs(pergunta, _prompt_etapa2(ids, False)), [_TOOL_ESTRUTURADA])
+    except ToolsRecusadas:
+        resp2 = None
+    fino = _da_mensagem(_mensagem(resp2)) if resp2 is not None else None
+    if not _consulta_pronta(fino):
+        fino = _da_mensagem(_mensagem(completar(_msgs(pergunta, _prompt_etapa2(ids, True)), None)))
+    if not _consulta_pronta(fino):
+        raise ForaDoCatalogo()
+    return fino
 
 
 def _autorizada(db: Session, u: Usuario, fonte_id: str) -> tuple[bool, str]:
@@ -391,6 +467,12 @@ def _responder_entidade(db: Session, u: Usuario, pergunta: str, ip: str | None, 
             _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "negado", pergunta,
                     motivo, estruturada, {"nominal": consulta_nominal(consulta)})
             return _negado(consulta.entidade, ent.rotulo, motivo)
+    elif ent.somente_agregados or not ent.fonte_id:
+        if not consulta_agregada(consulta):
+            _audita(db, u, ip, consulta.entidade, _params_auditoria(bruto), ent.rotulo, "negado", pergunta,
+                    "so_agregado", estruturada)
+            return _negado(consulta.entidade, ent.rotulo, "so_agregado")
+        nomes = None
     else:
         ok, motivo = _autorizada(db, u, ent.fonte_id)
         if not ok:
@@ -419,6 +501,7 @@ def _responder_entidade(db: Session, u: Usuario, pergunta: str, ip: str | None, 
 def responder(db: Session, u: Usuario, pergunta: str, ip: str | None) -> dict:
     bruto = None
     try:
+        entidades(db)
         bruto = escolher(pergunta)
     except Indisponivel:
         _audita(db, u, ip, None, {}, None, "erro_llm", pergunta)

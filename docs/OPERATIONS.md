@@ -76,6 +76,8 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
 ## Chat de dados
 Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo não escreve SQL: devolve uma consulta do catálogo (carga) ou uma consulta estruturada (entidade, filtros, agrupamento, métrica, ordenação, limite). O backend valida entidade, campo, operador e o tipo do valor, monta um SELECT parametrizado e executa em transação somente leitura, com limite de 50 linhas e `statement_timeout` de 8s. A resposta traz fonte, filtros e data da carga fora do texto. Sem chave, ou com o LiteLLM fora, a rota responde 503 sem stack.
 
+O catálogo das entidades é lido do schema (`bronze`, `silver`, `gold`, `ref`) e do comentário da tabela ou da coluna. Na subida da API, quando a lista de tabelas muda ou uma carga nova grava `controle.execucoes`, e no máximo a cada 3 minutos. Tabela ou campo novo passa a responder sem código novo. Sem comentário, a descrição é o nome legível. O prompt vai em duas etapas: primeiro só o resumo (id e descrição); depois os campos apenas das entidades escolhidas.
+
 | Variável | Uso |
 |---|---|
 | `LITELLM_BASE_URL` | URL base do LiteLLM, sem barra no fim. O backend chama `{LITELLM_BASE_URL}/v1/chat/completions` |
@@ -83,9 +85,9 @@ Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo não escreve
 | `LITELLM_API_KEY` | chave. Só no Coolify. O cliente manda apenas `Authorization: Bearer` |
 | `LITELLM_TIMEOUT_S` | opcional, padrão 30 (entre 5 e 120). Não crie a variável vazia |
 
-Consultas de carga: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes). Consulta estruturada: `folha_senior` (folha vigente — último mês comum do portal; o Senior ainda não tem tabela própria), `folha_legada` (histórico), `empresas` (SIL) e `divida`. Só campos da allowlist. CPF não está no catálogo e é removido da resposta.
+Consultas de carga: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes). A consulta estruturada alcança as tabelas de negócio carregadas. Três delas têm nome estável: `folha_senior` (folha vigente — último mês comum do portal; o Senior ainda não tem tabela própria), `folha_legada` (histórico) e `empresas` / `divida`. As demais entram como `schema.tabela`. CPF, documento e colunas do mesmo tipo não estão no catálogo e o CPF é removido da resposta. Tabelas internas (usuário, sessão, auditoria, parâmetro, segredo) não entram.
 
-Escopo: admin e vínculo `TODAS` veem tudo. Nos demais, a carga, as empresas e a dívida seguem a secretaria dona do domínio. Na folha, nome e valor individual — e também o agregado — usam `escopo_do_usuario` (a mesma regra das telas): sem vínculo, recusa; com vínculo, só as secretarias dele. Cada pergunta grava `chat_consulta` na auditoria (pergunta sem CPF, consulta estruturada, usuário, resultado resumido, recusa).
+Escopo: admin e vínculo `TODAS` veem tudo o que a regra do domínio libera. Nos demais, a carga e cada entidade com domínio (folha, tributos, saúde, educação, cemitério, SEI) seguem a secretaria dona, a mesma de `escopo_do_usuario`. Campo sensível (nome, contato, endereço, saúde) só sai para quem já vê aquele domínio. Entidade nova, sem domínio reconhecido pelo nome, responde só com um número agregado (sem lista e sem agrupamento) até ter regra explícita. Na folha, nome e valor individual — e também o agregado — usam o vínculo: sem vínculo, recusa; com vínculo, só as secretarias dele. Cada pergunta grava `chat_consulta` na auditoria (pergunta sem CPF, consulta estruturada, usuário, resultado resumido, recusa).
 
 ## Variáveis numéricas no Coolify (nota do Tester, #45)
 - **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o

@@ -13,9 +13,9 @@ from app.models.controle import Usuario
 chat = APIRouter(prefix="/chat", tags=["chat"], dependencies=[Depends(usuario_atual)])
 
 MSG_LLM = "O serviço de linguagem não está disponível agora. Tente de novo em instantes."
-MSG_FORA = ("Essa pergunta está fora das consultas disponíveis. Dá para perguntar a última carga de uma fonte, "
-            "as empresas da última carga (SIL ou ISS), os registros de uma fonte, a folha vigente ou o histórico, "
-            "empresas e dívida ativa. CPF não entra na consulta.")
+MSG_FORA = ("Essa pergunta está fora das consultas disponíveis. O catálogo cobre as tabelas de negócio "
+            "carregadas (folha, tributos, saúde, educação e as demais fontes). "
+            "Tabelas internas e CPF não entram na consulta.")
 
 
 class PerguntaIn(BaseModel):

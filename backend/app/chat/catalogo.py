@@ -1,10 +1,10 @@
 """Catálogo fechado. O modelo não escreve SQL: ou escolhe uma consulta agregada de carga, ou devolve uma consulta
-estruturada (entidade, filtros, agrupamento, métrica, ordenação, limite). O backend valida contra a allowlist,
+estruturada (entidade, filtros, agrupamento, métrica, ordenação, limite). O backend valida contra o catálogo,
 monta SELECT parametrizado e executa em transação somente leitura.
 
-Folha vigente (`folha_senior`) é o último mês comum de silver.rh_remuneracao — a folha que o sistema mostra hoje.
-O conector Senior (DBSENIOR) ainda não grava tabela própria. `folha_legada` é o histórico do mesmo portal.
-CPF não é campo de nenhuma entidade.
+As entidades saem do schema (bronze, silver, gold, ref) e dos comentários. Folha vigente (`folha_senior`) é o
+último mês comum de silver.rh_remuneracao — o Senior ainda não grava tabela própria. `folha_legada` é o histórico
+do mesmo portal. CPF não é campo de nenhuma entidade.
 """
 import re
 from dataclasses import dataclass
@@ -14,9 +14,9 @@ from decimal import Decimal
 from sqlalchemy import String, cast, func, select, text
 from sqlalchemy.orm import Session
 
-from app.models.camadas import DividaAtiva, EmpresaSil, Municipe
+from app.models.camadas import EmpresaSil, Municipe
 from app.models.controle import Execucao
-from app.models.rh import MesRh, Remuneracao
+from app.models.rh import MesRh
 
 # id da fonte (o que o modelo pode mandar) → domínio do ouro, para o mesmo recorte de secretaria dos painéis.
 FONTES: dict[str, str] = {
@@ -189,6 +189,7 @@ class Campo:
     agrupavel: bool = False
     metrica: bool = False
     nominal: bool = False
+    sensivel: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,77 +197,24 @@ class Entidade:
     id: str
     rotulo: str
     significado: str
-    modelo: type
+    modelo: object
     campos: dict[str, Campo]
     folha: bool = False
     vigente: bool = False
     fonte_id: str | None = None
     sistema: str | None = None
     secretaria: str | None = None
+    somente_agregados: bool = False
 
 
-def _folha() -> dict[str, Campo]:
-    r = Remuneracao
-    return {
-        "ano": Campo("ano", "Ano da competência.", "inteiro", r.ano, agrupavel=True),
-        "mes": Campo("mes", "Mês da competência; 13 é o décimo terceiro.", "inteiro", r.mes, agrupavel=True),
-        "nome": Campo("nome", "Nome da pessoa. Só sai para quem já vê a folha daquela secretaria.", "texto", r.nome, nominal=True),
-        "cargo": Campo("cargo", "Cargo na competência.", "texto", r.cargo, agrupavel=True),
-        "secretaria": Campo("secretaria", "Secretaria padronizada (a mesma do painel de RH).", "texto", r.secretaria, agrupavel=True),
-        "grupo": Campo("grupo", "ativa (secretarias), inativos ou outros.", "texto", r.grupo, agrupavel=True),
-        "situacao": Campo("situacao", "Situação funcional publicada.", "texto", r.situacao, agrupavel=True),
-        "salario_base": Campo("salario_base", "Salário base do mês.", "numero", r.salario_base, metrica=True),
-        "vencimentos": Campo("vencimentos", "Total de vencimentos (bruto) de quem foi pago no mês.", "numero", r.vencimentos, metrica=True),
-        "descontos": Campo("descontos", "Total de descontos do mês.", "numero", r.descontos, metrica=True),
-        "liquido": Campo("liquido", "Total líquido do mês.", "numero", r.liquido, metrica=True),
-    }
+# Preenchido por entidades(db) a partir do schema. Vazio até a primeira consulta ou o startup.
+ENTIDADES: dict[str, Entidade] = {}
 
 
-def _empresas() -> dict[str, Campo]:
-    e = EmpresaSil
-    return {
-        "nome": Campo("nome", "Nome ou razão social, sem documento.", "texto", e.nome, agrupavel=True),
-        "tipo_pessoa": Campo("tipo_pessoa", "PF ou PJ, sem CPF e sem CNPJ.", "texto", e.tipo_pessoa, agrupavel=True),
-        "possui_debito": Campo("possui_debito", "Se a empresa está marcada com débito.", "bool", e.possui_debito, agrupavel=True),
-        "bairro": Campo("bairro", "Bairro do estabelecimento.", "texto", e.bairro, agrupavel=True),
-    }
-
-
-def _divida() -> dict[str, Campo]:
-    d = DividaAtiva
-    return {
-        "ano": Campo("ano", "Ano da inscrição.", "inteiro", d.ano, agrupavel=True),
-        "natureza": Campo("natureza", "Código da natureza do débito.", "inteiro", d.natureza, agrupavel=True),
-        "saldo": Campo("saldo", "Saldo líquido em aberto.", "numero", d.saldo, metrica=True),
-        "em_aberto": Campo("em_aberto", "Débito em aberto (não extinto, saldo positivo).", "bool", d.em_aberto, agrupavel=True),
-        "extinta": Campo("extinta", "Inscrição extinta.", "bool", d.extinta, agrupavel=True),
-        "protestos": Campo("protestos", "Quantidade de protestos.", "inteiro", d.protestos, metrica=True, agrupavel=True),
-    }
-
-
-def _entidades() -> dict[str, Entidade]:
-    folha = _folha()
-    return {
-        "folha_senior": Entidade(
-            "folha_senior", "Folha vigente",
-            "Folha vigente: último mês comum publicado no portal. O Senior ainda não tem tabela; esta é a folha corrente.",
-            Remuneracao, folha, folha=True, vigente=True, sistema="PORTAL_RH", secretaria="secretaria"),
-        "folha_legada": Entidade(
-            "folha_legada", "Folha (histórico)",
-            "Histórico da folha publicada no portal, todos os meses, inclusive o 13º.",
-            Remuneracao, folha, folha=True, sistema="PORTAL_RH", secretaria="secretaria"),
-        "empresas": Entidade(
-            "empresas", "Empresas (SIL)",
-            "Empresas da prata da SIL. Sem CPF, sem CNPJ e sem endereço completo.",
-            EmpresaSil, _empresas(), fonte_id="sil"),
-        "divida": Entidade(
-            "divida", "Dívida ativa",
-            "Inscrições em dívida ativa. Sem contribuinte, sem CPF e sem inscrição de imóvel.",
-            DividaAtiva, _divida(), fonte_id="divida"),
-    }
-
-
-ENTIDADES: dict[str, Entidade] = _entidades()
+def entidades(db: Session) -> dict[str, Entidade]:
+    """Relê o schema na inicialização, quando surge tabela ou carga, e no máximo a cada poucos minutos."""
+    from app.chat.schema_cat import carregar
+    return carregar(db, ENTIDADES)
 
 
 @dataclass(frozen=True)
@@ -314,17 +262,39 @@ class ResultadoConsulta:
 
 
 def resumo_para_modelo() -> str:
-    """Texto curto do catálogo para o prompt. Sem CPF e sem nome de coluna física."""
+    """Só id e descrição curta. A primeira etapa do prompt não recebe campo."""
+    return " | ".join(f"{e.id}: {e.significado}" for e in ENTIDADES.values())
+
+
+def campos_para_modelo(ids: list[str]) -> str:
+    """Campos só das entidades escolhidas. O restante do schema não entra no prompt."""
     partes = []
-    for e in ENTIDADES.values():
-        partes.append(f"{e.id} ({e.significado}) campos: {', '.join(e.campos)}.")
+    for i in ids:
+        e = ENTIDADES.get(i)
+        if e is None:
+            continue
+        cols = ", ".join(f"{c.nome} ({c.tipo})" for c in e.campos.values())
+        partes.append(f"{e.id} — {e.rotulo}. Campos: {cols}.")
     return " ".join(partes)
 
 
 def _norm_ent(valor) -> str | None:
     if not isinstance(valor, str):
         return None
-    return _ALIAS_ENT.get(" ".join(valor.strip().lower().split()))
+    chave = " ".join(valor.strip().lower().split())
+    alias = _ALIAS_ENT.get(chave)
+    if alias and alias in ENTIDADES:
+        return alias
+    if chave in ENTIDADES:
+        return chave
+    bruto = valor.strip()
+    if bruto in ENTIDADES:
+        return bruto
+    baixo = bruto.lower()
+    for eid in ENTIDADES:
+        if eid.lower() == baixo:
+            return eid
+    return None
 
 
 def _canon_secretaria(valor: str) -> str:
@@ -413,6 +383,19 @@ def consulta_nominal(c: ConsultaEstruturada) -> bool:
     if c.metrica and c.metrica.funcao in ("soma", "media", "contagem"):
         return False
     return True
+
+
+def consulta_agregada(c: ConsultaEstruturada) -> bool:
+    """Um único número, sem agrupamento e sem campo sensível. Não devolve linha."""
+    ent = ENTIDADES[c.entidade]
+    if c.metrica is None or c.agrupamento:
+        return False
+    if consulta_nominal(c) and c.metrica.funcao in ("max", "min"):
+        return False
+    usados = [f.campo for f in c.filtros] + [o.campo for o in c.ordenacao]
+    if c.metrica.campo:
+        usados.append(c.metrica.campo)
+    return not any(ent.campos[u].sensivel for u in usados if u in ent.campos)
 
 
 def secretaria_fora_do_escopo(c: ConsultaEstruturada, nomes: list[str] | None) -> bool:
@@ -568,13 +551,13 @@ def _expr_ordem(ent: Entidade, met: Metrica | None, campo: str, agrega: bool):
 def _conds(c: ConsultaEstruturada, *, ano: int | None, mes: int | None, secretarias: list[str] | None) -> list:
     ent = ENTIDADES[c.entidade]
     conds = [_predicado(ent.campos[f.campo].coluna, f) for f in c.filtros]
-    if ent.folha:
-        conds.append(Remuneracao.vencimentos > 0)
-        if ent.vigente:
-            conds.append(Remuneracao.ano == ano)
-            conds.append(Remuneracao.mes == mes)
-        if secretarias is not None:
-            conds.append(Remuneracao.secretaria.in_(secretarias))
+    if ent.folha and "vencimentos" in ent.campos:
+        conds.append(ent.campos["vencimentos"].coluna > 0)
+        if ent.vigente and ano is not None and mes is not None:
+            conds.append(ent.campos["ano"].coluna == ano)
+            conds.append(ent.campos["mes"].coluna == mes)
+        if secretarias is not None and ent.secretaria in ent.campos:
+            conds.append(ent.campos[ent.secretaria].coluna.in_(secretarias))
     return conds
 
 
@@ -601,10 +584,11 @@ def _linha(row: dict) -> dict:
     return out
 
 
-def _mes_vigente(db: Session) -> tuple[int, int] | None:
-    stmt = (select(Remuneracao.ano, Remuneracao.mes)
-            .where(Remuneracao.mes != 13, Remuneracao.vencimentos > 0)
-            .order_by(Remuneracao.ano.desc(), Remuneracao.mes.desc()).limit(1))
+def _mes_vigente(db: Session, ent: Entidade) -> tuple[int, int] | None:
+    if not {"ano", "mes", "vencimentos"} <= ent.campos.keys():
+        return None
+    ano, mes, ven = ent.campos["ano"].coluna, ent.campos["mes"].coluna, ent.campos["vencimentos"].coluna
+    stmt = (select(ano, mes).where(mes != 13, ven > 0).order_by(ano.desc(), mes.desc()).limit(1))
     rows = ler(db, stmt)
     if not rows:
         return None
@@ -653,7 +637,7 @@ def executar_estruturada(db: Session, c: ConsultaEstruturada, *, secretarias: li
     ent = ENTIDADES[c.entidade]
     ano = mes = None
     if ent.vigente:
-        achado = _mes_vigente(db)
+        achado = _mes_vigente(db, ent)
         if achado is None:
             return _vazio(c, ent, "sem_carga", {}, None, None)
         ano, mes = achado

@@ -120,6 +120,11 @@ def create_app() -> FastAPI:
             iniciar_em_fundo()
         except Exception as exc:  # noqa: BLE001
             log.warning("releitura_deploy não iniciou: %s", type(exc).__name__)
+        try:
+            from app.chat.schema_cat import aquecer
+            aquecer()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("catálogo do chat não aqueceu: %s", type(exc).__name__)
         if s.app_env != "test":  # aquece o retrato das contagens de /api/conectores em fundo (não bloqueia o boot)
             try:
                 from app.services.contagens_cache import aquecer_em_fundo

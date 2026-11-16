@@ -74,7 +74,7 @@ export default function ChatDados() {
       <header className="page-head">
         <p className="kicker">Consulta</p>
         <h1 id="t-chat">Chat de dados</h1>
-        <p className="sutil">Perguntas sobre a folha, empresas, dívida e as cargas. A resposta traz a fonte, os filtros e a data da carga.</p>
+        <p className="sutil">Perguntas sobre os dados carregados no SIGPMF. A resposta traz a fonte, os filtros e a data da carga.</p>
       </header>
       <form className="form" onSubmit={(e) => { e.preventDefault(); void consultar(pergunta) }}>
         <label htmlFor="pergunta-chat">Pergunta</label>
