@@ -1,8 +1,8 @@
 """Catálogo do chat lido do schema (bronze, silver, gold, ref) e dos comentários do Postgres.
 
 Tabela ou coluna nova entra na próxima consulta (a assinatura muda) ou em até alguns minutos.
-Tabelas internas não entram. CPF e documento não viram campo. Sem regra de domínio, a entidade
-só aceita um número agregado.
+Tabelas internas não entram. CPF e documento não viram campo, também quando vêm colados no nome
+(cpfcnpj, documento). Sem regra de domínio, a entidade só aceita um número agregado.
 """
 import logging
 import re
@@ -253,8 +253,26 @@ def _fonte(tabela: str) -> str | None:
     return None
 
 
+# Nome sem "_" : a palavra colada segue a mesma lista (cpf, nome, endereço).
+# Com "_", só o token inteiro — o que já está no catálogo não muda.
+_COLADA_DOC = ("cpf", "cnpj", "documento")
+_COLADA_SENS = ("nome", "endereco", "logradouro", "cep", "bairro", "email", "telefone", "celular")
+
+
+def _colada(coluna: str) -> set[str]:
+    if not coluna or "_" in coluna:
+        return set()
+    bruto = coluna.lower()
+    if any(not ch.isalnum() for ch in bruto):
+        return set()
+    doc = {p for p in _COLADA_DOC if p in bruto}
+    if doc:
+        return doc
+    return {p for p in _COLADA_SENS if p in bruto}
+
+
 def _classe(coluna: str, coment) -> str:
-    toks = tokens(coluna)
+    toks = tokens(coluna) | _colada(coluna)
     nota = (coment or "").lower()
     if toks & _DOCUMENTO or any(p in nota for p in ("cpf", "cnpj", "senha", "segredo")):
         return "oculta"

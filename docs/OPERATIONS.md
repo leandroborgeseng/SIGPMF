@@ -159,6 +159,27 @@ Escopo: admin e vínculo `TODAS` veem tudo o que a regra do domínio libera. Nos
   atual de um registro, linha citada pela prata, quarentena nem a auditoria. Cada execução fica em `controle.execucoes`
   (tipo `retencao`).
 
+## Cadastro físico de imóveis da SIL (CSV)
+
+A API da SIL não traz o cadastro físico. A carga lê o CSV (latin1, separador `;`, cabeçalho na 1ª linha,
+`;` sobrando no fim de cada linha) e faz upsert em `bronze.sil_imoveis_fisico` por `idfisico`
+(`INSERT ... ON CONFLICT (idfisico) DO UPDATE`). Rodar de novo não duplica: linha igual é ignorada,
+linha mudada é atualizada. Cada execução grava `controle.execucoes` com `sistema='SIL'`,
+`tipo='carga_sil_imoveis_fisico'`, contagens (`lidos`, `novos`, `atualizados`, `ignorados`) e
+`finalizado_em`, no mesmo lugar que o painel e o chat leem a SIL. A mensagem e o log só têm contagens
+(CPF/CNPJ não entra neles). A tabela nasce na migração `0047` no boot do backend (`alembic upgrade head`);
+não usa `SEED_ON_BOOT` e não apaga outras tabelas. O `scripts/reset_sil.py` não mexe nesta tabela.
+
+O `docker-compose.yml` não monta pasta de arquivo no backend (o volume `srvdisk` é só a medição de disco,
+somente leitura) e não há tela de upload deste CSV. O caminho simples é o stdin: o arquivo fica na máquina
+de quem opera e não é gravado no container.
+
+Na pasta do compose, no servidor:
+
+```bash
+docker compose exec -T backend python -m scripts.carga_sil_imoveis --arquivo - --usuario "Nome do operador" < /caminho/no/host/sil.csv
+```
+
 ## Reset da SIL (recomeçar do zero) — `backend/scripts/reset_sil.py`
 
 Pedido do Leandro em 29/10/2026. Só o DevOps roda, e só depois do OK do Leandro no privado. O script **não chama a
