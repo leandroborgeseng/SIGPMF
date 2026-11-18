@@ -1651,3 +1651,41 @@ def cargas_andamento(db: Session = Depends(get_db)):
     Só lê o Postgres (controle), nunca a origem; só contagens e nomes de etapa/tabela (CT12/CT19)."""
     from app.services import andamento
     return andamento.tela(db)
+
+
+# ---------- Upload do CSV de imóveis da SIL (só admin) ----------
+@api.post("/cargas/sil/imoveis", status_code=202)
+async def sil_imoveis_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """CSV do cadastro físico (multipart, campo arquivo). Só admin. A carga roda em background, com o usuário logado."""
+    from app.services import carga_sil_imoveis as ic
+    from app.services import upload_sil_imoveis as up
+    caminho = up.novo_temporario()
+    entregue = False
+    try:
+        await up.salvar_request(req, caminho)
+        with caminho.open(encoding="latin-1", newline="") as stream:
+            ic.validar_cabecalho(stream)
+        ex = ic.abrir_execucao(db, u.email)
+        audita(db, u.email, "sil_imoveis_upload", f"execucao:{ex.id}", {"status": "em_andamento"}, _ip(req))
+        ic.disparar_arquivo(str(caminho), ex.id, u.email)
+        entregue = True
+        return {"id": ex.id, "status": ex.status, "situacao": "em_andamento", "total": 0}
+    except up.ExcedeuLimite:
+        raise HTTPException(413, up.mensagem_grande()) from None
+    except up.EnvioInvalido as exc:
+        raise HTTPException(400, str(exc)) from None
+    except ic.ArquivoInvalido as exc:
+        raise HTTPException(400, f"Arquivo inválido: {exc}") from None
+    finally:
+        if not entregue:
+            caminho.unlink(missing_ok=True)
+
+
+@api.get("/cargas/sil/imoveis/{eid}")
+def sil_imoveis_status(eid: int, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Situação da carga (em andamento, concluído ou erro) e o total de linhas lidas. Só admin."""
+    from app.services import carga_sil_imoveis as ic
+    ex = db.get(Execucao, eid)
+    if ex is None or ex.tipo != ic.TIPO or ex.sistema != ic.SISTEMA:
+        raise HTTPException(404, "Execução não encontrada")
+    return ic.resumo(ex)

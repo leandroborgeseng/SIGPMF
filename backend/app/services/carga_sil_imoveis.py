@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -115,17 +116,25 @@ def _registro(campos: list[str], linha: int) -> dict:
     return reg
 
 
+def _confere_cabecalho(leitor: csv.reader) -> None:
+    header = next(leitor, None)
+    if header is None:
+        raise ArquivoInvalido("arquivo vazio")
+    if _normaliza(header, 1) != list(COLUNAS):
+        raise ArquivoInvalido("cabeçalho diferente do cadastro físico da SIL")
+
+
+def validar_cabecalho(stream: TextIO) -> None:
+    """Confere só a primeira linha (as mesmas colunas da carga). Não lê o restante do arquivo."""
+    _confere_cabecalho(csv.reader(stream, delimiter=";"))
+
+
 def iter_lotes(stream: TextIO, tamanho: int = TAMANHO_LOTE) -> Iterator[tuple[int, int, list[dict]]]:
     """Gera (linhas lidas, duplicadas no lote, registros únicos). O último idfisico do lote prevalece."""
     if tamanho < 1:
         raise ValueError("lote menor que 1")
     leitor = csv.reader(stream, delimiter=";")
-    header = next(leitor, None)
-    if header is None:
-        raise ArquivoInvalido("arquivo vazio")
-    nomes = _normaliza(header, 1)
-    if nomes != list(COLUNAS):
-        raise ArquivoInvalido("cabeçalho diferente do cadastro físico da SIL")
+    _confere_cabecalho(leitor)
     lote: dict[int, dict] = {}
     lidos = dups = 0
     for numero, row in enumerate(leitor, start=2):
@@ -198,10 +207,25 @@ def _falha(db: Session, ex_id: int, exc: Exception) -> None:
     db.commit()
 
 
-def _carregar(db: Session, stream: TextIO, usuario: str | None, lote: int) -> Execucao:
+def _resolver(db: Session, execucao_id: int | None, usuario: str | None) -> Execucao:
+    if execucao_id is None:
+        return _abre(db, usuario)
+    ex = db.get(Execucao, execucao_id)
+    if ex is None:
+        raise LookupError("execução da carga SIL não encontrada")
+    return ex
+
+
+def _carregar(db: Session, stream: TextIO, usuario: str | None, lote: int,
+              execucao_id: int | None = None) -> Execucao:
     lotes = iter_lotes(stream, lote)
-    primeiro = next(lotes, None)  # cabeçalho inválido não abre execução
-    ex = _abre(db, usuario)
+    try:
+        primeiro = next(lotes, None)  # cabeçalho inválido não abre execução
+    except Exception as exc:
+        if execucao_id is not None:
+            _falha(db, execucao_id, exc)
+        raise
+    ex = _resolver(db, execucao_id, usuario)
     try:
         fila = primeiro
         while fila is not None:
@@ -230,9 +254,75 @@ def _carregar(db: Session, stream: TextIO, usuario: str | None, lote: int) -> Ex
 
 
 def carregar(db: Session, origem: str | Path | TextIO, *, usuario: str | None = None,
-             lote: int = TAMANHO_LOTE) -> Execucao:
-    """Lê o CSV (caminho ou stream já em latin1) e grava a bronze. Confirma cada lote."""
+             lote: int = TAMANHO_LOTE, execucao_id: int | None = None) -> Execucao:
+    """Lê o CSV (caminho ou stream já em latin1) e grava a bronze. Confirma cada lote.
+
+    `execucao_id` reaproveita uma execução já aberta (upload HTTP). Sem ele, a execução
+    só é criada depois do cabeçalho — o comportamento do comando de linha.
+    """
     if hasattr(origem, "read"):
-        return _carregar(db, origem, usuario, lote)
+        return _carregar(db, origem, usuario, lote, execucao_id)
     with open(origem, encoding="latin-1", newline="") as stream:
-        return _carregar(db, stream, usuario, lote)
+        return _carregar(db, stream, usuario, lote, execucao_id)
+
+
+def resumo(ex: Execucao) -> dict:
+    """Status da tela: em andamento, concluído ou erro, e o total de linhas lidas."""
+    if ex.status == "em_andamento":
+        situacao = "em_andamento"
+    elif ex.status in ("sucesso", "sem_novidades"):
+        situacao = "concluido"
+    else:
+        situacao = "erro"
+    return {
+        "id": ex.id,
+        "status": ex.status,
+        "situacao": situacao,
+        "total": ex.lidos,
+        "lidos": ex.lidos,
+        "novos": ex.novos,
+        "atualizados": ex.atualizados,
+        "ignorados": ex.ignorados,
+        "duplicados": ex.duplicados,
+        "lotes": ex.lotes,
+        "mensagem": ex.mensagem,
+        "finalizado_em": ex.finalizado_em.isoformat() if ex.finalizado_em else None,
+    }
+
+
+def abrir_execucao(db: Session, usuario: str | None) -> Execucao:
+    """Registra a execução em controle.execucoes (sistema SIL) antes do processamento."""
+    return _abre(db, usuario)
+
+
+def agendar_arquivo(db: Session, caminho: str | Path, usuario: str | None) -> Execucao:
+    """Abre a execução (usuário logado) e roda a mesma carga do comando, em background."""
+    ex = abrir_execucao(db, usuario)
+    disparar_arquivo(str(caminho), ex.id, usuario)
+    return ex
+
+
+def disparar_arquivo(caminho: str, ex_id: int, usuario: str | None) -> None:
+    """Thread daemon. Os testes podem trocar por uma chamada direta."""
+    threading.Thread(target=rodar_arquivo, args=(caminho, ex_id, usuario), daemon=True,
+                     name=f"sil-imoveis-{ex_id}").start()
+
+
+def rodar_arquivo(caminho: str, ex_id: int, usuario: str | None) -> None:
+    """Sessão própria. O temporário some no fim, com sucesso ou erro."""
+    from app.core.db import SessionLocal
+    try:
+        with SessionLocal() as db:
+            carregar(db, caminho, usuario=usuario, execucao_id=ex_id)
+    except Exception as exc:  # noqa: BLE001 — o detalhe fica na execução; o log não leva linha do CSV
+        nivel = log.info if isinstance(exc, ArquivoInvalido) else log.warning
+        nivel("carga do cadastro físico da SIL não concluída (execução %s, %s)", ex_id, type(exc).__name__)
+        try:
+            with SessionLocal() as db:
+                ex = db.get(Execucao, ex_id)
+                if ex is not None and ex.status == "em_andamento":
+                    _falha(db, ex_id, exc)
+        except Exception:  # noqa: BLE001
+            log.warning("não foi possível registrar a falha da carga SIL (execução %s)", ex_id)
+    finally:
+        Path(caminho).unlink(missing_ok=True)
