@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Area, estadoArea, ListaCurta, type EstadoArea, type Fontes, type Leitura } from './AreaFicha'
 import { api, ApiErro, dataBR, dataHoraBR } from './api'
 import { useAuth } from './auth'
@@ -12,7 +12,9 @@ type MatEdu = { escola: string | null; unidade: string | null; turma: string | n
 type Aluno = { menor: boolean; mascarado: boolean; inativo: boolean; matricula_atual: MatEdu | null; historico: MatEdu[]
   responsaveis: { tipo: string | null; nome: string | null; principal: boolean | null }[] }
 export type RespEducacao = { cidadao_id: string; alunos: Aluno[] }
-type Lugar = { cemiterio: string | null; quadra: string | null; sepultura: string | null }
+type Lugar = { cemiterio: string | null; quadra: string | null; sepultura: string | null; cod_cemiterio?: string | null }
+type TitularSep = { nome: string; situacao: 'Ativo' | 'Inativo'; atual: boolean }
+type PainelTitulares = { linha: string; estado: 'carregando' | 'ok' | 'falha'; itens: TitularSep[] }
 export type RespCemiterio = { cidadao_id: string; titular: (Lugar & { ativo: boolean | null })[]; autorizado: (Lugar & { parentesco: string | null })[]
   leilao: (Lugar & { data_venda: string | null; data_liberacao: string | null })[]
   sepultamento: (Lugar & { gaveta: string | null; lado: string | null; data_morte: string | null; data_sepultamento: string | null })[] }
@@ -188,26 +190,82 @@ export function EducacaoCidadao({ educacao, leitura, fontes }: { educacao: RespE
 
 const onde = (l: Lugar) => [l.cemiterio, l.quadra ? `quadra ${l.quadra}` : null, l.sepultura ? `sepultura ${l.sepultura}` : null].filter(Boolean).join(' · ') || 'Local não informado'
 
-/** Túmulos ligados ao CPF do cidadão e sepultamento (só com óbito confirmado por pessoa). */
-export function CemiterioCidadao({ cemiterio, leitura, fontes }: { cemiterio: RespCemiterio | null | false; leitura: Leitura; fontes?: Fontes | null | false }) {
+/** Só nome, situação e se é o atual. Qualquer outro campo da resposta (documento, data, motivo) é descartado. */
+function soTitular(x: unknown): TitularSep | null {
+  if (!x || typeof x !== 'object') return null
+  const o = x as Record<string, unknown>
+  const nome = typeof o.nome === 'string' ? o.nome.trim() : ''
+  const situacao = o.situacao === 'Ativo' || o.situacao === 'Inativo' ? o.situacao : null
+  if (!nome || !situacao || typeof o.atual !== 'boolean') return null
+  return { nome, situacao, atual: o.atual }
+}
+
+function PainelDaSepultura({ painel }: { painel: PainelTitulares }) {
+  if (painel.estado === 'carregando') return <p className="sutil titulares-nota">Carregando titulares…</p>
+  if (painel.estado === 'falha') return <p className="sutil titulares-nota">Não foi possível ler os titulares desta sepultura.</p>
+  if (painel.itens.length === 0) return <p className="sutil titulares-nota">Nenhum titular nesta sepultura.</p>
+  return (
+    <ul className="titulares-sepultura" aria-label="Titulares da sepultura">
+      {painel.itens.map((t, i) => (
+        <li key={`${i}-${t.nome}`} className={t.atual ? 'titular-atual' : undefined} aria-current={t.atual ? 'true' : undefined}>
+          <span><strong>{t.nome}</strong></span>
+          <span className={`selo ${t.atual ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />{t.situacao}{t.atual ? ' · atual' : ''}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Túmulos ligados ao CPF do cidadão e sepultamento (só com óbito confirmado por pessoa).
+ * Clicar na sepultura lista todos os titulares dela, com o atual (Ativo) destacado e primeiro. */
+export function CemiterioCidadao({ id, cemiterio, leitura, fontes }: { id?: string; cemiterio: RespCemiterio | null | false; leitura: Leitura; fontes?: Fontes | null | false }) {
   const c = cemiterio || null
   const tumulos = (c?.titular.length ?? 0) + (c?.autorizado.length ?? 0) + (c?.leilao.length ?? 0)
+  const [painel, setPainel] = useState<PainelTitulares | null>(null)
+  const pedido = useRef(0)
+  const abrir = (linhaId: string, lugar: Lugar) => {
+    if (!id) return
+    if (painel?.linha === linhaId && painel.estado !== 'carregando') { setPainel(null); return }
+    const n = ++pedido.current
+    setPainel({ linha: linhaId, estado: 'carregando', itens: [] })
+    const q = new URLSearchParams({ cod: lugar.cod_cemiterio ?? '', quadra: lugar.quadra ?? '', sepultura: lugar.sepultura ?? '' })
+    api<{ titulares?: unknown }>(`/gold/cidadaos/${encodeURIComponent(id)}/cemiterio/titulares?${q}`).then((r) => {
+      if (pedido.current !== n) return
+      const itens = (Array.isArray(r?.titulares) ? r.titulares : []).flatMap((x) => { const t = soTitular(x); return t ? [t] : [] })
+      itens.sort((a, b) => Number(b.atual) - Number(a.atual) || a.nome.localeCompare(b.nome, 'pt'))
+      setPainel({ linha: linhaId, estado: 'ok', itens })
+    }).catch(() => { if (pedido.current === n) setPainel({ linha: linhaId, estado: 'falha', itens: [] }) })
+  }
+  const linha = (chave: string, lugar: Lugar, extra: ReactNode, selo: string | null, seloClasse: string, inativo = false) => (
+    <li key={chave} className={`sepultura-item${inativo ? ' inativo' : ''}`}>
+      <span>
+        {id ? (
+          <button type="button" className="sepultura-btn" aria-expanded={painel?.linha === chave} onClick={() => abrir(chave, lugar)}>
+            <strong>{onde(lugar)}</strong>
+          </button>
+        ) : <strong>{onde(lugar)}</strong>}
+        {extra}
+      </span>
+      {selo && <span className={`selo ${seloClasse}`}><i aria-hidden="true" />{selo}</span>}
+      {painel?.linha === chave && <PainelDaSepultura painel={painel} />}
+    </li>
+  )
   return (
     <section className="cartao portal-bloco" aria-labelledby="t-cem-cid">
       <h3 id="t-cem-cid">Cemitério</h3>
       <Area id="tumulos" titulo="Túmulos" estado={estadoArea(leitura, tumulos, fontes, 'cemiterio')} total={tumulos} vazio="Nenhum túmulo ligado ao CPF deste cidadão.">
         {c && (
           <ul className="impostos-imoveis" aria-label="Túmulos">
-            {c.titular.map((t, i) => <li key={`t${i}`} className={t.ativo === false ? 'inativo' : ''}><span><strong>{onde(t)}</strong></span><span className={`selo ${t.ativo === false ? 'neutro' : 'sucesso'}`}><i aria-hidden="true" />{t.ativo === false ? 'Foi titular' : 'Titular'}</span></li>)}
-            {c.autorizado.map((t, i) => <li key={`a${i}`}><span><strong>{onde(t)}</strong>{t.parentesco ? <span className="sutil"> · {t.parentesco}</span> : null}</span><span className="selo neutro"><i aria-hidden="true" />Autorizado</span></li>)}
-            {c.leilao.map((t, i) => <li key={`l${i}`}><span><strong>{onde(t)}</strong>{t.data_venda ? <span className="sutil"> · em {dataBR(t.data_venda)}</span> : null}</span><span className="selo neutro"><i aria-hidden="true" />Comprado em leilão</span></li>)}
+            {c.titular.map((t, i) => linha(`t${i}`, t, null, t.ativo === false ? 'Foi titular' : 'Titular', t.ativo === false ? 'neutro' : 'sucesso', t.ativo === false))}
+            {c.autorizado.map((t, i) => linha(`a${i}`, t, t.parentesco ? <span className="sutil"> · {t.parentesco}</span> : null, 'Autorizado', 'neutro'))}
+            {c.leilao.map((t, i) => linha(`l${i}`, t, t.data_venda ? <span className="sutil"> · em {dataBR(t.data_venda)}</span> : null, 'Comprado em leilão', 'neutro'))}
           </ul>
         )}
       </Area>
       <Area id="sepultamento" titulo="Sepultamento" estado={estadoArea(leitura, c?.sepultamento.length ?? 0, fontes, 'cemiterio')} vazio="Nenhum sepultamento confirmado para este cidadão.">
         {c && (
           <ul className="impostos-imoveis" aria-label="Sepultamento">
-            {c.sepultamento.map((s, i) => <li key={i}><span><strong>{onde(s)}</strong><span className="sutil">{s.gaveta ? ` · gaveta ${s.gaveta}` : ''}{s.lado ? ` · lado ${s.lado}` : ''}{s.data_sepultamento ? ` · sepultado em ${dataBR(s.data_sepultamento)}` : ''}</span></span></li>)}
+            {c.sepultamento.map((s, i) => linha(`s${i}`, s, <span className="sutil">{s.gaveta ? ` · gaveta ${s.gaveta}` : ''}{s.lado ? ` · lado ${s.lado}` : ''}{s.data_sepultamento ? ` · sepultado em ${dataBR(s.data_sepultamento)}` : ''}</span>, null, 'neutro'))}
           </ul>
         )}
       </Area>

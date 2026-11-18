@@ -445,6 +445,7 @@ PESSOAIS = {
     ("GET", "/api/silver/empresas"),  # CN4: MEI/empresário individual é pessoa física
     ("GET", "/api/gold/cidadaos/{cid}"), ("GET", "/api/gold/cidadaos/{cid}/tributario"),
     ("GET", "/api/gold/cidadaos/{cid}/cemiterio"),
+    ("GET", "/api/gold/cidadaos/{cid}/cemiterio/titulares"),
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),

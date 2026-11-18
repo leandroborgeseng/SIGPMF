@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import axe from 'axe-core'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -100,5 +101,33 @@ describe('blocos com registro', () => {
     expect(screen.getByText('EM Fictícia · turma 5A')).toBeVisible()
     expect(screen.getByText('EM Fictícia · turma 4A')).toBeVisible()
     expect(screen.getByText(/dados pessoais mascarados/)).toBeVisible()
+  })
+  it('ao clicar na sepultura lista titulares e destaca o atual, sem documento', async () => {
+    const corpo = { titulares: [
+      { nome: 'AAA Inativo Ficticio', situacao: 'Inativo', atual: false, cpf: '52998224725', inclusao: '2019-04-04', motivo: 'venda oculta', documento: '99988877766' },
+      { nome: 'Zezinho Atual Ficticio', situacao: 'Ativo', atual: true, cpfcnpjresponsavel: '11144477735' },
+    ] }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(corpo), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    const l = { cemiterio: 'Municipal', quadra: 'QZ77', sepultura: 'SZ77', cod_cemiterio: '77' }
+    render(<CemiterioCidadao id="c1" leitura="ok" fontes={tudo} cemiterio={{ cidadao_id: 'c1', titular: [{ ...l, ativo: true }], autorizado: [], leilao: [], sepultamento: [] }} />)
+    await userEvent.click(screen.getByRole('button', { name: /sepultura SZ77/ }))
+    const lista = await screen.findByRole('list', { name: 'Titulares da sepultura' })
+    const itens = within(lista).getAllByRole('listitem')
+    expect(itens[0]).toHaveTextContent('Zezinho Atual Ficticio')
+    expect(itens[0]).toHaveClass('titular-atual')
+    expect(itens[0]).toHaveTextContent('Ativo · atual')
+    expect(itens[1]).toHaveTextContent('AAA Inativo Ficticio')
+    expect(itens[1]).toHaveTextContent('Inativo')
+    expect(itens[1]).not.toHaveClass('titular-atual')
+    expect(screen.queryByText('52998224725')).toBeNull()
+    expect(screen.queryByText('11144477735')).toBeNull()
+    expect(screen.queryByText('99988877766')).toBeNull()
+    expect(screen.queryByText('2019-04-04')).toBeNull()
+    expect(screen.queryByText('venda oculta')).toBeNull()
+    const url = String(vi.mocked(fetch).mock.calls[0][0])
+    expect(url).toContain('cod=77')
+    expect(url).toContain('quadra=QZ77')
+    expect(url).toContain('sepultura=SZ77')
+    expect(url.toLowerCase()).not.toContain('cpf')
   })
 })

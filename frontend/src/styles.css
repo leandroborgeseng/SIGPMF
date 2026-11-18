@@ -265,6 +265,14 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .impostos-imoveis li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; }
 .impostos-imoveis li.inativo { background: var(--surface-2); color: var(--ink-2); }
+.impostos-imoveis li.sepultura-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.sepultura-btn { margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.sepultura-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.titulares-nota { grid-column: 1 / -1; margin: 8px 0 0; }
+.titulares-sepultura { grid-column: 1 / -1; list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.titulares-sepultura li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; }
+.titulares-sepultura li.titular-atual { background: var(--brand-soft); border-color: var(--brand); box-shadow: inset 3px 0 0 var(--brand); }
 
 /* Onda 4: painéis de gestão (mesmo visual do canvas) */
 .painel { display: grid; gap: 16px; }

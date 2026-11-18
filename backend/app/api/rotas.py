@@ -867,6 +867,21 @@ def cemiterio_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_at
     return {"cidadao_id": cid, **r}
 
 
+@api.get("/gold/cidadaos/{cid}/cemiterio/titulares")
+def titulares_da_sepultura(cid: str, req: Request, cod: str = "", quadra: str = "", sepultura: str = "",
+                           u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Titulares da sepultura (ativos e inativos). Mesma autorização da ficha de cemitério.
+
+    Só nome, situação (Ativo/Inativo) e se é o atual. Sem CPF, documento, data ou motivo.
+    """
+    from app.services import ficha_cidadao
+    acs.exige(db, u, req, "cemiterio", dominios=["cemiterio"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    itens = ficha_cidadao.titulares_sepultura(db, cod, quadra, sepultura)
+    audita(db, u.email, "consulta_cemiterio_titulares", f"cidadao:{cid}", {"total": len(itens)}, _ip(req))
+    return {"titulares": itens}
+
+
 @api.get("/gold/cidadaos/{cid}")
 def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     sec = acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid),
@@ -1049,7 +1064,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_linha_do_tempo": "Linha do tempo",
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))
