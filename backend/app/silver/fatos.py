@@ -22,6 +22,7 @@ from app.models.camadas import (
     Vacinacao,
     Vinculo,
 )
+from app.silver.endereco_imovel import mapa_enderecos, so_digitos, titulo_posse
 from app.silver.tributario import _d, _grava, _i, _s, _ultimas
 
 NOMES_TRIBUTO = {"001": "IPTU", "002": "ISS", "003": "Taxas"}
@@ -104,9 +105,10 @@ def _eventos(db: Session, unidades: dict, dims: dict):
     for v in db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id.is_not(None), Vacinacao.data.is_not(None))):
         yield Evento(cidadao_id=v.cidadao_id, data=v.data, area="saude", tipo="vacina",
                      titulo=f"Vacina {v.vacina}{' · ' + v.dose if v.dose else ''}"[:300], fonte="Saúde")
+    enderecos = mapa_enderecos(db)
     for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id.is_not(None), ImovelPossuidor.desde.is_not(None))):
         yield Evento(cidadao_id=p.cidadao_id, data=p.desde.date(), area="impostos", tipo="posse",
-                     titulo=f"Passou a constar como possuidor do imóvel {p.codi}", fonte="IPTU")
+                     titulo=titulo_posse(p.codi, enderecos.get(so_digitos(p.codi))), fonte="IPTU")
     for x in db.scalars(select(Lancamento).where(Lancamento.cidadao_id.is_not(None), Lancamento.vencimento.is_not(None))):
         trib = NOMES_TRIBUTO.get(x.tributo or "", "Tributo")
         if x.pago and x.pagamento:
