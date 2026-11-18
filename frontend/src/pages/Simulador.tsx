@@ -216,7 +216,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
         <SaudeCidadao saude={saude} leitura={leituras.saude} fontes={fontes} />
         <div className="portal-coluna">
           <EducacaoCidadao educacao={educacao} leitura={leituras.educacao} fontes={fontes} />
-          <CemiterioCidadao cemiterio={cemiterio} leitura={leituras.cemiterio} fontes={fontes} />
+          <CemiterioCidadao id={id} cemiterio={cemiterio} leitura={leituras.cemiterio} fontes={fontes} />
         </div>
       </div>
       <ImpostosCidadao id={id} dados={trib} leitura={leituras.tributario} fontes={fontes} />

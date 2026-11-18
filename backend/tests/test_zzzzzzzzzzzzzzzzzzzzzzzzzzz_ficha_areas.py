@@ -49,7 +49,7 @@ def test_cemiterio_sem_dado_de_terceiro_e_auditado(client, tokens, db):
     d = r.json()
     assert [(t["sepultura"], t["ativo"]) for t in d["titular"]] == [("S1", True), ("S2", False)]
     assert d["titular"][0]["cemiterio"] == "Municipal Ficticio"
-    assert d["autorizado"] == [{"cemiterio": "Cemitério 9", "quadra": "Q3", "sepultura": "S3", "parentesco": "Filho"}]
+    assert d["autorizado"] == [{"cod_cemiterio": "9", "cemiterio": "Cemitério 9", "quadra": "Q3", "sepultura": "S3", "parentesco": "Filho"}]
     assert d["leilao"][0]["data_venda"] == "2024-02-02"
     assert d["sepultamento"][0]["data_sepultamento"] == "2020-01-02"
     for proibido in ("OUTRO NOME", "RUA SECRETA", "12345678909"):
