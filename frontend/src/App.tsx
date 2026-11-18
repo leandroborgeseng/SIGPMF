@@ -4,6 +4,7 @@ import { useAuth } from './auth'
 import Layout from './Layout'
 import AcessoSecretaria from './pages/AcessoSecretaria'
 import Cargas from './pages/Cargas'
+import ImportarSil from './pages/ImportarSil'
 import ChatDados from './pages/ChatDados'
 import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/conectores" element={<Conectores />} />
         <Route path="/cargas" element={<Cargas />} />
+        <Route path="/cargas/sil" element={<ImportarSil />} />
         <Route path="/simulador" element={<Simulador />} />
         <Route path="/explorar" element={<ExplorarDados />} />
         <Route path="/painel" element={<PainelGeral />} />

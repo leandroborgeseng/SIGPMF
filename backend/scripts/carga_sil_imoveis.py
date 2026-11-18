@@ -10,6 +10,8 @@ Dentro do container do backend (stdin não deixa o arquivo no disco do container
 Arquivo já visível no container:
 
     python -m scripts.carga_sil_imoveis --arquivo /caminho/sil.csv --usuario "Nome do operador"
+
+O mesmo CSV pode ser enviado em Cargas > Importar imóveis SIL (só administrador).
 """
 from __future__ import annotations
 

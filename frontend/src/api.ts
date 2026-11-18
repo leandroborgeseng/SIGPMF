@@ -21,7 +21,9 @@ export function salvaSessao(s: Sessao | null) {
 
 export async function api<T>(caminho: string, opcoes: RequestInit = {}): Promise<T> {
   const s = sessaoAtual()
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const form = typeof FormData !== 'undefined' && opcoes.body instanceof FormData
+  const headers: Record<string, string> = {}
+  if (!form) headers['Content-Type'] = 'application/json'
   if (s) headers.Authorization = `Bearer ${s.token}`
   const r = await fetch(`/api${caminho}`, { ...opcoes, headers: { ...headers, ...(opcoes.headers as object) } })
   if (r.status === 401 && caminho !== '/auth/login') {
