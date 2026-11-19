@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import axe from 'axe-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ImpostosCidadao from '../ImpostosCidadao'
+import ImpostosCidadao, { linhaImovel } from '../ImpostosCidadao'
 import { salvaSessao } from '../api'
 
 const resp = {
@@ -59,6 +59,35 @@ describe('Impostos e imóveis (TR7)', () => {
     expect(within(lista).getByText('Sem débito')).toBeVisible()
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations.map((v) => v.id)).toEqual([])
+  })
+  it('mostra o endereço na posse atual e na anterior, e mantém a linha sem endereço', () => {
+    const base = { cd_bairro: null, iptu_anual: null, tipo_posse: 1 }
+    const imoveis = [
+      { ...base, codi: '05555560066901', inscricao: '05555560066901', numero: '00901', complemento: null, desde: '2024-06-26T00:00:00', ate: null, ativo: true, endereco: 'Rua Exemplo de Toledo, 266 - Vila Exemplo' },
+      { ...base, codi: '06666670077012', inscricao: '06666670077012', numero: '00802', complemento: 'Fundos', desde: '2023-01-15T00:00:00', ate: null, ativo: true, endereco: null },
+      { ...base, codi: '07777780088123', inscricao: '07777780088123', numero: '00703', complemento: null, desde: '2018-01-01T00:00:00', ate: '2021-08-25T00:00:00', ativo: false, endereco: 'Rua das Flores Ficticias, 42 - Jardim Exemplo' },
+      { ...base, codi: '08888890099234', inscricao: '08888890099234', numero: '00604', complemento: null, desde: '2010-05-02T00:00:00', ate: '2019-03-01T00:00:00', ativo: false, endereco: '   ' },
+    ]
+    const comAtual = linhaImovel(imoveis[0])
+    const semAtual = linhaImovel(imoveis[1])
+    const comAnterior = linhaImovel(imoveis[2])
+    const semAnterior = linhaImovel(imoveis[3])
+    expect(`${comAtual.titulo}${comAtual.detalhe}`).toBe('Imóvel · Inscrição 05555560066901 · Rua Exemplo de Toledo, 266 - Vila Exemplo · desde 26/06/2024')
+    expect(`${semAtual.titulo}${semAtual.detalhe}`).toBe('Fundos, 00802 · Inscrição 06666670077012 · desde 15/01/2023')
+    expect(`${comAnterior.titulo}${comAnterior.detalhe}`).toBe('Imóvel · Inscrição 07777780088123 · Rua das Flores Ficticias, 42 - Jardim Exemplo · até 25/08/2021')
+    expect(`${semAnterior.titulo}${semAnterior.detalhe}`).toBe('Imóvel, 00604 · Inscrição 08888890099234 · até 01/03/2019')
+    expect(comAtual.detalhe).not.toContain('00901')
+    expect(comAnterior.detalhe).not.toContain('00703')
+    render(<ImpostosCidadao id="c1" dados={{ ...resp, totais: { ...resp.totais, imoveis: 2 }, imoveis }} />)
+    const lista = screen.getByRole('list', { name: 'Imóveis' })
+    expect(lista).toHaveTextContent('Imóvel · Inscrição 05555560066901 · Rua Exemplo de Toledo, 266 - Vila Exemplo · desde 26/06/2024')
+    expect(lista).toHaveTextContent('Fundos, 00802 · Inscrição 06666670077012 · desde 15/01/2023')
+    expect(lista).toHaveTextContent('Imóvel · Inscrição 07777780088123 · Rua das Flores Ficticias, 42 - Jardim Exemplo · até 25/08/2021')
+    expect(lista).toHaveTextContent('Imóvel, 00604 · Inscrição 08888890099234 · até 01/03/2019')
+    expect(within(lista).getAllByText('Posse atual')).toHaveLength(2)
+    expect(within(lista).getAllByText('Posse anterior')).toHaveLength(2)
+    expect(lista).not.toHaveTextContent('00901')
+    expect(lista).not.toHaveTextContent('00703')
   })
   it('sem dados e com erro não quebra', async () => {
     mock(200, { ...resp, imoveis: [], lancamentos: [], dividas: [] })

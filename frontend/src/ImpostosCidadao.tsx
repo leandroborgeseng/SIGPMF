@@ -5,7 +5,18 @@ import { Area, estadoArea, type Fontes, type Leitura } from './AreaFicha'
 type Totais = { imoveis: number; em_aberto: number; parcelas_em_aberto: number; vencido: number; parcelas_vencidas: number
   divida_ativa: number; inscricoes_divida: number; protestada: boolean; lancamentos?: number }
 type ImovelT = { codi: string; inscricao: string | null; numero: string | null; complemento: string | null; cd_bairro: number | null
-  iptu_anual: number | null; tipo_posse: number | null; desde: string | null; ate: string | null; ativo: boolean }
+  iptu_anual: number | null; tipo_posse: number | null; desde: string | null; ate: string | null; ativo: boolean
+  endereco?: string | null }
+
+/** Com endereço da SIL, o número da casa (NR_CASE) não se repete: já está em "Rua, 123". Sem endereço, a linha fica como hoje. */
+export function linhaImovel(i: ImovelT): { titulo: string; detalhe: string } {
+  const insc = i.inscricao ?? i.codi
+  const quando = i.ativo ? `desde ${dataBR(i.desde)}` : `até ${dataBR(i.ate)}`
+  const endereco = (i.endereco ?? '').trim()
+  if (endereco) return { titulo: 'Imóvel', detalhe: ` · Inscrição ${insc} · ${endereco} · ${quando}` }
+  const titulo = `${i.complemento || 'Imóvel'}${i.numero ? `, ${i.numero}` : ''}`
+  return { titulo, detalhe: ` · Inscrição ${insc} · ${quando}` }
+}
 type LancT = { exercicio: number; tributo: string | null; parcela: number | null; codi: string | null; vencimento: string | null
   valor: number | null; valor_pago: number | null; pagamento: string | null; pago: boolean; situacao: string }
 type DivT = { codi: string; sequ?: string | null; ano: number | null; natureza: number | null; natureza_nome?: string | null; origem?: string | null; inscrita_em: string | null
@@ -55,15 +66,18 @@ export default function ImpostosCidadao({ id, dados, leitura, fontes }: { id: st
       )}
       <Area id="imoveis" titulo="Imóveis" estado={estadoArea(l, d?.imoveis.length ?? 0, fontes, 'imoveis')} total={d?.imoveis.length} vazio="Nenhum imóvel ligado a este cidadão.">
         <ul className="impostos-imoveis" aria-label="Imóveis">
-          {d?.imoveis.map((i) => (
-            <li key={`${i.codi}-${i.desde}`} className={i.ativo ? '' : 'inativo'}>
-              <div>
-                <strong>{i.complemento || 'Imóvel'}{i.numero ? `, ${i.numero}` : ''}</strong>
-                <span className="sutil"> · Inscrição {i.inscricao ?? i.codi} · {i.ativo ? `desde ${dataBR(i.desde)}` : `até ${dataBR(i.ate)}`}</span>
-              </div>
-              <span className={`selo ${i.ativo ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />{i.ativo ? 'Posse atual' : 'Posse anterior'}</span>
-            </li>
-          ))}
+          {d?.imoveis.map((i) => {
+            const linha = linhaImovel(i)
+            return (
+              <li key={`${i.codi}-${i.desde}`} className={i.ativo ? '' : 'inativo'}>
+                <div>
+                  <strong>{linha.titulo}</strong>
+                  <span className="sutil">{linha.detalhe}</span>
+                </div>
+                <span className={`selo ${i.ativo ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />{i.ativo ? 'Posse atual' : 'Posse anterior'}</span>
+              </li>
+            )
+          })}
         </ul>
       </Area>
       <Area id="lancamentos" titulo="Impostos e taxas lançados" estado={estadoArea(l, totalLancs, fontes, 'lancamentos')} total={totalLancs} vazio="Nenhum imposto ou taxa lançado para este cidadão.">

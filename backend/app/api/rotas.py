@@ -939,12 +939,17 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from datetime import date as _date
 
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    from app.silver.endereco_imovel import endereco_do_imovel, enderecos_por_inscricoes
     acs.exige(db, u, req, "tributario", dominios=["tributario"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
                              .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
     imoveis = {i.codi: i for i in db.scalars(select(Imovel).where(Imovel.codi.in_([p.codi for p in posses])))} if posses else {}
+    # Rua, número e bairro da SIL, numa consulta para todas as posses (atual e anterior).
+    chaves_end = [p.codi for p in posses]
+    chaves_end += [i.inscricao for i in imoveis.values() if i.inscricao]
+    enderecos = enderecos_por_inscricoes(db, chaves_end)
     lancs = list(db.scalars(select(Lancamento).where(Lancamento.cidadao_id == cid)
                             .order_by(Lancamento.vencimento.desc().nulls_last()).limit(200)))
     divs = list(db.scalars(select(DividaAtiva).where(DividaAtiva.cidadao_id == cid).order_by(DividaAtiva.ano.desc())))
@@ -972,6 +977,7 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                      "complemento": getattr(imoveis.get(p.codi), "complemento", None),
                      "cd_bairro": getattr(imoveis.get(p.codi), "cd_bairro", None),
                      "iptu_anual": f(getattr(imoveis.get(p.codi), "iptu_anual", None)),
+                     "endereco": endereco_do_imovel(enderecos, p.codi, getattr(imoveis.get(p.codi), "inscricao", None)),
                      "tipo_posse": p.tipo_posse, "desde": p.desde, "ate": p.ate, "ativo": p.ativo} for p in posses],
         "lancamentos": [{"exercicio": x.exercicio, "tributo": x.tributo, "parcela": x.parcela, "codi": x.codi,
                          "vencimento": x.vencimento, "valor": f(x.valor), "valor_pago": f(x.valor_pago),
