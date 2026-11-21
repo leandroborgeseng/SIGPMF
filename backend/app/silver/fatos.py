@@ -8,7 +8,7 @@
 """
 from datetime import date
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.models.camadas import (
@@ -22,7 +22,7 @@ from app.models.camadas import (
     Vacinacao,
     Vinculo,
 )
-from app.silver.endereco_imovel import mapa_enderecos, so_digitos, titulo_posse
+from app.silver.endereco_imovel import endereco_do_imovel, enderecos_por_inscricoes, titulo_posse
 from app.silver.tributario import _d, _grava, _i, _s, _ultimas
 
 NOMES_TRIBUTO = {"001": "IPTU", "002": "ISS", "003": "Taxas"}
@@ -105,10 +105,21 @@ def _eventos(db: Session, unidades: dict, dims: dict):
     for v in db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id.is_not(None), Vacinacao.data.is_not(None))):
         yield Evento(cidadao_id=v.cidadao_id, data=v.data, area="saude", tipo="vacina",
                      titulo=f"Vacina {v.vacina}{' · ' + v.dose if v.dose else ''}"[:300], fonte="Saúde")
-    enderecos = mapa_enderecos(db)
-    for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id.is_not(None), ImovelPossuidor.desde.is_not(None))):
+    # Uma consulta na SIL para todas as posses: CODI e inscrição, pad 12/13↔14 (a mesma da ficha).
+    posses = list(db.scalars(select(ImovelPossuidor).where(
+        ImovelPossuidor.cidadao_id.is_not(None), ImovelPossuidor.desde.is_not(None))))
+    inscricoes: dict[str, str | None] = {}
+    if posses:
+        rows = db.execute(text("SELECT codi, inscricao FROM silver.imoveis WHERE codi = ANY(:codis)"),
+                          {"codis": list({p.codi for p in posses})}).all()
+        inscricoes = {codi: insc for codi, insc in rows}
+    chaves = [p.codi for p in posses]
+    chaves += [insc for insc in inscricoes.values() if insc]
+    enderecos = enderecos_por_inscricoes(db, chaves)
+    for p in posses:
         yield Evento(cidadao_id=p.cidadao_id, data=p.desde.date(), area="impostos", tipo="posse",
-                     titulo=titulo_posse(p.codi, enderecos.get(so_digitos(p.codi))), fonte="IPTU")
+                     titulo=titulo_posse(p.codi, endereco_do_imovel(enderecos, p.codi, inscricoes.get(p.codi))),
+                     fonte="IPTU")
     for x in db.scalars(select(Lancamento).where(Lancamento.cidadao_id.is_not(None), Lancamento.vencimento.is_not(None))):
         trib = NOMES_TRIBUTO.get(x.tributo or "", "Tributo")
         if x.pago and x.pagamento:
