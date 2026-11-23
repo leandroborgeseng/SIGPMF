@@ -10,6 +10,8 @@ import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
 import Login from './pages/Login'
+import PlanoGoverno from './pages/PlanoGoverno'
+import PortalCidadao from './pages/PortalCidadao'
 import Simulador from './pages/Simulador'
 import Politicas from './pages/Politicas'
 import Vinculos from './pages/Vinculos'
@@ -31,9 +33,11 @@ function Protegido({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <Routes>
+      <Route path="/cidadao" element={<PortalCidadao />} />
       <Route path="/login" element={<Login />} />
       <Route element={<Protegido><Layout /></Protegido>}>
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/plano-governo" element={<PlanoGoverno />} />
         <Route path="/conectores" element={<Conectores />} />
         <Route path="/cargas" element={<Cargas />} />
         <Route path="/cargas/sil" element={<ImportarSil />} />

@@ -45,6 +45,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: pytest -q
+      - name: Plano de Governo (domínio e HTTP isolados)
+        run: PYTHONPATH=. pytest -q tests_unit
 
   frontend:
     name: Frontend (eslint + tsc + vitest + build)
