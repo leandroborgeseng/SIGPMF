@@ -38,3 +38,9 @@ Sem o adaptador configurado, as telas mostram indisponibilidade de emissão/cons
 29 testes isolados de backend: plano, relacionamentos, tarefas, autorização, concorrência/versionamento, histórico, identificação, código de uso único, expiração/tentativas, limite por CPF, sessão, CSRF, titularidade e bloqueio de URLs de guias não autorizadas. 252 testes de frontend passaram; TypeScript, ESLint, Ruff e build Vite passaram. Fluxos de ação → projeto → tarefa e portal em viewport de 390px foram verificados no navegador. A demonstração não apresentou rolagem horizontal da página.
 
 A suíte completa do backend PostgreSQL, migrações executadas e smoke Docker não foram rodados localmente por ausência desses serviços. O CI existente usa PostgreSQL e Docker; recebeu também etapa específica para `tests_unit`. A prévia local usa SQLite e cadastros sintéticos. Nenhuma migração, envio de e-mail, guia ou pagamento ocorreu no ambiente oficial.
+
+## Teste sem código de e-mail ou celular
+
+Entre primeiro no SIGPMF com perfil **admin**, no mesmo navegador e domínio, e abra **Serviços ao cidadão → Portal do Cidadão**. A entrada mostrará **Acesso de teste · administrador SIGPMF** e o botão **Entrar para testar, sem código**. Informe CPF, nascimento e nome completo da mãe conforme as bases internas. Esse fluxo não depende de SMTP ou de contato cadastrado.
+
+O endpoint `POST /api/portal/acesso-teste` exige o JWT ativo de um administrador do SIGPMF e confere os três dados cadastrais. Cria sessão de 15 minutos identificada como teste, com a mesma proteção de cookie, CSRF e titularidade, e registra `portal_acesso_teste` com o administrador autorizador. O modo aparece em um aviso persistente na área autenticada. Usuários anônimos e outros perfis não podem dispensar o código; o formulário público segue com confirmação por contato. Não é preciso alterar APP_ENV ou desativar proteções do restante da aplicação.

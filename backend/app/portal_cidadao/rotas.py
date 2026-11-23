@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.core.audit import audita
 from app.core.config import get_settings
 from app.core.db import get_db
+from app.core.security import ADMIN
 from app.identity.cpf import mascara, normaliza, valido
 from app.models.camadas import Cidadao, DadoGold, Identificador, Imovel, ImovelPossuidor, Lancamento
+from app.models.controle import Usuario
 from app.portal_cidadao import servico as s
 from app.portal_cidadao.modelos import AcessoCidadao
 
@@ -95,6 +97,25 @@ def identificar(d: Identificar, req: Request, tarefas: BackgroundTasks, response
     return {"desafio": desafio, "mensagem": s.GENERICA, "expira_segundos": 600}
 
 
+@portal.post("/acesso-teste")
+def acesso_teste(d: Identificar, req: Request, response: Response,
+                 administrador: Usuario = Depends(ADMIN), db: Session = Depends(get_db)):
+    """Acesso de homologação autorizado pelo admin já autenticado, sem dispensar cadastro conferido."""
+    s.limitar(db, req, d.cpf)
+    cid, _ = s.conferir(db, d.cpf, d.nascimento, d.nome_mae, exigir_contato=False)
+    if not cid:
+        raise HTTPException(422, "Os dados não conferem com o cadastro municipal. Confira CPF, nascimento e nome completo da mãe.")
+    token = s.criar_sessao(db, cid, teste=True)
+    audita(db, administrador.email, "portal_acesso_teste", f"cidadao:{cid}",
+           {"autorizacao": "administrador_sigpmf", "sem_codigo": True},
+           req.client.host if req.client else None, commit=False)
+    db.commit()
+    response.set_cookie(s.COOKIE, token, max_age=900, httponly=True, secure=get_settings().app_env == "prod",
+                        samesite="strict", path="/api/portal")
+    response.headers["Cache-Control"] = "no-store"
+    return {"autenticado": True, "modo_teste": True, "csrf": s.resumo_hash("csrf", token)}
+
+
 @portal.post("/confirmar")
 def confirmar(d: Confirmar, req: Request, response: Response, db: Session = Depends(get_db)):
     s.limitar(db, req)
@@ -145,7 +166,7 @@ def meus_dados(req: Request, response: Response, db: Session = Depends(get_db)):
     vencidos = [x for x in abertos if x.vencimento and x.vencimento < hoje]
     audita(db, "portal", "portal_consulta_propria", f"cidadao:{c.cidadao_id}", {}, req.client.host if req.client else None)
     response.headers["Cache-Control"] = "no-store"
-    return {"nome": c.nome, "cpf": mascara(cpf), "nascimento": c.data_nascimento, "atualizado_em": c.atualizado_em,
+    return {"modo_teste": r.tipo == "sessao_teste", "nome": c.nome, "cpf": mascara(cpf), "nascimento": c.data_nascimento, "atualizado_em": c.atualizado_em,
             "cadastro": [{"campo": d.campo, "valor": d.valor, "fonte": d.sistema, "atualizado_em": d.fonte_atualizado_em} for d in dados],
             "imoveis": [{"id": i.codi, "inscricao": i.inscricao, "descricao": i.complemento or "Imóvel cadastrado"} for i in imoveis],
             "lancamentos": [{"id": str(x.id), "tributo": x.tributo or "Tributo municipal", "exercicio": x.exercicio,

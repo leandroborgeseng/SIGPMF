@@ -60,7 +60,7 @@ def limitar(db, req: Request, cpf=""):
     db.commit()
 
 
-def conferir(db, cpf, nascimento, mae):
+def conferir(db, cpf, nascimento, mae, exigir_contato=True):
     cid = db.scalar(select(Identificador.cidadao_id).where(Identificador.tipo == "cpf", Identificador.valor == normaliza(cpf)))
     c = db.get(Cidadao, cid) if cid else None
     if not c or c.falecido or c.data_nascimento != nascimento:
@@ -70,7 +70,11 @@ def conferir(db, cpf, nascimento, mae):
     maes = {nome_normalizado(d.valor or "") for d in dados if d.campo == "nome_mae"}
     emails = {(d.valor or "").strip().lower() for d in dados if d.campo == "email"}
     # Divergência cadastral não escolhe uma identidade/contato arbitrariamente.
-    if len(maes) != 1 or nome_normalizado(mae) not in maes or len(emails) != 1:
+    if len(maes) != 1 or nome_normalizado(mae) not in maes:
+        return None, None
+    if not exigir_contato:
+        return cid, None
+    if len(emails) != 1:
         return None, None
     email = next(iter(emails))
     if "@" not in email or "\n" in email or "\r" in email:
@@ -99,13 +103,13 @@ def enviar_codigo(email, codigo):
 def sessao(db, req):
     token = req.cookies.get(COOKIE, "")
     r = db.get(AcessoCidadao, resumo_hash("sessao", token)) if token else None
-    if not r or r.tipo != "sessao" or utc(r.expira_em) <= agora() or not r.cidadao_id:
+    if not r or r.tipo not in ("sessao", "sessao_teste") or utc(r.expira_em) <= agora() or not r.cidadao_id:
         raise HTTPException(401, "Entre novamente para consultar seus dados.")
     return r
 
 
-def criar_sessao(db, cid):
+def criar_sessao(db, cid, teste=False):
     token = secrets.token_urlsafe(32)
-    db.add(AcessoCidadao(chave=resumo_hash("sessao", token), tipo="sessao", cidadao_id=cid,
+    db.add(AcessoCidadao(chave=resumo_hash("sessao", token), tipo="sessao_teste" if teste else "sessao", cidadao_id=cid,
                          tentativas=0, expira_em=agora() + timedelta(minutes=15)))
     return token

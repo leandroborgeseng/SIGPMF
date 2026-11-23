@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import PortalCidadao from '../pages/PortalCidadao'
+import { AuthProvider } from '../auth'
 let pedidos: { path: string; options?: RequestInit }[]
 beforeEach(() => {
   pedidos = []; vi.stubGlobal('scrollTo', vi.fn()); HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -41,4 +42,20 @@ describe('Portal público do cidadão', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Meus acordos$/ }))
     expect(await screen.findByText(/Acordo de demonstração/)).toBeVisible()
   })
+  it('admin usa acesso de teste sem enviar código; o público continua no fluxo normal', async () => {
+    sessionStorage.setItem('sigpmf_sessao', JSON.stringify({ token: 'jwt-admin-teste', perfil: 'admin', nome: 'Administrador' }))
+    render(<MemoryRouter><AuthProvider><PortalCidadao /></AuthProvider></MemoryRouter>)
+    expect(screen.getByText('Acesso de teste · administrador SIGPMF')).toBeVisible()
+    fireEvent.change(screen.getByLabelText('CPF'), { target: { value: '52998224725' } })
+    fireEvent.change(screen.getByLabelText('Data de nascimento'), { target: { value: '1985-05-12' } })
+    fireEvent.change(screen.getByLabelText('Nome completo da mãe'), { target: { value: 'Pessoa de Teste' } })
+    fireEvent.submit(screen.getByLabelText('CPF').closest('form')!)
+    await waitFor(() => expect(pedidos.some(p => p.path.endsWith('/acesso-teste'))).toBe(true))
+    const req = pedidos.find(p => p.path.endsWith('/acesso-teste'))!
+    expect(req.options?.headers).toMatchObject({ Authorization: 'Bearer jwt-admin-teste' })
+    expect(pedidos.some(p => p.path.endsWith('/identificar'))).toBe(false)
+    expect(pedidos.some(p => p.path.endsWith('/confirmar'))).toBe(false)
+    sessionStorage.clear()
+  })
+
 })

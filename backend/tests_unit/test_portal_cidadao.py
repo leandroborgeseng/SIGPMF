@@ -16,9 +16,10 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.db import get_db  # noqa: E402
+from app.core.security import cria_token  # noqa: E402
 from app.models.base import Base  # noqa: E402
 from app.models.camadas import Cidadao, DadoGold, Identificador, Imovel, ImovelPossuidor, Lancamento  # noqa: E402
-from app.models.controle import Auditoria  # noqa: E402
+from app.models.controle import Auditoria, Usuario  # noqa: E402
 from app.portal_cidadao.modelos import AcessoCidadao  # noqa: E402
 from app.portal_cidadao.rotas import portal  # noqa: E402
 from app.portal_cidadao.servico import COOKIE, conferir, nome_normalizado  # noqa: E402
@@ -29,7 +30,7 @@ class TestPortal(unittest.TestCase):
         self.engine = create_engine("sqlite+pysqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
                             execution_options={"schema_translate_map": {"controle": None, "silver": None, "gold": None}})
         Base.metadata.create_all(self.engine, tables=[x.__table__ for x in (
-            AcessoCidadao, Auditoria, Cidadao, Identificador, DadoGold, Imovel, ImovelPossuidor, Lancamento)])
+            AcessoCidadao, Auditoria, Usuario, Cidadao, Identificador, DadoGold, Imovel, ImovelPossuidor, Lancamento)])
         with Session(self.engine) as db:
             db.add(Cidadao(cidadao_id="pessoa-teste", nome="Pessoa Teste", data_nascimento=date(1985, 5, 12), falecido=False))
             db.add(Identificador(cidadao_id="pessoa-teste", tipo="cpf", valor="52998224725"))
@@ -151,4 +152,39 @@ class TestPortal(unittest.TestCase):
             sessao = db.scalar(select(AcessoCidadao).where(AcessoCidadao.tipo == "sessao"))
             sessao.expira_em = agora() - timedelta(seconds=1)
             db.commit()
+        self.assertEqual(self.client.get("/api/portal/me").status_code, 401)
+
+    def token_interno(self, perfil):
+        with Session(self.engine, expire_on_commit=False) as db:
+            u = Usuario(email=perfil + "@teste.local", nome="Teste", perfil=perfil, senha_hash="somente-teste", ativo=True)
+            db.add(u)
+            db.commit()
+            return {"Authorization": "Bearer " + cria_token(u)}
+
+    def test_acesso_teste_exige_admin_e_funciona_sem_email_ou_smtp(self):
+        dados = {"cpf": "52998224725", "nascimento": "1985-05-12", "nome_mae": "Mae de Teste"}
+        self.assertEqual(self.client.post("/api/portal/acesso-teste", json=dados).status_code, 401)
+        self.assertEqual(self.client.post("/api/portal/acesso-teste", json=dados,
+                         headers=self.token_interno("operador")).status_code, 403)
+        with Session(self.engine) as db:
+            email = db.scalar(select(DadoGold).where(DadoGold.campo == "email"))
+            db.delete(email)
+            db.commit()
+        with patch("app.portal_cidadao.rotas.pronto", return_value=False):
+            self.assertEqual(self.identificar().status_code, 503)
+            r = self.client.post("/api/portal/acesso-teste", json=dados, headers=self.token_interno("admin"))
+        self.assertEqual(r.status_code, 200, r.text)
+        me = self.client.get("/api/portal/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertTrue(me.json()["modo_teste"])
+        self.assertEqual(self.smtp.call_count, 0)
+        with Session(self.engine) as db:
+            aud = db.scalar(select(Auditoria).where(Auditoria.acao == "portal_acesso_teste"))
+            self.assertEqual(aud.usuario, "admin@teste.local")
+
+    def test_admin_teste_nao_dispensa_conferencia_dos_tres_dados(self):
+        h = self.token_interno("admin")
+        for dados in ({"nome_mae": "Outra pessoa"}, {"nascimento": "1985-05-13"}):
+            body = {"cpf": "52998224725", "nascimento": "1985-05-12", "nome_mae": "Mae de Teste", **dados}
+            self.assertEqual(self.client.post("/api/portal/acesso-teste", json=body, headers=h).status_code, 422)
         self.assertEqual(self.client.get("/api/portal/me").status_code, 401)
