@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
     # PR-03 (R1 do QA #48): segredo (>= 32 caracteres, checado no create_app sem ecoar o valor) do HMAC-SHA256 das chaves da prata do modelo. Sem padrão; nunca vai para log.
     chave_hash_segredo: SecretStr | None = Field(None, alias="SIGPMF_CHAVE_HASH_SEGREDO", repr=False)
+    portal_smtp_host: str | None = Field(None, alias="PORTAL_SMTP_HOST")
+    portal_smtp_port: int = Field(465, alias="PORTAL_SMTP_PORT")
+    portal_smtp_from: str | None = Field(None, alias="PORTAL_SMTP_FROM")
+    portal_smtp_user: str | None = Field(None, alias="PORTAL_SMTP_USER")
+    portal_smtp_password: SecretStr | None = Field(None, alias="PORTAL_SMTP_PASSWORD", repr=False)
+    portal_tributos_url: str | None = Field(None, alias="PORTAL_TRIBUTOS_URL")
+    portal_tributos_token: SecretStr | None = Field(None, alias="PORTAL_TRIBUTOS_TOKEN", repr=False)
+    portal_guias_hosts: str = Field("", alias="PORTAL_GUIAS_HOSTS")
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
