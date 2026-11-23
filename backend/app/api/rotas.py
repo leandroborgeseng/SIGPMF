@@ -905,6 +905,18 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
                            "mais_recente": e.mais_recente, "origem_endereco": e.origem_endereco} for e in ends]}
 
 
+@api.get("/gold/cidadaos/{cid}/genealogia")
+def genealogia_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Ascendentes e descendentes (2 níveis). CadÚnico e BU educação aparecem como provedores sem acesso."""
+    from app.genealogia.arvore import montar
+    acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    r = montar(db, cid)
+    audita(db, u.email, "consulta_genealogia", f"cidadao:{cid}",
+           {"ascendentes": len(r["ascendentes"]), "descendentes": len(r["descendentes"])}, _ip(req))
+    return r
+
+
 def _empresa_sil(e, *, revela: bool) -> dict:
     """SIL16: empresa da SIL para a ficha. Documento sempre mascarado; razão social, endereço e bairro só com revela."""
     from app.services.vinculos import mascara_doc
@@ -1095,7 +1107,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_genealogia": "Árvore genealógica", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))

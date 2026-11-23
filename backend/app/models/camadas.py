@@ -468,3 +468,50 @@ class SeiProcessoNaoPublico(Base):
     nivel_acesso: Mapped[str] = mapped_column(String(5))
     ambiente_origem: Mapped[str] = mapped_column(String(20))
     atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# Folha nominal e dependentes do Senior (0051). Upsert pela chave da origem; nada é apagado na projeção.
+class SeniorServidor(Base):
+    __tablename__ = "senior_servidores"
+    __table_args__ = (UniqueConstraint("numemp", "tipcol", "numcad", name="uq_silver_senior_servidor"),
+                      Index("ix_silver_senior_servidor_cpf", "cpf"),
+                      Index("ix_silver_senior_servidor_cidadao", "cidadao_id"), SV)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    numemp: Mapped[int] = mapped_column(Integer)
+    tipcol: Mapped[int] = mapped_column(Integer)
+    numcad: Mapped[int] = mapped_column(Integer)
+    nome: Mapped[str | None] = mapped_column(String(200))
+    cpf: Mapped[str | None] = mapped_column(String(11))
+    data_nascimento: Mapped[date | None] = mapped_column(Date)
+    data_admissao: Mapped[date | None] = mapped_column(Date)
+    situacao: Mapped[str | None] = mapped_column(String(20))
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    fonte_atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sistema: Mapped[str] = mapped_column(String(20), default="SENIOR")
+    bronze_id: Mapped[int | None] = mapped_column(Integer)
+
+
+class SeniorDependente(Base):
+    __tablename__ = "senior_dependentes"
+    __table_args__ = (UniqueConstraint("numemp", "tipcol", "numcad", "coddep", name="uq_silver_senior_dependente"),
+                      Index("ix_silver_senior_dep_cpf", "cpf"),
+                      Index("ix_silver_senior_dep_titular", "cpf_titular"),
+                      Index("ix_silver_senior_dep_cidadao", "cidadao_id"), SV)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    numemp: Mapped[int] = mapped_column(Integer)
+    tipcol: Mapped[int] = mapped_column(Integer)
+    numcad: Mapped[int] = mapped_column(Integer)
+    coddep: Mapped[int] = mapped_column(Integer)
+    nome: Mapped[str | None] = mapped_column(String(200))
+    cpf: Mapped[str | None] = mapped_column(String(11))
+    data_nascimento: Mapped[date | None] = mapped_column(Date)
+    grapar: Mapped[str | None] = mapped_column(String(20))
+    grau: Mapped[str | None] = mapped_column(String(80))
+    papel: Mapped[str | None] = mapped_column(String(20))
+    cpf_titular: Mapped[str | None] = mapped_column(String(11))
+    numcad_titular: Mapped[int | None] = mapped_column(Integer)
+    cidadao_id: Mapped[str | None] = mapped_column(String(36))
+    cidadao_titular_id: Mapped[str | None] = mapped_column(String(36))
+    fonte_atualizado_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sistema: Mapped[str] = mapped_column(String(20), default="SENIOR")
+    bronze_id: Mapped[int | None] = mapped_column(Integer)

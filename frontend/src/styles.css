@@ -699,3 +699,19 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .edu-aluno { display: grid; gap: 6px; }
 .edu-aluno p { margin: 0; }
 .impostos .impostos-totais { margin-bottom: 12px; }
+.arvore { display: grid; gap: 12px; }
+.arvore-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.arvore h4 { margin: 0 0 8px; font-size: 14px; color: var(--ink); }
+.arvore-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.arvore-cartao { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; display: grid; gap: 4px; background: var(--surface); }
+.arvore-nivel { margin: 0; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.arvore-cpf { font-size: 12.5px; color: var(--ink-2); }
+.arvore-ligacoes { margin: 0; display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.arvore-ligacoes a { color: var(--brand-hover); font-weight: 600; }
+.arvore-arestas { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.arvore-arestas li { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.selo-forte, .selo-provavel { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.selo-forte { background: var(--brand-soft); color: var(--brand-hover); }
+.selo-provavel { background: var(--warn-bg); color: var(--warn-ink); }
+.arvore-criterio { flex-basis: 100%; font-size: 12.5px; color: var(--ink-2); }
+.arvore-criterio-completo p { margin: 8px 0 0; color: var(--ink-2); font-size: 13px; }

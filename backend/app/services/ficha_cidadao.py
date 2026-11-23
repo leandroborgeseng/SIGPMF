@@ -31,7 +31,7 @@ from app.util.datas import normaliza_data_iso
 _MODELOS = {"vacinas": Vacinacao, "consultas": Atendimento, "agendamentos": Agendamento, "imoveis": ImovelPossuidor,
             "lancamentos": Lancamento, "dividas": DividaAtiva, "empresas": EmpresaSil, "educacao": EscolaAluno}
 # (área, base no catálogo): existem na prefeitura, mas o SIGPMF ainda não lê; a ficha não pode dizer "não tem"
-NAO_INTEGRADAS = (("Servidor municipal (folha)", "DBSENIOR"), ("Assistência social", "CadastroUnico"),
+NAO_INTEGRADAS = (("Assistência social", "CadastroUnico"),
                   ("Protocolo", "Protocolo_WEB"), ("Exames de laboratório", "Labor"),
                   ("Medicamentos dispensados", "IntegracaoSaudeTerceiros"), ("ITBI", "ITBI"), ("Multas de trânsito", "Transito"))
 

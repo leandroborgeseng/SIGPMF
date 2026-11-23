@@ -451,6 +451,7 @@ PESSOAIS = {
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
+    ("GET", "/api/gold/cidadaos/{cid}/genealogia"),
     ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
     ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
     ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),

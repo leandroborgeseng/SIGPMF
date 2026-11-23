@@ -33,6 +33,8 @@ BASES: list[tuple] = [
     ("Divida", _P, _A, _I, 8, ["DIVIDA"], "divida", "Dívida ativa (débitos do cidadão no painel)"),
     ("Financeiro", _P, _A, _I, 9, ["FINANCEIRO"], "financeiro", "Lançamentos tributários do exercício atual e anterior"),
     ("API SIL", _P, _A, _I, 10, ["SIL"], "sil", "API REST do tributário novo (SIL): empresas por CCM, só leitura"),
+    ("DBSENIOR", _P, _A, _I, 11, ["SENIOR"], "senior",
+     "Folha nominal (r034fun) e dependentes (r036dep); somente leitura; nominais isentos de k-anonimato"),
     ("Alvara", _B, _A, _T, 9, [], None, "Alvarás (sem CPF); indicador de licenciamento"),
     ("IntegracaoJuridicoDivida", _P, _A, _T, 10, [], None, "Dívida ativa judicial: cadastros, CDAs, acordos (painel)"),
     # ---- analisados, sem fila ----
@@ -68,7 +70,7 @@ BASES: list[tuple] = [
         "Estoque", "Fiscalizacao_Rendas")],
     *[(n, _C, _N, _X, None, [], None, "Descartável (pré-triagem pelo nome)") for n in (
         "API_Email", "API_Usuario", "CAL", "Central", "Correios", "DbPPrioritariosIdentityMunicipios",
-        "DBSENIOR", "DBSENIOR_EDOCS", "DBSENIOR_ESOCIAL", "DBSENIOR_PORTAL", "DWConfiguration",
+        "DBSENIOR_EDOCS", "DBSENIOR_ESOCIAL", "DBSENIOR_PORTAL", "DWConfiguration",
         "DWDiagnostics", "DWQueue", "EFWeb", "Folpag_", "Internet")],
 ]
 
