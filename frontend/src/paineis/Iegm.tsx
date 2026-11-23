@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
-import { Cabecalho, Kpi, Painel, pct } from './graficos'
+import { Cabecalho, ColunasMes, FontesPainel, Kpi, Painel, compacto, pct, type Ponto as PontoGrafico } from './graficos'
 
 type Ponto = { ano_base: number; faixa: string | null }
 type Indice = { codigo: string; nome: string; area: string; descricao: string; serie: Ponto[]; atual: string | null; anterior: string | null
@@ -11,6 +11,8 @@ type Indice = { codigo: string; nome: string; area: string; descricao: string; s
 type Resp = { anos: number[]; apuracao?: Record<string, number>; ultimo: number | null; indices: Indice[]; faixas: Record<string, string>; carregado_em?: string }
 
 export const FAIXAS = ['A', 'B+', 'B', 'C+', 'C']
+const NOTA: Record<string, number> = { A: 5, 'B+': 4, B: 3, 'C+': 2, C: 1 }
+const LETRA = ['', 'C', 'C+', 'B', 'B+', 'A']
 const classe = (f: string | null) => (f ? `faixa faixa-${f.replace('+', 'mais')}` : 'faixa faixa-vazia')
 const SETA = { subiu: '▲ subiu', caiu: '▼ caiu', igual: '= igual' }
 const valida = (r: unknown): r is Resp => !!r && typeof r === 'object' && Array.isArray((r as Resp).anos) && Array.isArray((r as Resp).indices)
@@ -55,6 +57,7 @@ export function PainelIegm() {
               <Kpi rotulo={`Áreas que caíram em ${d.ultimo}`} valor={String(cairam.length)} nota={cairam.join(', ') || 'nenhuma'} tom={cairam.length ? 'alerta' : 'normal'} />
             </div>
 
+            <FontesPainel fonte="IEGM" atualizadoEm={d.carregado_em}>
             <div className="painel-grade">
               <Painel titulo="Evolução por área" nota={`ano base ${d.anos[0]} a ${d.ultimo}`} largo>
                 <div className="agenda-rolagem">
@@ -71,6 +74,11 @@ export function PainelIegm() {
                     </tbody>
                   </table>
                 </div>
+                {geral && (
+                  <ColunasMes titulo="Evolução da faixa geral" unidade="faixa (A = 5 … C = 1)" meses={20}
+                    a={geral.serie.filter((p) => p.faixa && NOTA[p.faixa]).map((p): PontoGrafico => ({ periodo: String(p.ano_base), dim: '', valor: NOTA[p.faixa!] }))}
+                    rotuloA="Faixa do IEG-M" formato={(v) => LETRA[Math.round(v)] ?? '—'} />
+                )}
                 <ul className="iegm-legenda" aria-label="Faixas do IEG-M">
                   {FAIXAS.map((f) => <li key={f}><Faixa f={f} nomes={d.faixas} /> {d.faixas[f]}</li>)}
                 </ul>
@@ -82,12 +90,18 @@ export function PainelIegm() {
                       <span className="iegm-estado-nome">{i.nome}</span>
                       <span className="iegm-barra" role="img"
                         aria-label={`${i.nome}: ${FAIXAS.map((f) => `${f} ${i.estado_ultimo[f] ?? 0}`).join(', ')} municípios; Franca ${i.atual ?? 'sem nota'}`}>
-                        {FAIXAS.map((f) => (i.estado_ultimo[f] ?? 0) > 0 && (
-                          <span key={f} className={`${classe(f)} seg${f === i.atual ? ' franca' : ''}`}
-                            style={{ flexGrow: i.estado_ultimo[f] }} title={`${f}: ${i.estado_ultimo[f]} municípios${f === i.atual ? ' (Franca)' : ''}`}>
-                            {f === i.atual ? `Franca ${f}` : ''}
-                          </span>
-                        ))}
+                        {FAIXAS.map((f) => {
+                          const n = i.estado_ultimo[f] ?? 0
+                          const total = FAIXAS.reduce((s, x) => s + (i.estado_ultimo[x] ?? 0), 0)
+                          if (n <= 0) return null
+                          const rotulo = n / (total || 1) >= 0.08 ? compacto(n) : ''
+                          return (
+                            <span key={f} className={`${classe(f)} seg${f === i.atual ? ' franca' : ''}`}
+                              style={{ flexGrow: n }} title={`${f}: ${n} municípios${f === i.atual ? ' (Franca)' : ''}`}>
+                              {f === i.atual ? `Franca ${f}${rotulo ? ` · ${rotulo}` : ''}` : rotulo}
+                            </span>
+                          )
+                        })}
                       </span>
                       <span className="sutil iegm-estado-pct">{i.pct_melhor != null ? `${pct(i.pct_melhor)} acima` : '—'}</span>
                     </li>
@@ -100,7 +114,8 @@ export function PainelIegm() {
                 </dl>
               </Painel>
             </div>
-            <p className="sutil">Fonte: painel do IEG-M do TCE-SP (painel.tce.sp.gov.br). Carregado no SIGPMF em {dataHoraBR(d.carregado_em)}. A nota numérica não é publicada: só a faixa.</p>
+            </FontesPainel>
+            <p className="sutil">Fonte: IEG-M (TCE-SP) · atualizado em {dataHoraBR(d.carregado_em)}. A nota numérica não é publicada: só a faixa.</p>
           </>
         )}
     </section>

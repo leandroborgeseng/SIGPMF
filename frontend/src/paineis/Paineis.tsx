@@ -4,7 +4,7 @@ import Recursos from '../Recursos'
 import { useAuth } from '../auth'
 import { Erro, Esqueleto } from '../componentes'
 import { DrillCubo, doPeriodo, useDetalhe, type Detalhe } from './Drill'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, kpi, mesCurto, num, pct, reais, serie, useIndicadores } from './graficos'
+import { BarrasH, Cabecalho, ColunasMes, FonteRodape, Kpi, Painel, kpi, mesCurto, num, pct, reais, serie, useIndicadores } from './graficos'
 
 const SERIES_GERAL = ['kpi', 'trib_lancado_mes', 'trib_pago_mes', 'saude_atend_mes']
 const SERIES_SAUDE = ['kpi', 'saude_atend_mes', 'saude_atend_unidade', 'saude_espera_especialidade', 'saude_agend_especialidade',
@@ -42,11 +42,12 @@ export function PainelGeral() {
             <Kpi rotulo="Cidadãos identificados" valor={num(kpi(d, 'cidadaos'))} />
             <Kpi rotulo="Imóveis cadastrados" valor={num(kpi(d, 'imoveis'))} />
           </div>
+          <FonteRodape fonte="FINANCEIRO · SAUDE · DIVIDA · OURO" atualizadoEm={d.atualizado_em} />
           <div className="painel-grade">
-            <Painel titulo="Lançado × arrecadado por mês de vencimento" largo>
+            <Painel titulo="Lançado × arrecadado por mês de vencimento" largo fonte="FINANCEIRO" atualizadoEm={d.procedencia?.trib_lancado_mes?.fonte_atualizado_em ?? d.atualizado_em}>
               <ColunasMes a={serie(d, 'trib_lancado_mes')} b={serie(d, 'trib_pago_mes')} rotuloA="Lançado" rotuloB="Arrecadado" formato={reais} aoAbrir={(p) => abrir(tributosDoMes(p))} />
             </Painel>
-            <Painel titulo="Atendimentos de saúde por mês" nota="clique num mês para detalhar">
+            <Painel titulo="Atendimentos de saúde por mês" nota="clique num mês para detalhar" fonte="SAUDE" atualizadoEm={d.procedencia?.saude_atend_mes?.fonte_atualizado_em ?? d.atualizado_em}>
               <ColunasMes a={serie(d, 'saude_atend_mes')} rotuloA="Atendimentos" aoAbrir={(p) => abrir(consultasDoMes(p))} />
             </Painel>
           </div>
@@ -78,21 +79,22 @@ export function PainelSaude() {
             <Kpi rotulo="Espera média por especialista" valor={`${num(kpi(d, 'espera_media_dias'))} dias`} tom={(kpi(d, 'espera_media_dias') ?? 0) > 60 ? 'alerta' : 'normal'} />
             <Kpi rotulo="Vacinas aplicadas (24 meses)" valor={num(kpi(d, 'vacinas_24m'))} tom="bom" />
           </div>
+          <FonteRodape fonte="SAUDE" atualizadoEm={d.procedencia?.saude_atend_mes?.fonte_atualizado_em ?? d.atualizado_em} />
           <div className="painel-grade">
-            <Painel titulo="Atendimentos por mês" nota="clique num mês para detalhar" largo><ColunasMes a={serie(d, 'saude_atend_mes')} rotuloA="Atendimentos" aoAbrir={(p) => abrir(consultasDoMes(p))} /></Painel>
-            <Painel titulo="Atendimentos por unidade (12 meses)"><BarrasH pontos={serie(d, 'saude_atend_unidade')} rotulo="Atendimentos por unidade"
+            <Painel titulo="Atendimentos por mês" nota="clique num mês para detalhar" largo fonte="SAUDE" atualizadoEm={d.procedencia?.saude_atend_mes?.fonte_atualizado_em ?? d.atualizado_em}><ColunasMes a={serie(d, 'saude_atend_mes')} rotuloA="Atendimentos" aoAbrir={(p) => abrir(consultasDoMes(p))} /></Painel>
+            <Painel titulo="Atendimentos por unidade (12 meses)" fonte="SAUDE" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'saude_atend_unidade')} rotulo="Atendimentos por unidade"
               aoAbrir={(u) => abrir({ ...CONSULTA, titulo: u, sub: `Atendimentos. ${SO_HISTORICO}.`, fixos: { tipo: 'consulta', unidade: u }, caminho: ['ano', 'mes', 'especialidade', 'bairro', 'faixa'] })} /></Painel>
-            <Painel titulo="Espera média por especialidade" nota={`dias entre a marcação e a consulta${avisoEsp ? ` · ${avisoEsp}` : ''}`}>
+            <Painel titulo="Espera média por especialidade" fonte="SAUDE" atualizadoEm={d.atualizado_em} nota={`dias entre a marcação e a consulta${avisoEsp ? ` · ${avisoEsp}` : ''}`}>
               <BarrasH pontos={serie(d, 'saude_espera_especialidade')} formato={(v) => `${num(v)} d`} rotulo="Espera por especialidade"
                 aoAbrir={(e) => abrir({ ...AGENDAMENTO, titulo: e, sub: `Espera por consulta. ${SO_HISTORICO}.`, fixos: { tipo: 'agendamento', especialidade: e }, caminho: ['unidade', 'bairro', 'ano', 'faixa'], medidas: ['espera_media', 'eventos'] })} />
             </Painel>
-            <Painel titulo="Agendamentos por especialidade" nota={avisoEsp}><BarrasH pontos={serie(d, 'saude_agend_especialidade')} rotulo="Agendamentos por especialidade"
+            <Painel titulo="Agendamentos por especialidade" nota={avisoEsp} fonte="SAUDE" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'saude_agend_especialidade')} rotulo="Agendamentos por especialidade"
               aoAbrir={(e) => abrir({ ...AGENDAMENTO, titulo: e, sub: `Agendamentos. ${SO_HISTORICO}.`, fixos: { tipo: 'agendamento', especialidade: e }, caminho: ['unidade', 'bairro', 'ano', 'faixa'], medidas: ['eventos', 'espera_media'] })} /></Painel>
-            <Painel titulo="Doses aplicadas por vacina"><BarrasH pontos={serie(d, 'saude_vacina_tipo')} rotulo="Doses por vacina"
+            <Painel titulo="Doses aplicadas por vacina" fonte="SAUDE" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'saude_vacina_tipo')} rotulo="Doses por vacina"
               aoAbrir={(v) => abrir({ ...VACINA, titulo: v, sub: `Doses aplicadas. ${SO_HISTORICO}.`, fixos: { tipo: 'vacina', vacina: v }, caminho: ['ano', 'mes', 'unidade', 'bairro', 'faixa'] })} /></Painel>
-            <Painel titulo="Vacinação por mês" largo><ColunasMes a={serie(d, 'saude_vacina_mes')} rotuloA="Doses" meses={24}
+            <Painel titulo="Vacinação por mês" largo fonte="SAUDE" atualizadoEm={d.atualizado_em}><ColunasMes a={serie(d, 'saude_vacina_mes')} rotuloA="Doses" meses={24}
               aoAbrir={(p) => abrir({ ...VACINA, titulo: `Doses em ${mesCurto(p)}`, fixos: { tipo: 'vacina', ...doPeriodo(p) }, caminho: ['vacina', 'unidade', 'bairro', 'faixa'] })} /></Painel>
-            <Painel titulo="Explorar os atendimentos" nota="clique numa linha para descer de nível" largo>
+            <Painel titulo="Explorar os atendimentos" nota="clique numa linha para descer de nível" largo fonte="SAUDE" atualizadoEm={d.atualizado_em}>
               <DrillCubo {...CONSULTA} fixos={{ tipo: 'consulta' }} caminho={['ano', 'mes', 'especialidade', 'unidade', 'bairro', 'faixa']} nomeArquivo="atendimentos" />
             </Painel>
           </div>
@@ -122,16 +124,17 @@ export function PainelFazenda() {
             <Kpi rotulo="Imóveis devedores" valor={num(kpi(d, 'devedores'))} />
             <Kpi rotulo="Inscrições protestadas" valor={num(kpi(d, 'protestadas'))} />
           </div>
+          <FonteRodape fonte="FINANCEIRO · DIVIDA" atualizadoEm={d.atualizado_em} />
           <div className="painel-grade">
-            <Painel titulo="Lançado × arrecadado por mês de vencimento" largo>
+            <Painel titulo="Lançado × arrecadado por mês de vencimento" largo fonte="FINANCEIRO" atualizadoEm={d.procedencia?.trib_lancado_mes?.fonte_atualizado_em ?? d.atualizado_em}>
               <ColunasMes a={serie(d, 'trib_lancado_mes')} b={serie(d, 'trib_pago_mes')} rotuloA="Lançado" rotuloB="Arrecadado" formato={reais} aoAbrir={(p) => abrir(tributosDoMes(p))} />
             </Painel>
-            <Painel titulo="Inadimplência por tributo"><BarrasH pontos={serie(d, 'trib_inadimplencia_tributo')} formato={pct} rotulo="Inadimplência por tributo"
+            <Painel titulo="Inadimplência por tributo" fonte="FINANCEIRO" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'trib_inadimplencia_tributo')} formato={pct} rotulo="Inadimplência por tributo"
               aoAbrir={(t) => abrir({ titulo: t, sub: `Inadimplência. ${SO_HISTORICO}.`, cubo: 'tributario', fixos: { tributo: t }, caminho: ['exercicio', 'bairro'], medidas: ['inadimplencia_pct', 'vencido_aberto', 'lancado', 'pago'] })} /></Painel>
-            <Painel titulo="Estoque da dívida por ano de origem"><BarrasH pontos={serie(d, 'trib_divida_ano')} formato={reais} max={12} rotulo="Dívida por ano"
+            <Painel titulo="Estoque da dívida por ano de origem" fonte="DIVIDA" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'trib_divida_ano')} formato={reais} max={12} rotulo="Dívida por ano"
               aoAbrir={(a) => abrir({ titulo: `Dívida ativa com origem em ${a}`, cubo: 'divida', fixos: /^\d+$/.test(a) ? { ano: a } : {}, caminho: ['natureza', 'faixa_saldo', 'bairro'], medidas: ['saldo', 'inscricoes'] })} /></Painel>
-            <Painel titulo="Devedores por faixa de saldo"><BarrasH pontos={serie(d, 'trib_devedores_faixa')} rotulo="Devedores por faixa" /></Painel>
-            <Painel titulo="Onde está o dinheiro" nota="maiores saldos por imóvel">
+            <Painel titulo="Devedores por faixa de saldo" fonte="DIVIDA" atualizadoEm={d.atualizado_em}><BarrasH pontos={serie(d, 'trib_devedores_faixa')} rotulo="Devedores por faixa" /></Painel>
+            <Painel titulo="Onde está o dinheiro" nota="maiores saldos por imóvel" fonte="DIVIDA" atualizadoEm={d.atualizado_em}>
               {top.length === 0 ? <p className="sutil painel-vazio">Sem dívida ativa carregada.</p> : (
                 <>
                   <p className="destaque">Os 10 maiores saldos somam <strong>{reais(top10)}</strong>{totalDivida ? `, ${pct((top10 / totalDivida) * 100)} do estoque` : ''}.</p>
@@ -139,10 +142,10 @@ export function PainelFazenda() {
                 </>
               )}
             </Painel>
-            <Painel titulo="Explorar a arrecadação" nota="clique numa linha para descer de nível" largo>
+            <Painel titulo="Explorar a arrecadação" nota="clique numa linha para descer de nível" largo fonte="FINANCEIRO" atualizadoEm={d.atualizado_em}>
               <DrillCubo cubo="tributario" caminho={['exercicio', 'tributo', 'bairro']} medidas={['lancado', 'pago', 'vencido_aberto', 'inadimplencia_pct']} nomeArquivo="arrecadacao" />
             </Painel>
-            <Painel titulo="Explorar a dívida ativa" nota="clique numa linha para descer de nível" largo>
+            <Painel titulo="Explorar a dívida ativa" nota="clique numa linha para descer de nível" largo fonte="DIVIDA" atualizadoEm={d.atualizado_em}>
               <DrillCubo cubo="divida" caminho={['natureza', 'ano', 'faixa_saldo', 'bairro']} medidas={['saldo', 'inscricoes']} nomeArquivo="divida-ativa" />
             </Painel>
           </div>

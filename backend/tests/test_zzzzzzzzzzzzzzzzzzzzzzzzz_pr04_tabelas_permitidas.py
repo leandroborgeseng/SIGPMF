@@ -42,7 +42,7 @@ def test_a1_listagem_recusa_e_audita(db):
 
 @pytest.mark.parametrize("base", sorted(P.BASES_NUNCA))
 def test_a2_bancos_de_descarte_e_internet_nunca_entram(base):
-    assert len(P.BASES_DESCARTE) == 20 and "Internet" in P.BASES_NUNCA
+    assert len(P.BASES_DESCARTE) == 27 and "Internet" in P.BASES_NUNCA
     for variante in (base, base.lower(), base.upper(), f"[{base}]"):
         with pytest.raises(BaseRecusada) as e:
             P.autoriza_base(variante)

@@ -6,7 +6,7 @@
   --ok: #15924E; --ok-bg: #E5F4EB; --ok-line: #BFE4CD;
   --warn: #B5680A; --warn-bg: #FBF0DD; --warn-line: #F0D8AE;
   --danger: #D62B2B; --danger-bg: #FBE9E9; --danger-line: #F2C9C9;
-  --serie-2: #E07B00; --muted: #5B6B82; --muted-bg: #EDF1F6; --off: #8A97A8;
+  --serie-2: #C2410C; --serie-tendencia: #1C1917; --muted: #5B6B82; --muted-bg: #EDF1F6; --off: #8A97A8;
   /* Variantes de texto escurecidas para AA sobre os fundos tonais (o ponto do badge usa a cor do token). */
   --ok-ink: #0F7A3F; --warn-ink: #9A5806; --danger-ink: #B42222;
   --r-card: 14px; --r-md: 10px; --r-sm: 8px; --r-pill: 999px;
@@ -283,8 +283,12 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .kpi-alerta .cartao-valor { color: var(--danger-ink); }
 .kpi-bom .cartao-valor { color: var(--ok-ink); }
 .kpi-nota { font-size: 12px; line-height: 1.4; color: var(--ink-3); }
-.kpi-mini { display: block; width: 100%; height: 28px; margin-top: auto; padding-top: 6px; overflow: visible; }
-.kpi-mini polyline { fill: none; stroke: var(--brand); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
+.kpi-mini-bloco { display: grid; gap: 2px; margin-top: auto; }
+.kpi-mini { display: block; width: 100%; height: 28px; overflow: visible; }
+.kpi-mini polyline { fill: none; stroke: var(--brand); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.kpi-mini polyline.tendencia { stroke: var(--serie-tendencia); stroke-dasharray: 3 2; stroke-width: 1.2; }
+.kpi-mini-rotulos, .kpi-mini-legenda { display: flex; justify-content: space-between; gap: 8px; font: 600 10px var(--font-mono); color: var(--ink); }
+.kpi-mini-legenda { justify-content: flex-start; gap: 10px; align-items: center; font-family: var(--font-sans); font-weight: 500; color: var(--ink-2); }
 .painel-grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
 .painel-bloco { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .painel-bloco.largo { grid-column: 1 / -1; }
@@ -305,14 +309,30 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .leg { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
 .leg.a, .col.a { background: var(--brand); }
 .leg.b, .col.b { background: var(--serie-2); }
-.grafico { display: grid; grid-template-columns: 44px minmax(0, 1fr); grid-template-rows: 220px auto; }
+.leg.tendencia { width: 14px; height: 0; background: transparent; border-top: 2px dashed var(--serie-tendencia); }
+.grafico-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.grafico-meta strong { color: var(--ink); font-weight: 650; }
+.fonte-rodape { margin: 4px 0 0; font-size: 12px; color: var(--ink-2); }
+.grafico { display: grid; grid-template-columns: 56px minmax(0, 1fr); grid-template-rows: 236px auto; }
+.grafico-y, .grafico-plot { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.grafico-folga { height: 18px; flex: none; }
+.grafico-y-area, .grafico-area { position: relative; flex: 1; min-height: 0; }
+.grafico-rotulo { position: absolute; left: 50%; transform: translateX(-50%); font: 650 10px var(--font-mono); color: var(--ink); white-space: nowrap; pointer-events: none; z-index: 1; }
+.grafico-rotulo.linha { transform: translate(-50%, -130%); }
+.grafico-rotulo.serie-b { color: var(--serie-2); }
+.grafico-tendencia { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.grafico-tendencia polyline { fill: none; stroke: var(--serie-tendencia); stroke-width: 1.6; stroke-dasharray: 4 3; stroke-linejoin: round; }
+.barras-bloco { display: grid; gap: 8px; }
+.barras-eixo { display: grid; grid-template-columns: minmax(110px, 38%) minmax(0, 1fr) auto; }
+.barras-eixo-marcas { display: flex; justify-content: space-between; font: 500 11px var(--font-mono); color: var(--ink-3); }
+.chave.tendencia { background: var(--serie-tendencia); }
 .grafico-y { position: relative; }
 .grafico-y span { position: absolute; right: 8px; transform: translateY(50%); font: 500 11px var(--font-mono); color: var(--ink-3); white-space: nowrap; }
 .grafico-plot { position: relative; border-radius: 2px; }
 .grafico-plot.clicavel .grafico-coluna { cursor: pointer; }
 .grafico-grade { position: absolute; left: 0; right: 0; height: 1px; background: var(--line-2); }
 .grafico-colunas { position: absolute; inset: 0; display: grid; }
-.grafico-coluna { display: flex; gap: 2px; align-items: flex-end; justify-content: center; height: 100%; min-width: 0; padding: 0 12%; border-radius: 4px; }
+.grafico-coluna { position: relative; display: flex; gap: 2px; align-items: flex-end; justify-content: center; height: 100%; min-width: 0; padding: 0 12%; border-radius: 4px; overflow: visible; }
 .grafico-coluna.foco { background: rgba(0, 102, 204, .07); }
 .col { flex: 1; max-width: 24px; border-radius: 4px 4px 0 0; min-height: 1px; }
 .grafico-linha { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
@@ -618,6 +638,7 @@ label { display: block; font-weight: 600; font-size: 13px; color: var(--ink-2); 
 .cz-disp { position: relative; height: 320px; margin: 24px 0 26px 48px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .cz-disp-ponto { position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px; padding: 0; background: none; border: 0; cursor: pointer; }
 .cz-disp-ponto::after { content: ''; position: absolute; inset: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 2px var(--surface); opacity: .8; }
+.cz-disp-rotulo { position: absolute; z-index: 1; transform: translate(-50%, -150%); font: 650 10px var(--font-mono); color: var(--ink); pointer-events: none; white-space: nowrap; }
 .cz-disp-ponto:hover::after, .cz-disp-ponto:focus-visible::after { inset: 5px; opacity: 1; }
 .cz-disp-x, .cz-disp-y { position: absolute; font-size: 11.5px; color: var(--ink-3); }
 .cz-disp-x { left: 0; right: 0; bottom: -24px; display: flex; justify-content: space-between; gap: 8px; }

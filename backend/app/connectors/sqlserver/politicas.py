@@ -21,13 +21,14 @@ class BaseRecusada(TabelaRecusada):
     pass
 
 
-# PR-04 A2: os 20 bancos de descarte (plano-aproveitamento, "Vazio/descartar") e o Internet (holerites, sensível)
-# nunca entram em política nem em leitura, mesmo que alguém cadastre uma política apontando para eles.
+# PR-04 A2: bancos de descarte (plano-aproveitamento, "Vazio/descartar"), o Internet (holerites, sensível)
+# e as bases retiradas do catálogo (espelho, fotos, logs, GED sem CPF). Nunca entram em política nem em leitura.
 BASES_DESCARTE = frozenset({
-    "API_Usuario", "AtendSaude", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL", "DWConfiguration",
-    "DWDiagnostics", "DWQueue", "EFWeb", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "IPTU_Isencao",
-    "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014", "Novo_Cemiterio", "Senhas", "Telefonia",
-    "Traces", "TrendVP"})
+    "API_Usuario", "AtendSaude", "Baixas_Ant", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL",
+    "Divida_Anteriores", "DWConfiguration", "DWDiagnostics", "DWQueue", "EFWeb", "Estoque_Anterior",
+    "Financeiro_Anteriores", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "GED", "Geral",
+    "IPTU_Isencao", "Iptu_Anteriores", "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014",
+    "Novo_Cemiterio", "Senhas", "Telefonia", "Traces", "TrendVP"})
 BASES_SENSIVEIS_NUNCA = frozenset({"Internet"})
 BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 

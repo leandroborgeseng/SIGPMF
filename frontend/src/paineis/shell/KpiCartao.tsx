@@ -1,3 +1,4 @@
+import { regressaoLinear, rotuloDado } from '../graficos'
 import { tom, valorFmt, variacaoTexto } from './formato'
 import type { KpiDado, PontoSerie, Variacao } from './tipos'
 
@@ -15,18 +16,27 @@ export function Sparkline({ serie, rotulo }: { serie: PontoSerie[]; rotulo: stri
     segs[segs.length - 1].push(`${x(i)},${y(p.valor)}`)
   })
   const lacunas = serie.flatMap((p, i) => (p.valor == null ? [{ p, i }] : []))
+  const nums = serie.flatMap((p) => (p.valor == null ? [] : [p.valor]))
+  const tend = regressaoLinear(nums)
+  let k = 0
+  const tendPts = serie.flatMap((p, i) => (p.valor == null ? [] : [`${x(i)},${y(tend[k++] ?? p.valor)}`]))
   const desc = `${rotulo}, últimos 12 meses: ` + serie.map((p) => `${p.rotulo} ${p.valor == null ? (p.sem_carga ? 'sem carga' : 'oculto') : 'com valor'}`).join('; ')
   return (
-    <svg className="sk-spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img" aria-label={desc}>
-      {segs.filter((s) => s.length).map((s, i) => (s.length === 1
-        ? <circle key={i} cx={s[0].split(',')[0]} cy={s[0].split(',')[1]} r="1.2" className="sk-ponto" />
-        : <polyline key={i} points={s.join(' ')} vectorEffect="non-scaling-stroke" />))}
-      {lacunas.map(({ p, i }) => (
-        <line key={p.competencia} data-lacuna={p.competencia} className="sk-lacuna" x1={x(i)} x2={x(i)} y1="2" y2="28" vectorEffect="non-scaling-stroke">
-          <title>{p.sem_carga ? `Sem carga neste mês (${p.rotulo})` : `Grupo pequeno, oculto (${p.rotulo})`}</title>
-        </line>
-      ))}
-    </svg>
+    <span className="sk-spark-bloco">
+      <svg className="sk-spark" viewBox="0 0 100 30" preserveAspectRatio="none" role="img" aria-label={desc}>
+        {tendPts.length > 1 && <polyline className="tendencia" points={tendPts.join(' ')} vectorEffect="non-scaling-stroke" />}
+        {segs.filter((s) => s.length).map((s, i) => (s.length === 1
+          ? <circle key={i} cx={s[0].split(',')[0]} cy={s[0].split(',')[1]} r="1.2" className="sk-ponto" />
+          : <polyline key={i} points={s.join(' ')} vectorEffect="non-scaling-stroke" />))}
+        {lacunas.map(({ p, i }) => (
+          <line key={p.competencia} data-lacuna={p.competencia} className="sk-lacuna" x1={x(i)} x2={x(i)} y1="2" y2="28" vectorEffect="non-scaling-stroke">
+            <title>{p.sem_carga ? `Sem carga neste mês (${p.rotulo})` : `Grupo pequeno, oculto (${p.rotulo})`}</title>
+          </line>
+        ))}
+      </svg>
+      {nums.length > 1 && <span className="sk-spark-rotulos"><span>{rotuloDado(nums[0])}</span><span>{rotuloDado(nums[nums.length - 1])}</span></span>}
+      <span className="sk-spark-legenda"><i className="leg a" aria-hidden="true" />Série <i className="leg tendencia" aria-hidden="true" />Tendência</span>
+    </span>
   )
 }
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import { DrillCubo, doPeriodo, useDetalhe } from './Drill'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, pct, reais, type Ponto, mesCurto } from './graficos'
+import { BarrasH, Cabecalho, ColunasMes, FontesPainel, Kpi, Painel, pct, reais, type Ponto, mesCurto } from './graficos'
 
 type Totais = { empenhado: number; liquidado: number; pago: number; receita: number | null; resultado: number | null
   sem_licitacao_pct: number | null; pessoas_fisicas: number; restos_pagos: number | null }
@@ -104,6 +104,7 @@ export function PainelFinancas() {
               {filtrosDespesa ? ' Com filtro de função ou fonte, a receita e os restos a pagar não aparecem (não têm essa classificação).' : ''}
             </p>
 
+            <FontesPainel fonte="AUDESP" atualizadoEm={d.disponivel.carregado_em}>
             <div className="kpis" id="t-fin-kpis">
               {d.atual.receita != null && <Kpi rotulo="Receita arrecadada" valor={reais(d.atual.receita)} nota={variacao(d.atual.receita, d.anterior?.receita, f)} tom="bom" mini={d.mensal?.receita.slice(-13).map((p) => p.valor)} />}
               <Kpi rotulo="Despesa empenhada" valor={reais(d.atual.empenhado)} nota={variacao(d.atual.empenhado, d.anterior?.empenhado, f) ?? 'empenhos menos anulações'} />
@@ -175,7 +176,8 @@ export function PainelFinancas() {
                 </Painel>
               )}
             </div>
-            <p className="sutil">Fonte: AUDESP / Portal da Transparência Municipal do TCE-SP. Carregado no SIGPMF em {dataHoraBR(d.disponivel.carregado_em)}.</p>
+            </FontesPainel>
+            <p className="sutil">Fonte: AUDESP (TCE-SP) · atualizado em {dataHoraBR(d.disponivel.carregado_em)}. Portal da Transparência Municipal do TCE-SP.</p>
             {gaveta}
           </>
         )}

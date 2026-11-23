@@ -47,7 +47,7 @@ describe('painéis de gestão (onda 4)', () => {
     mock(200, { atualizado_em: null, series: SERIES })
     montar(<PainelSaude />)
     const lista = await screen.findByRole('list', { name: 'Atendimentos por unidade' })
-    expect(within(lista).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['PS Norte9.800', 'UBS Centro6.100'])
+    expect(within(lista).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['PS Norte9,8 mil', 'UBS Centro6,1 mil'])
     expect(screen.getAllByText(/Sem dados ainda/).length).toBeGreaterThan(0)  // agendamentos vazios
     expect(screen.getByText('41,2% dos agendamentos com especialidade sem nome no cadastro da Saúde')).toBeVisible()  // ES2
   })
