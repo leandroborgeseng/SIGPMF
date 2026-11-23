@@ -97,6 +97,95 @@ export function indicesSemSobreposicao(n: number, largura = 720, larguraRotulo =
   return vis
 }
 
+/** Folga acima da área do gráfico, em px, para o rótulo da barra mais alta. */
+export const FOLGA_ROTULO = 22
+
+export type CaixaRotulo = {
+  x: number; y: number; w: number; h: number
+  texto: string; serie: 'a' | 'b'; barra: number; px: number
+}
+
+/** Verdadeiro quando os retângulos se cruzam (borda compartilhada não conta). */
+export function caixasCruzam(a: Pick<CaixaRotulo, 'x' | 'y' | 'w' | 'h'>, b: Pick<CaixaRotulo, 'x' | 'y' | 'w' | 'h'>, folga = 0): boolean {
+  return a.x < b.x + b.w - folga && a.x + a.w > b.x + folga && a.y < b.y + b.h - folga && a.y + a.h > b.y + folga
+}
+
+/** Folga extra entre rótulos, para o halo de um não encostar no outro. */
+function rotulosCruzam(a: Pick<CaixaRotulo, 'x' | 'y' | 'w' | 'h'>, b: Pick<CaixaRotulo, 'x' | 'y' | 'w' | 'h'>): boolean {
+  const m = 3
+  return caixasCruzam({ x: a.x - m, y: a.y - m, w: a.w + m * 2, h: a.h + m * 2 }, b)
+}
+
+function medidaRotulo(texto: string, px: number) {
+  return { w: Math.ceil(texto.length * px * 0.7) + 10, h: px + 8 }
+}
+
+function centroBarra(i: number, n: number, largura: number, serie: 'a' | 'b', duas: boolean) {
+  const colW = largura / n
+  const gap = duas ? 2 : 0
+  const inner = colW * 0.76
+  const barW = Math.min(24, Math.max(4, (inner - gap) / (duas ? 2 : 1)))
+  const grupo = duas ? barW * 2 + gap : barW
+  const start = i * colW + (colW - grupo) / 2
+  const cx = !duas || serie === 'a' ? start + barW / 2 : start + barW + gap + barW / 2
+  return { cx, barW }
+}
+
+/**
+ * Rótulos das barras agrupadas. Cada um fica acima da própria barra.
+ * Se cruzar a outra barra, sobe até livrá-la. Se ainda cruzar outro rótulo,
+ * tenta uma fonte menor e, se não couber, fica só uma série naquele mês (alternando).
+ */
+export function colocaRotulos(opts: {
+  valoresA: number[]
+  valoresB?: number[]
+  topo: number
+  largura: number
+  altura: number
+  texto: (v: number, serie: 'a' | 'b') => string
+}): CaixaRotulo[] {
+  const { valoresA, valoresB, topo, largura, altura, texto } = opts
+  const n = valoresA.length
+  if (n === 0 || topo <= 0) return []
+  const duas = !!valoresB
+  const yBarra = (v: number) => altura * (1 - Math.max(v, 0) / topo)
+  const obstaculos: Array<Pick<CaixaRotulo, 'x' | 'y' | 'w' | 'h'> & { i: number; serie: 'a' | 'b' }> = []
+  for (let i = 0; i < n; i++) {
+    for (const serie of (duas ? ['a', 'b'] : ['a']) as Array<'a' | 'b'>) {
+      const v = serie === 'a' ? valoresA[i] : valoresB![i]
+      const { cx, barW } = centroBarra(i, n, largura, serie, duas)
+      const y = yBarra(v)
+      obstaculos.push({ i, serie, x: cx - barW / 2, y, w: barW, h: Math.max(0, altura - y) })
+    }
+  }
+  const aceitos: CaixaRotulo[] = []
+  for (let i = 0; i < n; i++) {
+    const ordem: Array<'a' | 'b'> = !duas ? ['a'] : i % 2 === 0 ? ['a', 'b'] : ['b', 'a']
+    for (const serie of ordem) {
+      const v = serie === 'a' ? valoresA[i] : valoresB![i]
+      const t = texto(v, serie)
+      const { cx } = centroBarra(i, n, largura, serie, duas)
+      const barra = yBarra(v)
+      let escolhida: CaixaRotulo | null = null
+      for (const px of [10, 8]) {
+        const { w, h } = medidaRotulo(t, px)
+        let caixa: CaixaRotulo = { x: cx - w / 2, y: barra - 3 - h, w, h, texto: t, serie, barra, px }
+        for (let k = 0; k < 4; k++) {
+          const cruzam = obstaculos.filter((o) => (o.i !== i || o.serie !== serie) && caixasCruzam(caixa, o))
+          if (cruzam.length === 0) break
+          caixa = { ...caixa, y: Math.min(...cruzam.map((o) => o.y)) - 3 - h }
+        }
+        const acima = caixa.y + caixa.h <= barra + 0.01
+        const naFolga = caixa.y >= -FOLGA_ROTULO
+        const livre = aceitos.every((o) => !rotulosCruzam(o, caixa))
+        if (acima && naFolga && livre) { escolhida = caixa; break }
+      }
+      if (escolhida) aceitos.push(escolhida)
+    }
+  }
+  return aceitos
+}
+
 export function dataFonte(iso?: string | null): string | null {
   const m = iso ? /^(\d{4})-(\d{2})-(\d{2})/.exec(iso) : null
   return m ? `${m[3]}/${m[2]}/${m[1]}` : null
@@ -246,19 +335,19 @@ function escala(maximo: number) {
 
 /** Evolução no tempo, em uma ou duas séries: colunas até 24 períodos, linha acima disso. Rótulos visíveis (mil/mi/bi)
  * só onde cabem, linha de tendência na legenda, eixo, unidade e dica ao passar o mouse ou com as setas. */
-function useLargura() {
+function useTamanho() {
   const ref = useRef<HTMLDivElement>(null)
-  const [largura, setLargura] = useState(0)
+  const [tam, setTam] = useState({ w: 0, h: 0 })
   useEffect(() => {
     const el = ref.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const mede = () => setLargura(el.clientWidth)
+    const mede = () => setTam({ w: el.clientWidth, h: el.clientHeight })
     mede()
     const o = new ResizeObserver(mede)
     o.observe(el)
     return () => o.disconnect()
   }, [])
-  return { ref, largura }
+  return { ref, ...tam }
 }
 
 export function ColunasMes({ a, b, rotuloA, rotuloB, formato = num, meses = 12, aoAbrir, titulo, unidade, fonte, atualizadoEm, temporal = true }: {
@@ -266,8 +355,9 @@ export function ColunasMes({ a, b, rotuloA, rotuloB, formato = num, meses = 12, 
   titulo?: string; unidade?: string; fonte?: string | null; atualizadoEm?: string | null; temporal?: boolean
 }) {
   const [foco, setFoco] = useState<number | null>(null)
-  const { ref: areaRef, largura } = useLargura()
+  const { ref: areaRef, w: largura, h: altura } = useTamanho()
   const larguraUtil = largura > 40 ? largura : 720
+  const alturaUtil = altura > 40 ? altura : 214
   const periodos = [...new Set([...a, ...(b ?? [])].map((p) => p.periodo).filter(Boolean))].sort().slice(-meses)
   if (periodos.length === 0) return <Vazio />
   const va = new Map(a.map((p) => [p.periodo, p.valor]))
@@ -277,7 +367,6 @@ export function ColunasMes({ a, b, rotuloA, rotuloB, formato = num, meses = 12, 
   const n = periodos.length
   const linha = n > 24
   const passoX = Math.max(Math.ceil(n / 12), Math.ceil((n * 42) / larguraUtil))
-  const visiveis = new Set(indicesSemSobreposicao(n, larguraUtil, largura > 40 ? 54 : 46))
   const x = (i: number) => ((i + 0.5) / n) * 100
   const y = (v: number) => 100 - (Math.max(v, 0) / topo) * 100
   const pontos = (m: Map<string, number>) => periodos.map((p, i) => `${x(i)},${y(m.get(p) ?? 0)}`).join(' ')
@@ -291,13 +380,25 @@ export function ColunasMes({ a, b, rotuloA, rotuloB, formato = num, meses = 12, 
     else if (e.key === 'Escape') setFoco(null)
   }
   const rotuloMes = `${rotuloA}${rotuloB ? ` e ${rotuloB}` : ''} por mês`
-  const rotuloDe = (v: number, outro: number, i: number, principal: boolean) => {
-    if (b && Math.abs(v - outro) / topo < 0.22) {
-      const maior = v > outro || (v === outro && principal)
-      if ((i % 2 === 0) !== maior) return null
-    }
-    return rotuloDado(v, formato)
-  }
+  const textoDe = (v: number) => rotuloDado(v, formato)
+  const yPonto = (v: number) => alturaUtil * (1 - Math.max(v, 0) / topo)
+  const caixas: CaixaRotulo[] = linha
+    ? indicesSemSobreposicao(n, larguraUtil, largura > 40 ? 54 : 46).flatMap((i, k) => {
+      const ordem: Array<'a' | 'b'> = !b ? ['a'] : k % 2 === 0 ? ['a', 'b'] : ['b', 'a']
+      const postas: CaixaRotulo[] = []
+      for (const serie of ordem) {
+        const v = serie === 'a' ? valsA[i] : (vb.get(periodos[i]) ?? 0)
+        const t = textoDe(v)
+        const { w: rw, h: rh } = medidaRotulo(t, 10)
+        const cx = ((i + 0.5) / n) * larguraUtil
+        const barra = yPonto(v)
+        const caixa: CaixaRotulo = { x: cx - rw / 2, y: barra - 3 - rh, w: rw, h: rh, texto: t, serie, barra, px: 10 }
+        const livres = [...postas, ...([] as CaixaRotulo[])]
+        if (livres.every((o) => !rotulosCruzam(o, caixa)) && caixa.y >= -FOLGA_ROTULO) postas.push(caixa)
+      }
+      return postas
+    })
+    : colocaRotulos({ valoresA: valsA, valoresB: b ? periodos.map((p) => vb.get(p) ?? 0) : undefined, topo, largura: larguraUtil, altura: alturaUtil, texto: (v) => textoDe(v) })
   return (
     <div className="colunas">
       <p className="grafico-meta"><strong>{titulo ?? rotuloMes}</strong>{un && <span>Unidade: {un}</span>}</p>
@@ -325,43 +426,34 @@ export function ColunasMes({ a, b, rotuloA, rotuloB, formato = num, meses = 12, 
                 {b && <polyline className="b" points={pontos(vb)} vectorEffect="non-scaling-stroke" />}
               </svg>
             )}
+            <div className="grafico-colunas" style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
+              {periodos.map((p, i) => (
+                <div key={p} className={`grafico-coluna${foco === i ? ' foco' : ''}`} onMouseEnter={() => setFoco(i)} onClick={aoAbrir ? () => aoAbrir(p) : undefined}>
+                  {!linha && (
+                    <>
+                      <span className="col a" style={{ height: `${((va.get(p) ?? 0) / topo) * 100}%` }} />
+                      {b && <span className="col b" style={{ height: `${((vb.get(p) ?? 0) / topo) * 100}%` }} />}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
             {temporal && (
               <svg className="grafico-tendencia" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
                 <polyline points={tend.map((v, i) => `${x(i)},${y(v)}`).join(' ')} vectorEffect="non-scaling-stroke" />
               </svg>
             )}
-            <div className="grafico-colunas" style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
-              {periodos.map((p, i) => {
-                const va_ = va.get(p) ?? 0
-                const vb_ = vb.get(p) ?? 0
-                const ra = visiveis.has(i) ? rotuloDe(va_, vb_, i, true) : null
-                const rb = b && visiveis.has(i) ? rotuloDe(vb_, va_, i, false) : null
-                return (
-                  <div key={p} className={`grafico-coluna${foco === i ? ' foco' : ''}`} onMouseEnter={() => setFoco(i)} onClick={aoAbrir ? () => aoAbrir(p) : undefined}>
-                    {!linha && ra && <span className="grafico-rotulo" style={{ bottom: `calc(${(va_ / topo) * 100}% + 2px)` }}>{ra}</span>}
-                    {!linha && rb && <span className="grafico-rotulo serie-b" style={{ bottom: `calc(${(vb_ / topo) * 100}% + 2px)` }}>{rb}</span>}
-                    {!linha && (
-                      <>
-                        <span className="col a" style={{ height: `${(va_ / topo) * 100}%` }} />
-                        {b && <span className="col b" style={{ height: `${(vb_ / topo) * 100}%` }} />}
-                      </>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-            {linha && periodos.map((p, i) => {
-              const va_ = va.get(p) ?? 0
-              const vb_ = vb.get(p) ?? 0
-              const ra = visiveis.has(i) ? rotuloDe(va_, vb_, i, true) : null
-              const rb = b && visiveis.has(i) ? rotuloDe(vb_, va_, i, false) : null
-              return (
-                <span key={`r${p}`}>
-                  {ra && <span className="grafico-rotulo linha" style={{ left: `${x(i)}%`, top: `${y(va_)}%` }}>{ra}</span>}
-                  {rb && <span className="grafico-rotulo linha serie-b" style={{ left: `${x(i)}%`, top: `${y(vb_)}%` }}>{rb}</span>}
+            <div className="grafico-rotulos">
+              {caixas.map((c) => (
+                <span key={`${c.serie}-${c.x}`} className="grafico-rotulo-ancora" style={{ left: `${((c.x + c.w / 2) / larguraUtil) * 100}%`, bottom: `${((alturaUtil - c.y - c.h) / alturaUtil) * 100}%` }}>
+                  <svg width={c.w} height={c.h} viewBox={`0 0 ${c.w} ${c.h}`} aria-hidden="true">
+                    <rect width={c.w} height={c.h} rx="3" fill="#ffffff" />
+                    <text className="grafico-rotulo" x={c.w / 2} y={c.h - 5} textAnchor="middle" paintOrder="stroke" stroke="#ffffff" strokeWidth="6" strokeLinejoin="round" fill={TEMA.rotulo} fontSize={c.px} fontFamily="ui-monospace, monospace" fontWeight="650"
+                      data-x={c.x} data-y={c.y} data-w={c.w} data-h={c.h} data-barra={c.barra} data-serie={c.serie}>{c.texto}</text>
+                  </svg>
                 </span>
-              )
-            })}
+              ))}
+            </div>
             {foco != null && (
               <>
                 {linha && <i className="grafico-mira" style={{ left: `${x(foco)}%` }} />}
