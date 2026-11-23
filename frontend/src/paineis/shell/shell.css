@@ -22,7 +22,11 @@
 .sk-ruim > span:first-child { color: var(--danger-ink); font-weight: 600; }
 .sk-neutro > span:first-child { color: var(--ink-2); font-weight: 600; }
 .sk-spark { display: block; width: 100%; height: 30px; overflow: visible; }
+.sk-spark-bloco { display: grid; gap: 2px; }
 .sk-spark polyline { fill: none; stroke: var(--brand); stroke-width: 1.6; stroke-linejoin: round; }
+.sk-spark polyline.tendencia { stroke: var(--serie-tendencia, #1C1917); stroke-dasharray: 3 2; stroke-width: 1.2; }
+.sk-spark-rotulos, .sk-spark-legenda { display: flex; justify-content: space-between; gap: 8px; font: 600 10px var(--font-mono); color: var(--ink); }
+.sk-spark-legenda { justify-content: flex-start; gap: 8px; align-items: center; font-family: var(--font-sans); font-weight: 500; }
 .sk-spark .sk-ponto { fill: var(--brand); }
 .sk-spark .sk-lacuna { stroke: var(--ink-3); stroke-width: 1.2; stroke-dasharray: 2 2; }
 .sk-kpi-acao { align-self: start; min-height: 32px; padding: 0 10px; border: 1px solid var(--brand); border-radius: var(--r-sm); background: var(--surface); color: var(--brand-hover); font: 600 12.5px var(--font-sans); cursor: pointer; }

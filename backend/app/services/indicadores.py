@@ -75,8 +75,11 @@ def indicadores(db: Session, contagens: dict[str, dict[str, int]] | None = None,
     bronze, prata, ouro, pend = (contagens.get(k, {}) for k in ("bronze", "prata", "ouro", "pendentes"))
     execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
     out = []
+    from app.catalogo.bases import RETIRADAS
     bases = db.scalars(select(BaseCatalogo).order_by(BaseCatalogo.prioridade.is_(None), BaseCatalogo.prioridade, BaseCatalogo.nome))
     for b in bases:
+        if b.nome in RETIRADAS:  # linha antiga permanece no banco; a tela não lista nem oferece carga
+            continue
         sis = list(b.sistemas or [])
         ult = ultima_execucao(execs, b)
         amostra = ultima_execucao(execs, b, TIPOS_AMOSTRA)

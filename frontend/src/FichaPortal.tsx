@@ -3,22 +3,24 @@ import { Area, estadoArea, ListaCurta, type EstadoArea, type Fontes, type Leitur
 import { api, ApiErro, dataBR, dataHoraBR } from './api'
 import { useAuth } from './auth'
 import ImpostosCidadao, { reais, validaTributario, type RespTributario } from './ImpostosCidadao'
+import OrigemDado from './OrigemDado'
+import { FonteRodape } from './paineis/graficos'
 
 type Proximo = { data: string | null; unidade: string | null; especialidade: string | null; dias_espera: number | null }
 type AtendS = { data: string | null; unidade: string | null; especialidade: string | null }
 type VacS = { data: string | null; vacina: string | null; dose: string | null; unidade: string | null }
-export type RespSaude = { cidadao_id: string; totais?: { atendimentos: number; vacinas: number }; proximos: Proximo[]; atendimentos: AtendS[]; vacinas: VacS[] }
+export type RespSaude = { cidadao_id: string; totais?: { atendimentos: number; vacinas: number }; proximos: Proximo[]; atendimentos: AtendS[]; vacinas: VacS[]; procedencia?: { sistema: string; fonte_atualizado_em?: string | null } }
 type MatEdu = { escola: string | null; unidade: string | null; turma: string | null; inativa: boolean; data_alteracao: string | null }
 type Aluno = { menor: boolean; mascarado: boolean; inativo: boolean; matricula_atual: MatEdu | null; historico: MatEdu[]
   responsaveis: { tipo: string | null; nome: string | null; principal: boolean | null }[] }
-export type RespEducacao = { cidadao_id: string; alunos: Aluno[] }
+export type RespEducacao = { cidadao_id: string; alunos: Aluno[]; procedencia?: { sistema: string; fonte_atualizado_em?: string | null } }
 type Lugar = { cemiterio: string | null; quadra: string | null; sepultura: string | null; cod_cemiterio?: string | null }
 type TitularSep = { nome: string; situacao: 'Ativo' | 'Inativo'; atual: boolean }
 type PainelTitulares = { linha: string; estado: 'carregando' | 'ok' | 'falha'; itens: TitularSep[] }
 export type RespCemiterio = { cidadao_id: string; titular: (Lugar & { ativo: boolean | null })[]; autorizado: (Lugar & { parentesco: string | null })[]
   leilao: (Lugar & { data_venda: string | null; data_liberacao: string | null })[]
-  sepultamento: (Lugar & { gaveta: string | null; lado: string | null; data_morte: string | null; data_sepultamento: string | null })[] }
-type EventoT = { data: string; area: string; tipo: string; titulo: string; fonte: string }
+  sepultamento: (Lugar & { gaveta: string | null; lado: string | null; data_morte: string | null; data_sepultamento: string | null })[]; procedencia?: { sistema: string; fonte_atualizado_em?: string | null } }
+type EventoT = { data: string; area: string; tipo: string; titulo: string; fonte: string; atualizado_em?: string | null }
 type Acesso = { usuario: string | null; acao: string; o_que: string; quando: string }
 
 const validaSaude = (r: unknown): r is RespSaude => !!r && Array.isArray((r as RespSaude).proximos)
@@ -139,22 +141,23 @@ export function SaudeCidadao({ saude, leitura, fontes }: { saude: RespSaude | nu
       <h3 id="t-saude-cid">Saúde</h3>
       <Area id="vacinas" titulo="Vacinas" estado={estadoArea(l, vac, fontes, 'vacinas')} total={vac} vazio="Nenhuma vacina registrada para este cidadão.">
         {d && <ListaCurta itens={d.vacinas} rotulo="Vacinas" render={(v, i) => (
-          <li key={`${v.vacina}-${v.data}-${i}`}><span className="dia num">{dataBR(v.data)}</span><span><strong>{v.vacina}{v.dose ? ` ${v.dose}` : ''}</strong><span className="sutil"> · {v.unidade ?? 'Unidade não informada'}</span></span></li>
+          <li key={`${v.vacina}-${v.data}-${i}`}><span className="dia num">{dataBR(v.data)}</span><span><strong>{v.vacina}{v.dose ? ` ${v.dose}` : ''}</strong><span className="sutil"> · {v.unidade ?? 'Unidade não informada'}</span><OrigemDado fonte="SAUDE" atualizadoEm={d.procedencia?.fonte_atualizado_em} /></span></li>
         )} />}
       </Area>
       <Area id="consultas" titulo="Consultas realizadas" estado={estadoArea(l, ate, fontes, 'consultas')} total={ate} vazio="Nenhuma consulta registrada para este cidadão.">
         {d && <ListaCurta itens={d.atendimentos} rotulo="Consultas realizadas" render={(a, i) => (
-          <li key={`${a.data}-${i}`}><span className="dia num">{dataBR(a.data)}</span><span>{a.especialidade ?? 'Atendimento'}<span className="sutil"> · {a.unidade ?? 'Unidade não informada'}</span></span></li>
+          <li key={`${a.data}-${i}`}><span className="dia num">{dataBR(a.data)}</span><span>{a.especialidade ?? 'Atendimento'}<span className="sutil"> · {a.unidade ?? 'Unidade não informada'}</span><OrigemDado fonte="SAUDE" atualizadoEm={d.procedencia?.fonte_atualizado_em} /></span></li>
         )} />}
       </Area>
       <Area id="agendamentos" titulo="Consultas agendadas" estado={estadoArea(l, d?.proximos.length ?? 0, fontes, 'agendamentos')} total={d?.proximos.length} vazio="Nenhuma consulta agendada a partir de hoje.">
         {d && <ListaCurta itens={d.proximos} rotulo="Consultas agendadas" render={(p) => (
           <li key={`${p.data}-${p.unidade}-${p.especialidade}`}>
             <span className="dia num">{dataBR(p.data)}</span>
-            <span><strong>{p.especialidade ?? 'Consulta'}</strong><span className="sutil"> · {p.unidade ?? 'Unidade não informada'}{p.dias_espera != null ? ` · ${p.dias_espera} dias de espera` : ''}</span></span>
+            <span><strong>{p.especialidade ?? 'Consulta'}</strong><span className="sutil"> · {p.unidade ?? 'Unidade não informada'}{p.dias_espera != null ? ` · ${p.dias_espera} dias de espera` : ''}</span><OrigemDado fonte="SAUDE" atualizadoEm={d.procedencia?.fonte_atualizado_em} /></span>
           </li>
         )} />}
       </Area>
+      <FonteRodape fonte="SAUDE" atualizadoEm={d?.procedencia?.fonte_atualizado_em} />
       <p className="nota">Diagnósticos e anotações clínicas não aparecem aqui.</p>
     </section>
   )
@@ -172,11 +175,11 @@ export function EducacaoCidadao({ educacao, leitura, fontes }: { educacao: RespE
         {alunos.map((a, i) => (
           <div key={i} className="edu-aluno">
             {a.matricula_atual ? (
-              <p><span className="selo sucesso"><i aria-hidden="true" />Matrícula atual</span> <strong>{nomeMat(a.matricula_atual)}</strong></p>
+              <p><span className="selo sucesso"><i aria-hidden="true" />Matrícula atual</span> <strong>{nomeMat(a.matricula_atual)}</strong> <OrigemDado fonte="EDUCACAO" atualizadoEm={educacao ? educacao.procedencia?.fonte_atualizado_em : null} /></p>
             ) : <p className="sutil">Sem matrícula ativa{a.inativo ? ' (cadastro inativo)' : ''}.</p>}
             {a.historico.filter((m) => m.inativa).length > 0 && (
               <ListaCurta itens={a.historico.filter((m) => m.inativa)} passo={3} rotulo="Matrículas anteriores" render={(m, j) => (
-                <li key={j}><span className="dia num">{m.data_alteracao ? dataBR(m.data_alteracao) : 'Sem data'}</span><span>{nomeMat(m)}<span className="sutil"> · anterior</span></span></li>
+                <li key={j}><span className="dia num">{m.data_alteracao ? dataBR(m.data_alteracao) : 'Sem data'}</span><span>{nomeMat(m)}<span className="sutil"> · anterior</span><OrigemDado fonte="EDUCACAO" atualizadoEm={educacao ? educacao.procedencia?.fonte_atualizado_em : null} /></span></li>
               )} />
             )}
             {a.responsaveis.length > 0 && <p className="sutil">Responsáveis: {a.responsaveis.map((r) => r.nome || 'Não informado').join(', ')}</p>}
@@ -184,6 +187,7 @@ export function EducacaoCidadao({ educacao, leitura, fontes }: { educacao: RespE
           </div>
         ))}
       </Area>
+      <FonteRodape fonte="EDUCACAO" atualizadoEm={educacao ? educacao.procedencia?.fonte_atualizado_em : null} />
     </section>
   )
 }
@@ -245,6 +249,7 @@ export function CemiterioCidadao({ id, cemiterio, leitura, fontes }: { id?: stri
           </button>
         ) : <strong>{onde(lugar)}</strong>}
         {extra}
+        <OrigemDado fonte="CEMITERIO" atualizadoEm={c?.procedencia?.fonte_atualizado_em} />
       </span>
       {selo && <span className={`selo ${seloClasse}`}><i aria-hidden="true" />{selo}</span>}
       {painel?.linha === chave && <PainelDaSepultura painel={painel} />}
@@ -269,6 +274,7 @@ export function CemiterioCidadao({ id, cemiterio, leitura, fontes }: { id?: stri
           </ul>
         )}
       </Area>
+      <FonteRodape fonte="CEMITERIO" atualizadoEm={c?.procedencia?.fonte_atualizado_em} />
     </section>
   )
 }
@@ -301,7 +307,7 @@ export function LinhaDoTempoCidadao({ id }: { id: string }) {
                 <li key={`${e.data}-${e.titulo}-${i}`} className={`area-${e.area}`}>
                   <span className="lt-data num">{dataBR(e.data)}</span>
                   <span className="lt-ponto" aria-hidden="true" />
-                  <span><strong>{e.titulo}</strong><span className="sutil"> · {AREA[e.area] ?? e.area} · {e.fonte}</span></span>
+                  <span><strong>{e.titulo}</strong><span className="sutil"> · {AREA[e.area] ?? e.area}</span> <OrigemDado fonte={e.fonte} atualizadoEm={e.atualizado_em} /></span>
                 </li>
               ))}
             </ol>

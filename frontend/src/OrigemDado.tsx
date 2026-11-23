@@ -1,7 +1,9 @@
 /** UXO1–UXO9 / EN5–EN8: procedência do dado num chip próprio, abaixo do valor (nunca na mesma linha). */
 const NOMES: Record<string, string> = {
   SAUDE: 'Saúde', IPTU: 'IPTU', DIVIDA: 'Dívida Ativa', SIL: 'SIL (empresas)', EDUCACAO: 'Educação',
-  CADUNICO: 'CadÚnico', FINANCEIRO: 'Financeiro', CEMITERIO: 'Cemitério',
+  CADUNICO: 'CadÚnico', FINANCEIRO: 'Financeiro', CEMITERIO: 'Cemitério', AUDESP: 'AUDESP (TCE-SP)',
+  PORTAL_RH: 'Portal da Transparência', ANS: 'ANS', IBGE: 'IBGE', IEGM: 'IEG-M (TCE-SP)', OURO: 'Ouro (SIGPMF)',
+  EXEMPLO_FOLHA: 'Dados sintéticos',
 }
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro',
   'novembro', 'dezembro']

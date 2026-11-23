@@ -3,7 +3,7 @@ import { api, ApiErro } from '../api'
 import { useAuth } from '../auth'
 import { Erro, Esqueleto } from '../componentes'
 import { DrillCubo, Gaveta } from './Drill'
-import { Cabecalho, Painel, num, pct, reais } from './graficos'
+import { Cabecalho, FontesPainel, Painel, compacto, num, pct, reais } from './graficos'
 
 type Formato = 'n' | 'pct' | 'brl' | 'pp'
 type Medida = { chave: string; nome: string; formato: Formato; bom: 'alto' | 'baixo' | null }
@@ -88,14 +88,25 @@ function Dispersao({ x, y, bairros, aoAbrir }: { x: Medida; y: Medida; bairros: 
   const fx = faixa(x.chave), fy = faixa(y.chave)
   const px = (b: Bairro) => ((Number(b[x.chave]) - fx.min) / (fx.max - fx.min)) * 96 + 2
   const py = (b: Bairro) => 98 - ((Number(b[y.chave]) - fy.min) / (fy.max - fy.min)) * 96
+  const comRotulo: Bairro[] = []
+  for (const b of pts) {
+    const bx = px(b), by = py(b)
+    if (comRotulo.some((o) => Math.abs(px(o) - bx) < 14 && Math.abs(py(o) - by) < 12)) continue
+    comRotulo.push(b)
+  }
   return (
     <div className="cz-disp" onMouseLeave={() => setDica(null)}>
+      <p className="grafico-meta"><strong>{y.nome} × {x.nome}</strong><span>Unidade: {y.formato === 'pct' ? '%' : y.formato === 'brl' ? 'R$' : 'valor'} × {x.formato === 'pct' ? '%' : x.formato === 'brl' ? 'R$' : 'valor'}</span></p>
+      <div className="colunas-legenda"><span><i className="leg a" aria-hidden="true" />Bairro</span><span>Corte transversal, sem linha de tendência</span></div>
       <div className="cz-disp-y" aria-hidden="true"><span>{fmt(fy.max, y.formato)}</span><span>{fmt(fy.min, y.formato)}</span></div>
       <div className="cz-disp-x" aria-hidden="true"><span>{fmt(fx.min, x.formato)}</span><span>{x.nome} →</span><span>{fmt(fx.max, x.formato)}</span></div>
       <span className="cz-disp-titulo-y" aria-hidden="true">↑ {y.nome}</span>
       {pts.map((b) => (
         <button key={b.bairro_id} type="button" className="cz-disp-ponto" tabIndex={-1} aria-hidden="true" style={{ left: `${px(b)}%`, top: `${py(b)}%` }}
           onMouseEnter={() => setDica(b)} onClick={() => aoAbrir(b)} />
+      ))}
+      {comRotulo.map((b) => (
+        <span key={`rot-${b.bairro_id}`} className="cz-disp-rotulo" style={{ left: `${px(b)}%`, top: `${py(b)}%` }}>{compacto(Number(b[y.chave]))}</span>
       ))}
       {dica && (
         <div className="cz-disp-dica" style={{ left: `${px(dica)}%`, top: `${py(dica)}%` }}>
@@ -192,6 +203,7 @@ export function PainelCruzamentos() {
         ) : (
           <>
             {botaoRecalcular}
+            <FontesPainel fonte="SAUDE · IPTU · FINANCEIRO · DIVIDA · EDUCACAO · AUDESP · PORTAL_RH · SIL" atualizadoEm={d.gerado_em}>
             <div className="painel-grade">
               <Painel titulo="Achados da cidade" nota="cruzamentos entre áreas; indicam onde olhar, não são conclusão" largo>
                 {d.cidade.length === 0 ? <p className="vazio">Nenhum achado com os dados carregados.</p> : (
@@ -268,7 +280,8 @@ export function PainelCruzamentos() {
                 {linhas.length > VISIVEIS && <div className="drill-rodape"><button type="button" className="btn secundario" onClick={() => setTodos((t) => !t)}>{todos ? `Mostrar só os ${VISIVEIS} primeiros` : `Mostrar todos (${linhas.length})`}</button></div>}
               </Painel>
             </div>
-            <p className="sutil">Bairro por nome normalizado (Jd. = Jardim). Pessoas: endereço mais recente; imóveis e tributos: bairro do imóvel. Taxas só aparecem em bairro com base suficiente, e grupos com menos de 5 pessoas não aparecem. Servidores por bairro depende do endereço do Senior.</p>
+            </FontesPainel>
+            <p className="sutil">Fonte: Saúde · IPTU · Financeiro · Dívida Ativa · Educação · AUDESP (TCE-SP) · Portal da Transparência · SIL (empresas){d.gerado_em ? ` · atualizado em ${new Date(d.gerado_em).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}` : ''}. Bairro por nome normalizado (Jd. = Jardim). Taxas só aparecem em bairro com base suficiente, e grupos com menos de 5 pessoas não aparecem.</p>
             {ficha && (
               <Gaveta titulo={ficha.bairro} sub="Ficha do bairro: só totais" aoFechar={() => setFicha(null)}>
                 <Ficha b={ficha} medidas={d.medidas} bairros={d.bairros} />

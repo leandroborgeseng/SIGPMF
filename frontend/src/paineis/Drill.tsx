@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { ColunasMes, compacto, num, pct, reais, type Ponto } from './graficos'
+import { ColunasMes, FonteRodape, compacto, num, pct, reais, type Ponto } from './graficos'
+
+const FONTE_CUBO: Record<string, string> = {
+  rh: 'PORTAL_RH', saude: 'SAUDE', tributario: 'FINANCEIRO', divida: 'DIVIDA', imoveis: 'IPTU',
+  empresas: 'SIL', educacao: 'EDUCACAO', pessoas: 'OURO', despesa: 'AUDESP', receita: 'AUDESP', folha_modelo: 'EXEMPLO_FOLHA',
+}
 
 type Dim = { chave: string; nome: string; ordem?: string[]; rotulos?: Record<string, string> }
 type Medida = { chave: string; nome: string; formato: 'n' | 'brl' | 'pct' | 'dias'; aditiva: boolean }
@@ -226,6 +231,7 @@ export function DrillCubo({ cubo, fixos = {}, caminho, medidas, mesAte, ocultar,
           </div>
         </>
       )}
+      <FonteRodape fonte={FONTE_CUBO[cubo] ?? 'OURO'} />
     </div>
   )
 }

@@ -174,7 +174,9 @@ def test_r4_saude_nominal_sem_conteudo_clinico(client, db, rbac):
     _vinculo(db, u, "SAUDE")
     cid = _cidadao(db)
     corpo = client.get(f"/api/gold/cidadaos/{cid}/saude", headers=h).json()
-    assert set(corpo) == {"cidadao_id", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo) == {"cidadao_id", "procedencia", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo["procedencia"]) == {"sistema", "fonte", "fonte_atualizado_em", "atualizado_em"}
+    assert corpo["procedencia"]["sistema"] == "SAUDE"
 
 
 def test_regra_desligada_nao_muda_comportamento(client, db, monkeypatch):
