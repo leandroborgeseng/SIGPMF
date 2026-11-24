@@ -3,6 +3,7 @@ import inspect
 import pathlib
 from datetime import UTC, date, datetime
 
+import pytest
 from sqlalchemy import delete, select, text
 
 from app.bronze.ingestao import ingere
@@ -12,9 +13,11 @@ from app.connectors.sqlserver.politicas import SENIOR
 from app.core.sql_guard import garante_somente_leitura
 from app.genealogia.arvore import ISENTO_K_ANONIMATO, arvore_de, montar
 from app.genealogia.confianca import CRITERIO_FRACO, pontua
-from app.genealogia.indice import Indice
+from app.genealogia.indice import Indice, cpf_valido
+from app.genealogia.leitura import ArvoreIndisponivel, executa
+from app.genealogia.materializar import materializar
 from app.genealogia.provedores import REGISTRO, Aresta
-from app.identity.correlacao import cidadao_id_por_cpf
+from app.identity.correlacao import cidadao_id_por_cpf, normaliza_nome
 from app.identity.cpf import digitos_verificadores, mascara
 from app.models.camadas import (
     Cidadao,
@@ -175,6 +178,10 @@ def test_carga_senior_e_arvore_no_banco(db):
         db.add(CidadaoEmpresa(cidadao_id=cid["mae"], empresa_id=emp.id, papel="socio", sistema="ISS",
                               tabela="zz", chave_hash="zzgenealogiaempresa"))
         db.flush()
+        ingere(db, "SAUDE", "pacientes", "Matricula", None, [
+            {"Matricula": "zz-ego-mae", "Nome": nomes["ego"], "Cpf": cpf["ego"], "Mae": nomes["mae"]},
+        ], ex.id, confirmar=False)
+        assert materializar(db)["arestas"] > 0
         arv = montar(db, cid["ego"])
         assert ISENTO_K_ANONIMATO is True and arv["isento_k_anonimato"] is True
         assert "0,70" in arv["criterio_vinculo_fraco"]
@@ -230,6 +237,8 @@ def test_carga_senior_e_arvore_no_banco(db):
             {"Matricula": "zz-ambiguo", "Nome": "ZZGENEALOGIA FILHO OLIVIA", "Cpf": cpf_ficticio(32),
              "Mae": "ZZGENEALOGIA OLIVIA DUPLICADA"},
         ], ex.id, confirmar=False)
+        primeira = materializar(db)["arestas"]
+        assert materializar(db)["arestas"] == primeira
         seco_arv = montar(db, seco)
         assert len(seco_arv["ascendentes"]) == 1
         a = seco_arv["ascendentes"][0]["arestas"][0]
@@ -246,20 +255,38 @@ def test_carga_senior_e_arvore_no_banco(db):
         mig = (RAIZ / "alembic" / "versions" / "0051_senior_genealogia.py").read_text(encoding="utf-8").upper()
         assert "DROP " not in mig and "DELETE " not in mig and "TRUNCATE" not in mig
         assert "CREATE TABLE IF NOT EXISTS" in mig
+        mig52 = (RAIZ / "alembic" / "versions" / "0052_genealogia_arestas.py").read_text(encoding="utf-8").upper()
+        assert "DROP " not in mig52 and "DELETE " not in mig52 and "TRUNCATE" not in mig52
+        assert "CREATE TABLE IF NOT EXISTS" in mig52 and "CONCURRENTLY" in mig52
+        fonte = (RAIZ / "app" / "genealogia" / "arvore.py").read_text(encoding="utf-8")
+        assert "regexp_replace" not in fonte and "bronze.cpf_so_digitos" in fonte
     finally:
         db.rollback()
 
 
-def test_rota_genealogia_lista_extensao(client, tokens, db):
+def test_rota_genealogia_indisponivel_e_depois_vazia(client, tokens, db):
     cid = "zz-genealogia-rota"
     try:
         db.add(Cidadao(cidadao_id=cid, nome="ZZGENEALOGIA ROTA"))
         db.add(CidadaoSistemas(cidadao_id=cid, nome="ZZGENEALOGIA ROTA", sistemas=[], dominios=[]))
+        db.execute(text("""
+            INSERT INTO gold.genealogia_estado (id, geracao, populado_em)
+            VALUES (1, 0, NULL)
+            ON CONFLICT (id) DO UPDATE SET populado_em = NULL
+        """))
+        db.commit()
+        r = client.get(f"/api/gold/cidadaos/{cid}/genealogia", headers=tokens["leitura"])
+        assert r.status_code == 503, r.text
+        corpo = r.json()
+        assert corpo["estado"] == "indisponivel" and corpo["motivo"] == "nao_materializada"
+        assert "gold.genealogia_arestas" in corpo["mensagem"]
+        materializar(db)
         db.commit()
         r = client.get(f"/api/gold/cidadaos/{cid}/genealogia", headers=tokens["leitura"])
         assert r.status_code == 200, r.text
         corpo = r.json()
         assert corpo["foco"]["nome"] == "ZZGENEALOGIA ROTA"
+        assert corpo["ascendentes"] == [] and corpo["descendentes"] == []
         assert any(p["codigo"] == "CADUNICO" and p["disponivel"] is False for p in corpo["provedores"])
         assert db.scalar(select(Auditoria).where(Auditoria.acao == "consulta_genealogia", Auditoria.alvo == f"cidadao:{cid}"))
         assert client.get(f"/api/gold/cidadaos/{cid}/genealogia").status_code == 401
@@ -268,3 +295,22 @@ def test_rota_genealogia_lista_extensao(client, tokens, db):
         db.execute(delete(CidadaoSistemas).where(CidadaoSistemas.cidadao_id == cid))
         db.execute(delete(Cidadao).where(Cidadao.cidadao_id == cid))
         db.commit()
+
+
+def test_nome_e_cpf_sql_batem_com_python(db):
+    for nome in ("helena   única", "Rua das Acácias", "JOÃO-PEDRO", "AÇAÍ", None, ""):
+        sql = db.scalar(text("SELECT gold.nome_norm(:n)"), {"n": nome}) or ""
+        assert sql == normaliza_nome(nome)
+    valido = cpf_ficticio(7)
+    assert db.scalar(text("SELECT gold.cpf_valido_digitos(:c)"), {"c": valido}) == cpf_valido(valido) == valido
+    assert db.scalar(text("SELECT gold.cpf_valido_digitos(:c)"), {"c": "111.111.111-11"}) is None
+    assert cpf_valido("111.111.111-11") is None
+
+
+def test_timeout_de_consulta_vira_indisponivel(db):
+    try:
+        with pytest.raises(ArvoreIndisponivel) as exc:
+            executa(db, "SELECT pg_sleep(0.4)", {}, timeout="50ms")
+        assert exc.value.motivo == "timeout" and "tempo" in exc.value.mensagem
+    finally:
+        db.rollback()

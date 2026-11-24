@@ -8,6 +8,7 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["genealogia_perf: volume sintético da árvore; fora do CI (GENEALOGIA_PERF=1)"]
 
 [tool.ruff.lint.isort]
 known-third-party = ["alembic"]

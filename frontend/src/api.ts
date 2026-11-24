@@ -33,8 +33,12 @@ export async function api<T>(caminho: string, opcoes: RequestInit = {}): Promise
   if (!r.ok) {
     let msg = 'Erro inesperado.'
     try {
-      const d = await r.json()
-      if (typeof d.detail === 'string') msg = d.detail
+      const d = await r.json() as { detail?: unknown; mensagem?: unknown }
+      if (typeof d.mensagem === 'string') msg = d.mensagem
+      else if (typeof d.detail === 'string') msg = d.detail
+      else if (d.detail && typeof d.detail === 'object' && typeof (d.detail as { mensagem?: unknown }).mensagem === 'string') {
+        msg = (d.detail as { mensagem: string }).mensagem
+      }
     } catch {
       /* corpo sem JSON */
     }

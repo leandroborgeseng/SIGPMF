@@ -1,4 +1,5 @@
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { salvaSessao } from '../api'
@@ -47,23 +48,37 @@ const vazio = { cidadao_id: 'ego', totais: { imoveis: 0, em_aberto: 0, parcelas_
 beforeEach(() => { sessionStorage.clear(); salvaSessao({ token: 't', perfil: 'leitura', nome: 'T' }) })
 afterEach(() => vi.unstubAllGlobals())
 
+function responde(arvoreCorpo: unknown, statusGenealogia = 200) {
+  vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+    const url = String(u)
+    if (url.includes('/genealogia')) {
+      return new Response(JSON.stringify(arvoreCorpo), { status: statusGenealogia, headers: { 'Content-Type': 'application/json' } })
+    }
+    const corpo = url.includes('/tributario') ? vazio
+      : url.includes('/saude') ? { cidadao_id: 'ego', totais: { atendimentos: 0, vacinas: 0 }, proximos: [], atendimentos: [], vacinas: [] }
+      : url.includes('/educacao') ? { cidadao_id: 'ego', alunos: [] }
+      : url.includes('/cemiterio') ? { cidadao_id: 'ego', titular: [], autorizado: [], leilao: [], sepultamento: [] }
+      : url.includes('/linha-do-tempo') ? { eventos: [] }
+      : url.includes('/fontes') ? { carregadas: {}, nao_integradas: [] }
+      : url.includes('/acessos') ? { acessos: [] }
+      : ficha
+    return new Response(JSON.stringify(corpo), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }))
+}
+
+const urls = () => vi.mocked(fetch).mock.calls.map((c) => String(c[0]))
+
 describe('árvore na ficha', () => {
-  it('mostra dois níveis, vínculo forte e provável, procedência e links', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (u: string) => {
-      const corpo = u.includes('/genealogia') ? arvore
-        : u.includes('/tributario') ? vazio
-        : u.includes('/saude') ? { cidadao_id: 'ego', totais: { atendimentos: 0, vacinas: 0 }, proximos: [], atendimentos: [], vacinas: [] }
-        : u.includes('/educacao') ? { cidadao_id: 'ego', alunos: [] }
-        : u.includes('/cemiterio') ? { cidadao_id: 'ego', titular: [], autorizado: [], leilao: [], sepultamento: [] }
-        : u.includes('/linha-do-tempo') ? { eventos: [] }
-        : u.includes('/fontes') ? { carregadas: {}, nao_integradas: [] }
-        : u.includes('/acessos') ? { acessos: [] }
-        : ficha
-      return new Response(JSON.stringify(corpo), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
+  it('só busca a árvore ao expandir e mostra dois níveis, vínculo forte e provável', async () => {
+    responde(arvore)
     render(<MemoryRouter initialEntries={['/simulador?cid=ego']}><AuthProvider><Simulador /></AuthProvider></MemoryRouter>)
     const arv = await screen.findByTestId('arvore-genealogica')
+    expect(within(arv).getByRole('button', { name: 'Mostrar árvore genealógica' })).toBeVisible()
+    expect(within(arv).queryByRole('heading', { name: 'Ascendentes' })).toBeNull()
+    expect(urls().some((u) => u.includes('/genealogia'))).toBe(false)
+    await userEvent.click(within(arv).getByRole('button', { name: 'Mostrar árvore genealógica' }))
     expect(await within(arv).findByRole('heading', { name: 'Ascendentes' })).toBeVisible()
+    expect(urls().some((u) => u.includes('/genealogia'))).toBe(true)
     expect(within(arv).getByRole('heading', { name: 'Descendentes' })).toBeVisible()
     expect(within(arv).getByText('Mae Rosa Ficticia')).toBeVisible()
     expect(within(arv).getByText('Avo Lina Ficticia')).toBeVisible()
@@ -82,5 +97,53 @@ describe('árvore na ficha', () => {
     expect(within(arv).getByText(/CadÚnico e BU educação/)).toBeVisible()
     expect(screen.getByText('Folha nominal')).toBeVisible()
     expect(screen.getAllByText(/Senior · atualizado em/).length).toBeGreaterThan(0)
+  })
+
+  it('mostra vazio, erro e indisponível sem buscar antes do clique', async () => {
+    const vazioArvore = { ...arvore, ascendentes: [], descendentes: [], laterais: [] }
+    responde(vazioArvore)
+    render(<MemoryRouter initialEntries={['/simulador?cid=ego']}><AuthProvider><Simulador /></AuthProvider></MemoryRouter>)
+    const arv = await screen.findByTestId('arvore-genealogica')
+    expect(urls().some((u) => u.includes('/genealogia'))).toBe(false)
+    await userEvent.click(within(arv).getByRole('button', { name: 'Mostrar árvore genealógica' }))
+    expect(await within(arv).findByText('Nenhum parente encontrado nas bases carregadas.')).toBeVisible()
+
+    cleanup()
+    responde({ mensagem: 'A consulta da árvore genealógica passou do tempo limite e foi interrompida.' }, 503)
+    render(<MemoryRouter initialEntries={['/simulador?cid=ego']}><AuthProvider><Simulador /></AuthProvider></MemoryRouter>)
+    const bloco = await screen.findByTestId('arvore-genealogica')
+    await userEvent.click(within(bloco).getByRole('button', { name: 'Mostrar árvore genealógica' }))
+    expect(await within(bloco).findByText(/passou do tempo limite/)).toBeVisible()
+
+    cleanup()
+    responde({ detail: 'falha' }, 500)
+    render(<MemoryRouter initialEntries={['/simulador?cid=ego']}><AuthProvider><Simulador /></AuthProvider></MemoryRouter>)
+    const erro = await screen.findByTestId('arvore-genealogica')
+    await userEvent.click(within(erro).getByRole('button', { name: 'Mostrar árvore genealógica' }))
+    expect(await within(erro).findByRole('alert')).toHaveTextContent('Não foi possível carregar a árvore genealógica.')
+  })
+
+  it('mostra carregando enquanto a árvore não volta', async () => {
+    let soltar: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn((u: string) => {
+      if (String(u).includes('/genealogia')) {
+        return new Promise<Response>((resolve) => { soltar = resolve })
+      }
+      const corpo = String(u).includes('/tributario') ? vazio
+        : String(u).includes('/saude') ? { cidadao_id: 'ego', totais: { atendimentos: 0, vacinas: 0 }, proximos: [], atendimentos: [], vacinas: [] }
+        : String(u).includes('/educacao') ? { cidadao_id: 'ego', alunos: [] }
+        : String(u).includes('/cemiterio') ? { cidadao_id: 'ego', titular: [], autorizado: [], leilao: [], sepultamento: [] }
+        : String(u).includes('/linha-do-tempo') ? { eventos: [] }
+        : String(u).includes('/fontes') ? { carregadas: {}, nao_integradas: [] }
+        : String(u).includes('/acessos') ? { acessos: [] }
+        : ficha
+      return Promise.resolve(new Response(JSON.stringify(corpo), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    }))
+    render(<MemoryRouter initialEntries={['/simulador?cid=ego']}><AuthProvider><Simulador /></AuthProvider></MemoryRouter>)
+    const arv = await screen.findByTestId('arvore-genealogica')
+    await userEvent.click(within(arv).getByRole('button', { name: 'Mostrar árvore genealógica' }))
+    expect(await within(arv).findByText('Carregando a árvore genealógica…')).toBeVisible()
+    soltar(new Response(JSON.stringify(arvore), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    expect(await within(arv).findByText('Mae Rosa Ficticia')).toBeVisible()
   })
 })

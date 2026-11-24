@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { api } from './api'
+import { useEffect, useRef, useState } from 'react'
+import { ApiErro, api } from './api'
 import OrigemDado from './OrigemDado'
 
 type Indicador = { tem: boolean; fontes: string[]; ficha: string | null }
@@ -17,8 +17,10 @@ type Arvore = {
   provedores: { codigo: string; disponivel: boolean; motivo: string | null }[]
   criterio_vinculo_fraco: string; isento_k_anonimato: boolean
 }
+type Estado = 'idle' | 'carregando' | 'ok' | 'vazio' | 'erro' | 'indisponivel'
 
 const EXTENSAO: Record<string, string> = { CADUNICO: 'CadÚnico', BU_EDUCACAO: 'BU educação' }
+const MSG_INDISPONIVEL = 'A árvore genealógica está indisponível nesta leitura. A consulta passou do tempo ou as arestas ainda não foram calculadas.'
 
 function valida(x: unknown): x is Arvore {
   if (!x || typeof x !== 'object') return false
@@ -84,23 +86,74 @@ function Coluna({ titulo, itens, vazio }: { titulo: string; itens: Parente[]; va
 
 export default function ArvoreGenealogica({ id }: { id: string }) {
   const [arv, setArv] = useState<Arvore | null>(null)
-  const [estado, setEstado] = useState<'carregando' | 'ok' | 'indisponivel'>('carregando')
+  const [estado, setEstado] = useState<Estado>('idle')
+  const [mensagem, setMensagem] = useState<string | null>(null)
+  const pedido = useRef(0)
+
   useEffect(() => {
-    let vivo = true
-    setEstado('carregando'); setArv(null)
-    api<unknown>(`/gold/cidadaos/${id}/genealogia`).then((r) => {
-      if (!vivo) return
-      if (valida(r)) { setArv(r); setEstado('ok') } else setEstado('indisponivel')
-    }).catch(() => { if (vivo) setEstado('indisponivel') })
-    return () => { vivo = false }
+    pedido.current += 1
+    setArv(null)
+    setEstado('idle')
+    setMensagem(null)
   }, [id])
+
+  function carregar() {
+    const meu = ++pedido.current
+    setEstado('carregando')
+    setMensagem(null)
+    setArv(null)
+    api<unknown>(`/gold/cidadaos/${id}/genealogia`).then((r) => {
+      if (pedido.current !== meu) return
+      if (!valida(r)) {
+        setEstado('erro')
+        setMensagem('A resposta da árvore genealógica veio incompleta.')
+        return
+      }
+      setArv(r)
+      const vazia = r.ascendentes.length === 0 && r.descendentes.length === 0 && r.laterais.length === 0
+      setEstado(vazia ? 'vazio' : 'ok')
+    }).catch((e: unknown) => {
+      if (pedido.current !== meu) return
+      if (e instanceof ApiErro && (e.status === 503 || e.status === 504)) {
+        setEstado('indisponivel')
+        setMensagem(e.message && e.message !== 'Erro inesperado.' ? e.message : MSG_INDISPONIVEL)
+        return
+      }
+      setEstado('erro')
+      setMensagem('Não foi possível carregar a árvore genealógica.')
+    })
+  }
+
   const fora = (arv?.provedores ?? []).filter((p) => !p.disponivel)
   return (
-    <section className="cartao portal-bloco arvore" data-testid="arvore-genealogica" aria-labelledby="t-arvore">
+    <section className="cartao portal-bloco arvore" data-testid="arvore-genealogica" aria-labelledby="t-arvore" aria-busy={estado === 'carregando'}>
       <h3 id="t-arvore">Árvore genealógica</h3>
       <p className="sutil">Ascendentes e descendentes, até dois níveis. O vínculo forte vem de CPF na origem. O vínculo por nome de mãe ou pai aparece como provável, com o nível de confiança.</p>
+      {estado === 'idle' && (
+        <button type="button" className="btn secundario" onClick={carregar}>Mostrar árvore genealógica</button>
+      )}
       {estado === 'carregando' && <p>Carregando a árvore genealógica…</p>}
-      {estado === 'indisponivel' && <p>Não foi possível montar a árvore nesta leitura.</p>}
+      {estado === 'erro' && (
+        <>
+          <p role="alert">{mensagem}</p>
+          <button type="button" className="btn secundario" onClick={carregar}>Tentar de novo</button>
+        </>
+      )}
+      {estado === 'indisponivel' && (
+        <>
+          <p role="status">{mensagem || MSG_INDISPONIVEL}</p>
+          <button type="button" className="btn secundario" onClick={carregar}>Tentar de novo</button>
+        </>
+      )}
+      {estado === 'vazio' && arv && (
+        <>
+          <p className="area-vazia">Nenhum parente encontrado nas bases carregadas.</p>
+          <details className="arvore-criterio-completo">
+            <summary>Critério da confiança do vínculo provável</summary>
+            <p>{arv.criterio_vinculo_fraco}</p>
+          </details>
+        </>
+      )}
       {estado === 'ok' && arv && (
         <>
           <div className="arvore-grade">

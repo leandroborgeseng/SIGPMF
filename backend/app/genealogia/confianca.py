@@ -21,7 +21,11 @@ CRITERIO_FRACO = (
     "Se vários candidatos têm o nome idêntico, só entra quem tem o bônus de idade ou de endereço; "
     "sem um único candidato com bônus, o caso é ambíguo e não gera aresta. "
     "A busca por similaridade olha só quem compartilha o primeiro token, no máximo 200 candidatos. "
-    "Se já existe aresta forte de geração entre o par, a fraca não é emitida."
+    "Se já existe aresta forte de geração entre o par, a fraca não é emitida. "
+    "Na materialização em SQL, o nome idêntico, o Jaccard, a idade, o CEP, o piso e o teto são os mesmos. "
+    "A faixa de similaridade alta usa pg_trgm similarity de pelo menos 0,90 quando a extensão existe "
+    "(não é o difflib); sem a extensão, essa faixa não é emitida. "
+    "O bloqueio por primeiro token olha no máximo 200 candidatos, na ordem do cidadao_id."
 )
 
 PISO = 0.50
