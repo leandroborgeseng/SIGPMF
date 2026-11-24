@@ -479,5 +479,7 @@ def reconstruir(db: Session, progresso=None, indexado: bool = True, medicao: Med
     from app.silver import fatos  # onda 3: fatos da Saúde + linha do tempo; depois o ouro agregado dos painéis
     trib.update(fatos.reconstruir(db))
     trib.update(indicadores.reconstruir(db))
+    from app.silver import senior as senior_prata
+    trib["senior"] = senior_prata.projetar(db)
     return {"cidadaos": len(cidadaos), "vinculos": len(vinculos), "pendentes": len(pend), "tratados": min(feitos[0], total),
             "feitos": feitos[0], "total_bronze": total, "tributario": trib}

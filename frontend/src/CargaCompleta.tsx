@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from './api'
 
-const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério', iptu: 'IPTU', divida: 'Dívida ativa', financeiro: 'Financeiro', sil: 'API SIL' }
+const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério', iptu: 'IPTU', divida: 'Dívida ativa', financeiro: 'Financeiro', sil: 'API SIL', senior: 'Senior' }
 const milhar = (n: number | null | undefined) => (n == null ? '—' : new Intl.NumberFormat('pt-BR').format(n))
 
 export type ExecCompleta = {

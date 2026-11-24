@@ -44,6 +44,16 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
                                                      "ordem_legada": ("CODI", "SEQU", "ANO", "Sequencia")}},
     # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
     ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
+    # Senior: pessoa (cria/une cidadão por CPF). folha_nominal é gravada pelo conector depois do SELECT
+    # e vai ao ouro por linhas_ouro (fica de fora do loop genérico: ver FORA_DA_GOLD).
+    ("SENIOR", "r034fun"): {
+        "dominio": "rh", "chave": ("numemp", "tipcol", "numcad"), "campo_incremental": "datafa", "papel": "pessoa",
+        "campos": {"nome": "nomfun", "data_nascimento": "datnas", "cpf": "numcpf", "atualizado_em": "datafa",
+                   "folha_nominal": "folha_nominal"}},
+    ("SENIOR", "r036dep"): {
+        "dominio": "rh", "chave": ("numemp", "tipcol", "numcad", "coddep"), "campo_incremental": None,
+        "papel": "pessoa",
+        "campos": {"nome": "nomdep", "data_nascimento": "datnas", "cpf": "numcpf", "folha_nominal": "folha_nominal"}},
     ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",
                                                                "Referencia", "Renovacao", "Parcela", "Duplicidade"),
                                              "campo_incremental": "Data_Ultima_Alteracao_Registro"},
@@ -92,7 +102,7 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
 NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
                   "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)",
                   "IPTU": "IPTU — imóveis e possuidores", "DIVIDA": "Dívida ativa", "FINANCEIRO": "Lançamentos tributários",
-                  "SIL": "API SIL — empresas"}
+                  "SIL": "API SIL — empresas", "SENIOR": "Senior — folha nominal e dependentes"}
 
 
 def chave_origem(m: dict, dados: dict) -> str:

@@ -22,7 +22,8 @@ DOMINIO_CAMPO = {"nome": "identificacao", "data_nascimento": "identificacao", "n
                  "nome_pai": "identificacao", "sexo": "identificacao", "data_obito": "identificacao",
                  "endereco": "endereco"}
 CAMPOS_DATA = {"data_nascimento", "data_obito"}
-FORA_DA_GOLD = {"endereco_partes", "cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado", "pista_matricula_correta"}
+FORA_DA_GOLD = {"endereco_partes", "cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado",
+                "pista_matricula_correta", "folha_nominal"}
 GOLD_LOTE = 5000
 
 _SQL_CIDADAO_SISTEMAS = text("""
@@ -130,6 +131,10 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
         fecha_cidadao(cid, {})
     descarrega(forca=True)
     _presenca_sil(db, dominios, buf, descarrega)
+    from app.silver.senior import linhas_ouro
+    for linha in linhas_ouro(db):
+        buf.append(linha)
+        descarrega()
     descarrega(forca=True)
     db.execute(_SQL_CIDADAO_SISTEMAS)
     if progresso:
@@ -170,6 +175,8 @@ def reconstruir_legado(db: Session) -> dict[str, int]:
                                                       valor="sim (confirmado)", sistema=sis, fonte_atualizado_em=None,
                                                       mais_recente=True)
     db.add_all(melhor.values())
+    from app.silver.senior import linhas_ouro
+    db.add_all(DadoGold(**linha) for linha in linhas_ouro(db))
     for c in db.scalars(select(Cidadao)):
         sis = sorted(sistemas.get(c.cidadao_id, set()))
         db.add(CidadaoSistemas(cidadao_id=c.cidadao_id, nome=c.nome, sistemas=sis,

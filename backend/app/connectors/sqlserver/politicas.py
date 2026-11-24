@@ -37,6 +37,7 @@ BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 # (Base.schema.Tabela). Banco novo entra aqui por PR, nunca por variável de ambiente.
 BASES_PERMITIDAS = frozenset({
     "Saude", "Cemiterio", "ISS", "IPTU", "Divida", "Financeiro", "API SIL",  # conectores SQL/REST (POLITICAS)
+    "DBSENIOR",                                                            # folha nominal e dependentes (r034fun, r036dep)
     "FRA_GestaoEscolar", "FRA_CoreSSO",                                    # educação (LeitorGE)
     "Correios"})                                                           # DNE/CEP (#47)
 _DECORACAO = "[]\"'`;"
@@ -355,8 +356,21 @@ SIL = Politica(
     proibidas=frozenset({"Email", "Telefone", "LocalEntrega"}),
 )
 
+# Folha nominal e dependentes. Sem verba, salário ou desconto: a coluna "salario" já é recusada pelo guarda de nomes.
+# datafa (data da situação funcional) é o marco de procedência do servidor. r036dep não tem coluna de alteração;
+# a prata copia a datafa do titular para o dependente.
+SENIOR = Politica(
+    sistema="SENIOR", base="DBSENIOR",
+    colunas={
+        "r034fun": ("numemp", "tipcol", "numcad", "nomfun", "numcpf", "datnas", "datadm", "sitafa", "datafa"),
+        "r036dep": ("numemp", "tipcol", "numcad", "coddep", "nomdep", "numcpf", "datnas", "grapar"),
+    },
+    ordem={"r034fun": ("numemp", "tipcol", "numcad"), "r036dep": ("numemp", "tipcol", "numcad", "coddep")},
+    proibidas=frozenset({"valsal", "valeve", "descontos"}),
+)
+
 POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
-                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
+                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL, "SENIOR": SENIOR}
 
 
 def classifica_listagem(pol: Politica, nomes) -> tuple[list[str], list[tuple[str, str]]]:
