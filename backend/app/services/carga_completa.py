@@ -36,7 +36,7 @@ from app.core.audit import audita
 from app.core.config import get_settings
 from app.core.db import SessionLocal, get_engine
 from app.gold import visao
-from app.ingestion.mapeamentos import MAPEAMENTOS
+from app.ingestion.mapeamentos import MAPEAMENTOS, keyset_de
 from app.models.camadas import CorrelacaoPendente, RegistroBronze, Vinculo
 from app.models.controle import CheckpointCarga, Execucao, Log
 from app.services import carga_conector as cc
@@ -47,12 +47,17 @@ from app.silver import processamento
 TIPO = "carga_completa_conector"
 MODOS = ("completa", "incremental")
 MSG_CAMADAS_MANTIDAS = "Nada mudou nas entradas da prata e do ouro: reconstrução pulada (resultado idêntico)."
-CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil")
+CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil", "senior")
 NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro",
          "sil": "API SIL"}
 
 
-SEM_AMOSTRA = "Rode uma amostra com sucesso primeiro"
+SEM_AMOSTRA = "Rode a amostra acima e aprove o resultado para liberar a carga completa."
+AMOSTRA_PENDENTE = "Confira o resultado e clique em Aprovar amostra para liberar a carga completa."
+# PR-A (CT2/CT3): a amostra disparada a partir desta versão grava aprovacao="manual" na auditoria de início e só
+# libera a carga completa depois de "Aprovar amostra". Amostra concluída antes (sem a marca) segue valendo (CT3).
+ACAO_INICIO = ("amostra_conector_iniciada", "amostra_sil_iniciada")
+ACAO_APROVADA = "amostra_aprovada"
 ETAPAS = ("leitura", "prata", "ouro", "concluida")
 NOME_ETAPA = {"leitura": "Lendo da origem", "prata": "Tratando (prata)", "ouro": "Unificando cidadãos (ouro)",
               "concluida": "Concluída"}
@@ -69,7 +74,26 @@ def sinal_de_vida(ex_id: int, etapa: str, processadas: int | None, total: int | 
     cuja transação só confirma no fim."""
     with get_engine().begin() as c:
         c.execute(update(Execucao).where(Execucao.id == ex_id).values(
-            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC)))
+            etapa=etapa, processadas_etapa=processadas, total_etapa=total, atualizado_em=datetime.now(UTC),
+            ultimo_sinal_em=datetime.now(UTC),
+            **({"subetapa_contador": processadas, "subetapa_total": total} if etapa == "leitura" else {})))
+
+
+def _pulso_leitura(ex_id: int):
+    """D1: Pulso (sinal de vida a cada 30 s) durante toda a leitura da origem; encerrado no finally do chamador."""
+    from app.services import subetapa as sub
+    p = sub.Pulso(ex_id)
+    p.__enter__()
+    return p
+
+
+def _subetapa_leitura(ex_id: int, tabela: str, lidas: int | None, total: int | None) -> None:
+    """CT16: subetapa da leitura em texto (só o nome da tabela) com o contador da tabela atual; nunca derruba a carga."""
+    from app.services import subetapa as sub
+    try:
+        sub.marca(ex_id, "leitura", f"Leitura: lendo {tabela} na origem", lidas, total)
+    except Exception:  # noqa: BLE001
+        log.warning("subetapa da leitura não gravada (execução %s)", ex_id)
 
 
 class PrataInconsistente(RuntimeError):
@@ -94,10 +118,18 @@ class ChaveInvalida(RuntimeError):
     """Tabela cuja chave não serve para keyset (repetida ou com NULL na origem)."""
 
 
+class CheckpointIncompativel(RuntimeError):
+    """Cursor gravado noutra ordem ou sem a versão da PK. O valor não é reutilizado."""
+
+
 def problema_chave(tabela: str, ordem_: tuple[str, ...], v: dict) -> str | None:
     """CC9: chave nula vai para a quarentena; a carga só para se os nulos passarem de SIGPMF_CARGA_NULOS_LIMITE_PCT
     (padrão 1%) E de SIGPMF_CARGA_NULOS_LIMITE_MIN linhas (padrão 10). Tabela pequena com poucas nulas não bloqueia,
-    mas 100% de nulos (total > 0) sempre bloqueia."""
+    mas 100% de nulos (total > 0) sempre bloqueia. Tabela provada pelo catálogo da PK não passa por COUNT/DISTINCT."""
+    if v.get("por_catalogo"):
+        if v.get("pk_ok") and v.get("nulos") == 0:
+            return None
+        return v.get("motivo") or (f"Tabela {tabela}: o catálogo não confirmou a PK ({', '.join(ordem_)}).")
     chave = ", ".join(ordem_)
     s = get_settings()
     limite, minimo = s.carga_nulos_limite_pct, s.carga_nulos_limite_min
@@ -159,8 +191,72 @@ def _quarentena(db: Session, ex: Execucao, sistema: str, tabela: str, linhas: li
     return len(linhas)
 
 
+def separa_pulos_sil(brutas: list) -> tuple[list, list[dict]]:
+    """Linhas marcadas pelo conector SIL como Sequencia pulada (200 inesperado) saem da bronze e vão à quarentena."""
+    from app.connectors.sil.conector import CHAVE_PULO
+    boas, pulos = [], []
+    for r in brutas:
+        if isinstance(r, dict) and CHAVE_PULO in r:
+            pulos.append(r[CHAVE_PULO])
+        else:
+            boas.append(r)
+    return boas, pulos
+
+
+def quarentena_pulos_sil(db: Session, ex: Execucao, sistema: str, tabela: str, pulos: list[dict]) -> int:
+    """TL 30/10: cada Sequencia pulada vira uma linha de quarentena com Sequencia, status, tipo_json e NOMES das
+    chaves de topo (nenhum valor). Idempotente por Sequencia; mesma transação do lote e do checkpoint."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.bronze.ingestao import hash_registro
+    from app.connectors.sil.conector import MOTIVO_PULO
+    if not pulos:
+        return 0
+    vals = []
+    for p in pulos:
+        dados = {"Sequencia": int(p["sequencia"]), "status": p.get("status"), "tipo_json": p.get("tipo_json"),
+                 "chaves": list(p.get("chaves") or [])}
+        vals.append({"sistema_origem": sistema, "tabela": tabela, "id_origem": f"{MOTIVO_PULO}:{dados['Sequencia']}",
+                     "dados": dados, "hash": hash_registro(dados), "execucao_id": ex.id, "quarentena": MOTIVO_PULO,
+                     "quarentena_campos": dados["chaves"]})
+        db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=(
+            f"{sistema}.{tabela}: Sequencia={dados['Sequencia']} pulada para a quarentena (resposta inesperada da "
+            f"API: status={dados['status']} tipo_json={dados['tipo_json']} chaves={dados['chaves']})")))
+    # M1: a identidade é SÓ a Sequencia (id_origem). Se ela já está na quarentena (mesmo com outro formato de
+    # resposta, logo outro hash), atualiza a linha existente em vez de criar outra: o contador não dobra.
+    existentes = {r.id_origem: r for r in db.scalars(select(RegistroBronze).where(
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
+        RegistroBronze.id_origem.in_([v["id_origem"] for v in vals])))}
+    novos = []
+    for v in {v["id_origem"]: v for v in vals}.values():
+        r = existentes.get(v["id_origem"])
+        if r is None:
+            novos.append(v)
+        else:
+            r.dados, r.hash, r.execucao_id = v["dados"], v["hash"], v["execucao_id"]
+            r.quarentena, r.quarentena_campos = v["quarentena"], v["quarentena_campos"]
+    if novos:
+        db.execute(insert(RegistroBronze).values(novos).on_conflict_do_nothing(
+            index_elements=["sistema_origem", "tabela", "id_origem", "hash"]))
+    return len(pulos)
+
+
 class Bloqueado(RuntimeError):
     """Carga completa não liberada (motivo é seguro para a UI)."""
+
+
+PAUSADA_NA_AGENDA = "Fonte pausada na agenda. Reative antes de rodar a carga completa."
+PAUSADA_NA_AGENDA_AMOSTRA = "Fonte pausada na agenda. Reative antes de rodar a amostra."
+
+
+def motivo_pausada_agenda(db: Session, conector: str, acao: str = "completa") -> str | None:
+    """CT26 v2: item da agenda com ativo=false bloqueia a carga completa e toda rota de amostra (pedir, aprovar,
+    rodar). Só lê a agenda: nada é criado e `forcar` não muda. Sem item na agenda, nada muda."""
+    from app.models.controle import Agendamento
+    ativo = db.scalar(select(Agendamento.ativo).where(Agendamento.conector == conector))
+    if ativo is not False:
+        return None
+    return PAUSADA_NA_AGENDA_AMOSTRA if acao == "amostra" else PAUSADA_NA_AGENDA
 
 
 def _sistema(conector: str) -> str:
@@ -174,6 +270,10 @@ def _chave_lock(sistema: str) -> int:
 
 
 def ordem(sistema: str, tabela: str) -> tuple[str, ...]:
+    """Ordem do keyset. Na conta corrente é a PK clustered; nas demais tabelas, a chave da bronze."""
+    spec = keyset_de(sistema, tabela)
+    if spec and spec.get("ordem"):
+        return tuple(spec["ordem"])
     ch = MAPEAMENTOS[(sistema, tabela)]["chave"]
     return tuple(ch) if isinstance(ch, tuple) else (ch,)
 
@@ -188,6 +288,13 @@ def bronze_do_sistema(db: Session, sistema: str) -> int:
     return int(db.scalar(select(func.count()).select_from(RegistroBronze)
                          .where(RegistroBronze.sistema_origem == sistema,
                                 RegistroBronze.ambiente_origem == ambiente_da_origem(sistema))) or 0)
+
+
+def tem_bronze(db: Session, sistema: str) -> bool:
+    """Mesmo critério de bronze_do_sistema(...) > 0, mas com EXISTS (para no 1º registro; não conta milhões)."""
+    return bool(db.scalar(select(select(RegistroBronze.id).where(
+        RegistroBronze.sistema_origem == sistema,
+        RegistroBronze.ambiente_origem == ambiente_da_origem(sistema)).limit(1).exists())))
 
 
 def _ambiente_da_amostra(db: Session, ex: Execucao) -> str:
@@ -216,16 +323,74 @@ def motivo_bloqueio(db: Session, conector: str) -> str | None:
     if conector not in CONECTORES_COMPLETA:
         return "Carga completa ainda não disponível para este conector"
     sistema = _sistema(conector)
-    tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
-    # CC12: amostra órfã (em andamento/interrompida) não apaga a última amostra concluída
-    q = (select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
-                                Execucao.status.not_in(("em_andamento", "interrompida"))).order_by(Execucao.id.desc()))
-    a = next((e for e in db.scalars(q.limit(50)) if _amostra_no_ambiente(db, e)), None)
+    a = ultima_amostra(db, conector)
     if a is None:
         return SEM_AMOSTRA
-    if a.status not in ("sucesso", "sem_novidades") or bronze_do_sistema(db, sistema) == 0:
+    if a.status not in ("sucesso", "sem_novidades") or not tem_bronze(db, sistema):
         return SEM_AMOSTRA
+    if not amostra_aprovada(db, a):
+        return AMOSTRA_PENDENTE
     return None
+
+
+def ultima_amostra(db: Session, conector: str) -> Execucao | None:
+    """Última amostra concluída do conector no ambiente em uso (órfã em andamento/interrompida não conta, CC12)."""
+    if conector not in cc.CONECTORES:
+        return None
+    sistema = cc.CONECTORES[conector][0]
+    tipos = cc.TIPOS_AMOSTRA + (TIPOS_AMOSTRA_EXTRA.get(conector, ()))
+    q = (select(Execucao).where(Execucao.tipo.in_(tipos), Execucao.sistema == sistema,
+                                Execucao.status.not_in(("em_andamento", "interrompida"))).order_by(Execucao.id.desc()))
+    return next((e for e in db.scalars(q.limit(50)) if _amostra_no_ambiente(db, e)), None)
+
+
+def _auditoria(db: Session, acao: str | tuple[str, ...], ex: Execucao):
+    from app.models.controle import Auditoria
+    acoes = (acao,) if isinstance(acao, str) else acao
+    return db.scalars(select(Auditoria).where(Auditoria.acao.in_(acoes), Auditoria.alvo == f"execucao:{ex.id}")
+                      .order_by(Auditoria.id.desc()).limit(1)).first()
+
+
+def exige_aprovacao(db: Session, ex: Execucao) -> bool:
+    ini = _auditoria(db, ACAO_INICIO, ex)
+    return ini is not None and (ini.detalhe or {}).get("aprovacao") == "manual"
+
+
+def amostra_aprovada(db: Session, ex: Execucao) -> bool:
+    """CT2/CT3: aprovada se teve "Aprovar amostra" ou se é de antes da aprovação manual (registro sem a marca)."""
+    if ex.status not in ("sucesso", "sem_novidades"):
+        return False
+    return not exige_aprovacao(db, ex) or _auditoria(db, ACAO_APROVADA, ex) is not None
+
+
+def resumo_amostra(db: Session, conector: str) -> dict | None:
+    """Resultado da última amostra para o card (UXA3): só contagens e motivo público, sem dado pessoal."""
+    a = ultima_amostra(db, conector)
+    if a is None:
+        return None
+    return {"id": a.id, "status": a.status, "finalizado_em": a.finalizado_em, "lidos": a.lidos,
+            "gravados": (a.novos or 0) + (a.atualizados or 0), "com_erro": a.ignorados or 0,
+            "motivo": (a.erro_publico() or {}).get("motivo") if a.status == "falha" else None,
+            "aprovada": amostra_aprovada(db, a)}
+
+
+class AprovacaoRecusada(RuntimeError):
+    pass
+
+
+def aprovar_amostra(db: Session, usuario: str, conector: str, eid: int, ip: str | None) -> dict:
+    """CT2/CT4: só a última amostra concluída com sucesso do conector; auditado com quem, quando (criado_em) e SHA."""
+    import os
+    a = ultima_amostra(db, conector)
+    if a is None or a.id != eid:
+        raise AprovacaoRecusada("Só dá para aprovar a última amostra desta fonte. Rode a amostra de novo.")
+    if a.status not in ("sucesso", "sem_novidades"):
+        raise AprovacaoRecusada("A amostra falhou e não pode ser aprovada. Corrija e rode de novo.")
+    if not amostra_aprovada(db, a):
+        sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("SOURCE_COMMIT") or os.environ.get("GIT_SHA") or "-"
+        audita(db, usuario, ACAO_APROVADA, f"execucao:{a.id}",
+               {"conector": conector, "lidos": a.lidos, "com_erro": a.ignorados or 0, "sha": sha}, ip)
+    return resumo_amostra(db, conector)
 
 
 def leitor_padrao(conector: str, db: Session):
@@ -234,8 +399,12 @@ def leitor_padrao(conector: str, db: Session):
 
 
 def estimativa(db: Session, conector: str, leitor=None) -> dict:
-    """CC2: COUNT(*) por tabela da política (pelo guard), para a confirmação."""
+    """CC2: COUNT(*) por tabela da política (pelo guard), para a confirmação.
+    Tabela provada pelo catálogo da PK fica de fora da soma (sem COUNT)."""
     sistema = _sistema(conector)
+    bloqueio = mensagem_cursor_bloqueado(db, sistema)
+    if bloqueio:
+        raise CheckpointIncompativel(bloqueio)
     pol = politica(sistema)
     leitor = leitor or leitor_padrao(conector, db)
     conn = leitor.abrir()
@@ -243,7 +412,11 @@ def estimativa(db: Session, conector: str, leitor=None) -> dict:
         tabs = verificar_chaves(leitor, conn, sistema, pol)  # ChaveInvalida -> 409 na rota
     finally:
         conn.close()
-    return {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
+    sem = [t for t, v in tabs.items() if v is None and (keyset_de(sistema, t) or {}).get("prova") == "catalogo_pk"]
+    out = {"tabelas": tabs, "total": sum(v or 0 for v in tabs.values())}
+    if sem:
+        out["sem_contagem"] = sem
+    return out
 
 
 def ativa(db: Session, sistema: str) -> Execucao | None:
@@ -251,9 +424,10 @@ def ativa(db: Session, sistema: str) -> Execucao | None:
                                             Execucao.status == "em_andamento").order_by(Execucao.id.desc()).limit(1))
 
 
-def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False) -> None:
+def disparar(ex_id: int, conector: str, trava, somente_camadas: bool = False, parcial: bool = False) -> None:
     """Background (thread daemon). Os testes substituem por execução síncrona com origem sintética."""
-    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs={"somente_camadas": somente_camadas},
+    kw = {"somente_camadas": somente_camadas, **({"parcial": True} if parcial else {})}
+    threading.Thread(target=rodar, args=(ex_id, conector, trava), kwargs=kw,
                      daemon=True, name=f"carga-completa-{conector}").start()
 
 
@@ -266,6 +440,60 @@ def pode_retomar_camadas(db: Session, sistema: str) -> bool:
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     tabs = set(cc.tabelas_do_conector(sistema))
     return bool(cps) and tabs <= {c.tabela for c in cps if c.concluida}
+
+
+def pode_camadas_parcial(db: Session, sistema: str) -> bool:
+    """TL 30/10: leitura parcial (algum checkpoint com concluida=f) e bronze não vazia, sem execução em andamento.
+    Libera "camadas da leitura parcial": prata e ouro só do que já está na bronze, sem ler a origem."""
+    if not tem_bronze(db, sistema):
+        return False
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
+    return bool(cps) and any(not c.concluida for c in cps)
+
+
+def _ate_checkpoint(c: CheckpointCarga) -> int:
+    """QA M1: "até N" é a última chave gravada (SIL: Sequencia/CCM) quando é inteira; senão, a posição (linhas)."""
+    ch = c.ultima_chave
+    if isinstance(ch, list) and len(ch) == 1 and isinstance(ch[0], int) and not isinstance(ch[0], bool):
+        return ch[0]
+    return c.posicao or 0
+
+
+def posicao_parcial(db: Session, sistema: str) -> int:
+    """Maior "até N" dos checkpoints ainda abertos (texto da execução); nunca altera o checkpoint."""
+    return max((_ate_checkpoint(c) for c in db.scalars(select(CheckpointCarga).where(
+        CheckpointCarga.sistema == sistema, _do_ambiente(sistema))) if not c.concluida), default=0)
+
+
+def iniciar_camadas_parcial(db: Session, usuario: str, conector: str) -> Execucao:
+    """TL 30/10 (PP1–PP5): prata e ouro sobre a bronze de uma leitura parcial. Não lê a origem, não mexe nos
+    checkpoints, termina como 'parcial'. Roda com a agenda desligada; 409 (Conflito) só com outra execução viva."""
+    if conector not in CONECTORES_COMPLETA:
+        raise Bloqueado("Carga completa ainda não disponível para este conector")
+    sistema = _sistema(conector)
+    if not pode_camadas_parcial(db, sistema):
+        raise Bloqueado("Só dá para processar as camadas de uma leitura parcial com bronze já carregada.")
+    disco = recursos.motivo_disco_cheio(exige_leitura=True)
+    if disco:
+        raise Bloqueado(disco)
+    trava = db.get_bind().connect()
+    if not trava.execute(text("select pg_try_advisory_lock(:k)"), {"k": _chave_lock(sistema)}).scalar():
+        trava.close()
+        from app.services import trava as tv
+        raise cc.Conflito(tv.conflito(db, sistema, conector, usuario))
+    try:
+        from app.services import trava as tv
+        for velha in tv.em_andamento(db, sistema):
+            tv.interromper(db, velha, usuario, "sem processo vivo (trava livre)", automatico=True)
+        ex = Execucao(tipo=TIPO, sistema=sistema, status="em_andamento", usuario=usuario, cancelar=False,
+                      etapa="prata", atualizado_em=datetime.now(UTC), modo=None)
+        db.add(ex)
+        db.commit()
+    except Exception:
+        _solta(trava, sistema)
+        raise
+    disparar(ex.id, conector, trava, somente_camadas=True, parcial=True)
+    return ex
 
 
 def _trava_livre(db: Session, sistema: str) -> bool:
@@ -326,6 +554,10 @@ def iniciar(db: Session, usuario: str, conector: str, somente_camadas: bool = Fa
     if modo not in MODOS:
         raise ValueError(f"Modo de carga inválido: {modo!r}")
     sistema = _sistema(conector)
+    if not somente_camadas and modo == "completa":
+        bloqueio = mensagem_cursor_bloqueado(db, sistema)
+        if bloqueio:
+            raise Bloqueado(bloqueio)
     motivo = motivo_bloqueio(db, conector)
     if motivo:
         raise Bloqueado(motivo)
@@ -379,7 +611,7 @@ def cancelar(db: Session, conector: str) -> Execucao | None:
     return ex
 
 
-def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, CheckpointCarga]:
+def _checkpoints(db: Session, sistema: str, tabelas: list[str], ex_id: int | None = None) -> dict[str, CheckpointCarga]:
     cps = {c.tabela: c for c in db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema)))}
     for t in tabelas:
         if t not in cps:
@@ -387,8 +619,12 @@ def _checkpoints(db: Session, sistema: str, tabelas: list[str]) -> dict[str, Che
                                      concluida=False)
             db.add(cps[t])
     cps = {t: cps[t] for t in tabelas}
-    if all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
+    if cps and all(c.concluida for c in cps.values()):  # ciclo anterior completo: novo ciclo desde o início
         for c in cps.values():
+            if ex_id and c.ultima_chave is not None and _cursor_recusado(sistema, c.tabela, c.ultima_chave):
+                _log_duravel(ex_id, "INFO",
+                             f"{sistema}.{c.tabela}: ciclo encerrado; checkpoint de ordem antiga descartado "
+                             "porque a leitura recomeça do início. A tupla não foi usada como cursor.")
             c.posicao, c.concluida, c.ultima_chave = 0, False, None
     db.flush()
     return cps
@@ -431,6 +667,17 @@ def _finaliza(db: Session, ex: Execucao, status: str, mensagem: str, extra: dict
             "total_origem": ex.total_origem, **_origem_sil(ex), **(extra or {})})
 
 
+def _registra_erro_sil(db: Session, ex: Execucao, exc: BaseException) -> None:
+    """ErroSil encerrando a carga: WARNING no stdout e linha em controle.logs com classe, status HTTP, tentativa e
+    Sequencia. Nunca CCM/CNPJ, query, URL, token ou corpo."""
+    from app.connectors.sil.cliente import ErroSil, descreve_erro_sil
+    if not isinstance(exc, ErroSil):
+        return
+    det = descreve_erro_sil(exc)
+    log.warning("SIL: execução %s encerrada por ErroSil: %s", ex.id, det)
+    db.add(Log(execucao_id=ex.id, nivel="WARN", mensagem=f"Detalhe do erro da API SIL: {det}"))
+
+
 def _origem_sil(ex: Execucao) -> dict:
     if ex.sistema != "SIL":
         return {}
@@ -438,14 +685,22 @@ def _origem_sil(ex: Execucao) -> dict:
     return ConfigSil.do_ambiente().origem_publica()
 
 
-def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False) -> None:
+def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = None, somente_camadas: bool = False,
+          parcial: bool = False) -> None:
     sistema = _sistema(conector)
     proprio = db is None
     db = db or SessionLocal()
     try:
         ex = db.get(Execucao, ex_id)
         try:
-            if somente_camadas:  # retomada: nenhum conector é criado nem lido
+            if somente_camadas and parcial:  # TL 30/10: camadas da leitura parcial, origem não é lida
+                ate = posicao_parcial(db, sistema)
+                db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Camadas sobre leitura parcial (até {ate}) de "
+                                                                      f"{conector}: prata e ouro a partir da bronze, "
+                                                                      "sem ler a origem"))
+                db.commit()
+                _camadas(db, ex, conector, sistema, pode_pular=False, parcial_ate=ate)
+            elif somente_camadas:  # retomada: nenhum conector é criado nem lido
                 db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Retomando prata e ouro de {conector} a partir "
                                                                       "da bronze (sem reler a origem)"))
                 db.commit()
@@ -466,7 +721,8 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.status = "falha"
             ex.registra_erro(exc)
             ex.tabela_atual = None
-            motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente) else ex.erro_publico()["motivo"]
+            _registra_erro_sil(db, ex, exc)
+            motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente | CheckpointIncompativel) else ex.erro_publico()["motivo"]
             _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
     finally:
@@ -481,19 +737,29 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
     pol = politica(sistema)
     tabelas = cc.tabelas_do_conector(sistema)
     cc._garante_catalogo(db, sistema, tabelas)
-    cps = _checkpoints(db, sistema, tabelas)
+    cps = _checkpoints(db, sistema, tabelas, ex.id)
     db.commit()
+    _registra_origem(ex.id, conector, db, sistema, tabelas, "completa")
+    for t, cp in cps.items():
+        abre_cursor(sistema, t, cp.ultima_chave)  # ordem antiga: recusa antes de abrir a origem
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         det = verificar_chaves(leitor, conn, sistema, pol, detalhe=True)  # repetida/NULL acima do limite: falha
         for t, cp in cps.items():
             cp.total_origem = det[t]["total"]
-        ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
+        # Tabela sem COUNT (PK no catálogo) deixa o total da execução vazio: 0 pareceria perda.
+        if any((keyset_de(sistema, t) or {}).get("prova") == "catalogo_pk" for t in cps):
+            ex.total_origem = None
+        else:
+            ex.total_origem = sum(c.total_origem or 0 for c in cps.values())
         retoma = sum(c.posicao for c in cps.values())
+        origem_txt = ("total da origem não contado (PK conferida no catálogo)" if ex.total_origem is None
+                      else f"{ex.total_origem} linhas na origem")
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=(
-            f"Carga completa de {conector}: {ex.total_origem} linhas na origem, lote={s.carga_lote}, "
+            f"Carga completa de {conector}: {origem_txt}, lote={s.carga_lote}, "
             f"pausa={s.carga_pausa_ms}ms" + (f", retomando do checkpoint ({retoma} já gravadas)" if retoma else ""))))
-        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA['leitura']}: início ({ex.total_origem} linhas)"))
+        db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem=f"Etapa {NOME_ETAPA['leitura']}: início ({origem_txt})"))
         ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.atualizado_em = "leitura", retoma, ex.total_origem, datetime.now(UTC)
         t_leitura = time.monotonic()
         db.commit()
@@ -503,6 +769,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
             m = MAPEAMENTOS[(sistema, t)]
             cols = pol.colunas_select(t)
             ord_ = ordem(sistema, t)
+            cursor = abre_cursor(sistema, t, cp.ultima_chave)
             ex.tabela_atual = t
             if cp.posicao == 0 and det[t]["nulos"]:  # CC9: SELECT separado e limitado das chaves nulas
                 q = _quarentena(db, ex, sistema, t, [linha_json(r, cols) for r in
@@ -522,10 +789,14 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                     return _finaliza(db, ex, "pausada", f"Carga completa pausada: {disco}")
                 # CC12: sinal de vida a cada lote (conexão separada), antes da leitura que pode demorar na origem
                 sinal_de_vida(ex.id, "leitura", sum(c.posicao for c in cps.values()), ex.total_origem)
-                brutas = leitor.ler_pagina(conn, t, pol, ord_, decodifica_chave(cp.ultima_chave), s.carga_lote)
-                linhas = [linha_json(r, cols) for r in brutas]
-                if brutas:
-                    cp.ultima_chave = codifica_chave(_valores_chave(brutas[-1], ord_, cols))
+                _subetapa_leitura(ex.id, t, cp.posicao, cp.total_origem)
+                brutas, cursor, persistido = le_proxima_pagina(leitor, conn, sistema, t, pol, cursor, s.carga_lote)
+                boas, pulos = separa_pulos_sil(brutas)
+                linhas = [linha_json(r, cols) for r in boas]
+                if persistido is not None:  # o checkpoint passa da Sequencia pulada (mesma transação da quarentena)
+                    cp.ultima_chave = persistido
+                    quarentena_pulos_sil(db, ex, sistema, t, pulos)
+                if linhas:
                     c = ingere(db, sistema, t, m["chave"], m["campo_incremental"], linhas, ex.id, s.carga_lote,
                                rowversion=m.get("rowversion"), confirmar=False)
                     for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
@@ -535,7 +806,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 cp.atualizado_em = datetime.now(UTC)
                 parcial = _parcial(conn)
                 # Teto de lotes (SIL_MAX_LOTES_POR_EXECUCAO) com a origem ainda tendo dados: o checkpoint NÃO fecha.
-                cp.concluida = parcial is None and len(linhas) < s.carga_lote
+                cp.concluida = parcial is None and len(brutas) < s.carga_lote
                 ex.etapa, ex.total_etapa, ex.atualizado_em = "leitura", ex.total_origem, datetime.now(UTC)
                 ex.processadas_etapa = sum(c.posicao for c in cps.values())
                 db.commit()  # bronze do lote + checkpoint + progresso: tudo ou nada
@@ -550,6 +821,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
         avisa_tabelas_vazias(db, ex, sistema, cps)
         db.commit()
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)
 
@@ -578,6 +850,38 @@ def _fim_etapa(db: Session, ex: Execucao, etapa: str, t0: float, res: dict) -> N
     log.info("carga completa %s: etapa %s fim em %.1fs", ex.id, etapa, seg)
 
 
+def _log_duravel(ex_id: int, nivel: str, mensagem: str) -> None:
+    """Log numa conexão separada: sobrevive ao rollback da carga."""
+    with get_engine().begin() as c:
+        c.execute(Log.__table__.insert().values(execucao_id=ex_id, nivel=nivel, mensagem=mensagem))
+
+
+def _registra_origem(ex_id: int, conector: str, db: Session, sistema: str, tabelas: list[str], modo: str) -> None:
+    """Gate 2: banco resolvido (env, catálogo ou fallback) e, na conta corrente, o que a leitura vai consultar."""
+    desc = cc.descreve_banco(conector, db)
+    if desc:
+        _log_duravel(ex_id, desc[0], desc[1])
+    s = get_settings()
+    for t in tabelas:
+        spec = keyset_de(sistema, t)
+        if not spec or spec.get("prova") != "catalogo_pk":
+            continue
+        ident = MAPEAMENTOS[(sistema, t)]["chave"]
+        ident_txt = ", ".join(ident if isinstance(ident, tuple) else (ident,))
+        if modo == "completa":
+            prova = ("Nesta leitura a unicidade e a ausência de NULL vêm do catálogo da PK habilitada "
+                     "(sys.indexes, sys.index_columns, sys.columns). ")
+        else:
+            prova = ("Nesta leitura incremental não há COUNT, DISTINCT nem novo catálogo; "
+                     "as páginas seguem a mesma PK a partir da marca d'água. ")
+        _log_duravel(
+            ex_id, "INFO",
+            f"{sistema}.{t}: keyset v{spec['versao']} em {', '.join(spec['ordem'])}. {prova}"
+            "Sem COUNT, sem DISTINCT e sem índice novo. "
+            f"Login {int(s.sqlserver_timeout)}s e consulta {int(s.sqlserver_consulta_timeout)}s. "
+            f"Identidade na bronze: {ident_txt}. Incremental: {MAPEAMENTOS[(sistema, t)].get('campo_incremental')}.")
+
+
 def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) -> None:
     """Log de início (t0 None) ou fim de etapa numa conexão separada (commit próprio)."""
     if t0 is None:
@@ -589,7 +893,8 @@ def _log_separado(ex_id: int, etapa: str, t0: float | None, res: dict | None) ->
     log.info("carga completa %s: %s", ex_id, msg)
 
 
-def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True) -> None:
+def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular: bool = True,
+             parcial_ate: int | None = None) -> None:
     """Prata e ouro a partir da bronze (todos os sistemas, como a amostra). Sinal de vida em conexão separada.
     IN1: se nenhuma entrada mudou desde a última reconstrução (camadas_estado), a reconstrução é pulada (o resultado
     seria idêntico); a reconciliação da carga completa roda do mesmo jeito."""
@@ -608,18 +913,34 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
         tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: espera outra reconstrução (amostra de outro conector)
         # CC8.5: prata e ouro numa única transação; se cair no meio, as duas voltam ao estado anterior (bronze intacta).
         # Etapa, contador e logs de início/fim vão por conexão separada (visíveis durante a transação).
-        sres = processamento.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "prata", n, tot))
-        confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
-        _log_separado(ex.id, "prata", t0, sres)
-        sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-        _log_separado(ex.id, "ouro", None, None)
-        t1 = time.monotonic()
-        gres = visao.reconstruir(db, progresso=lambda n, tot: sinal_de_vida(ex.id, "ouro", n, tot))
+        from app.services import subetapa as sub
+        try:
+            with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s mesmo dentro de uma consulta longa
+                med = sub.MedicaoComSinal(ex.id)
+                sres = processamento.reconstruir(
+                    db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "prata", n, tot), med.subcontador(n, tot)),
+                    medicao=med)
+            confere_prata(db)  # CC11: antes do ouro; se falhar, a transação volta (prata/ouro anteriores ficam)
+            _log_separado(ex.id, "prata", t0, sres)
+            sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
+            _log_separado(ex.id, "ouro", None, None)
+            t1 = time.monotonic()
+            sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+            with sub.Pulso(ex.id):
+                gres = visao.reconstruir(db, progresso=lambda n, tot: (sinal_de_vida(ex.id, "ouro", n, tot),
+                                                                      sub.sinal(ex.id, n, tot)))
+        finally:
+            sub.finaliza(ex.id)  # fecha a subetapa aberta mesmo se a prata/ouro falhar
         _log_separado(ex.id, "ouro", t1, gres)
         ex.etapa, ex.processadas_etapa, ex.atualizado_em = "concluida", sres["vinculos"], datetime.now(UTC)
         camadas_estado.registra(db, assin, ex.id)  # mesma transação da prata/ouro (commit no _finaliza)
         resumo = f"silver={sres} gold={gres}"
     lido = f"lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados} ignorados={ex.ignorados}"
+    if parcial_ate is not None:  # PP2/PP3: sem reconciliação (a leitura não terminou); checkpoint intacto
+        return _finaliza(db, ex, STATUS_PARCIAL, f"Camadas sobre leitura parcial (até {parcial_ate}) de "
+                                                 f"{NOMES[conector]}: {resumo}. Não é carga completa: o checkpoint "
+                                                 "continua aberto e a próxima carga segue de onde parou.",
+                         {"camadas_parcial": True, "ate": parcial_ate})
     if ex.modo == "incremental":  # a reconciliação compara com o COUNT(*) da última completa: não vale aqui
         return _finaliza(db, ex, "sucesso", f"Carga incremental de {NOMES[conector]} concluída: {lido} {resumo}")
     rec = reconciliacao(db, sistema)
@@ -627,12 +948,17 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
                mensagem="Reconciliação bronze x origem: " + "; ".join(
                    f"{t} origem={r['origem']} bronze={r['bronze']} quarentena={r['quarentena']}" for t, r in rec.items())))
-    quar = sum(r["quarentena"] for r in rec.values())
-    res_rec = ("ok com pendências" if quar else "ok") if ok else "divergente"
+    quar_total = sum(r["quarentena"] for r in rec.values())
+    pulos = int(db.scalar(select(func.count()).select_from(RegistroBronze).where(  # Info TL 30/10: separa os motivos
+        RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena == "sil_resposta_inesperada")) or 0)
+    quar = max(quar_total - pulos, 0)  # chave nula e demais motivos (texto de sempre)
+    res_rec = ("ok com pendências" if quar_total else "ok") if ok else "divergente"
     aviso = tabelas_vazias.alerta(ex)
     _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: {lido} {resumo} "
                                  f"reconciliacao={res_rec}"
                                  + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else "")
+                                 + (f"; {pulos} Sequencia(s) pulada(s) em quarentena (resposta inesperada da API SIL)"
+                                    if pulos else "")
                                  + (f". {aviso['texto']}" if aviso else ""),
               {"alerta": aviso["codigo"], "tabelas_vazias": aviso["tabelas"]} if aviso else None)
 
@@ -641,6 +967,105 @@ def _valores_chave(r, ord_: tuple[str, ...], cols: tuple[str, ...]) -> tuple:
     if isinstance(r, dict):
         return tuple(r.get(c) for c in ord_)
     return tuple(r[cols.index(c)] for c in ord_)
+
+
+def _msg_lista_antiga(tabela: str, spec: dict, bruto: list) -> str:
+    legada = tuple(spec.get("ordem_legada") or ())
+    if legada and len(bruto) == len(legada):
+        return (f"Checkpoint de {tabela} está na ordem antiga ({', '.join(legada)}), sem versão, "
+                f"com {len(bruto)} valores. Essa tupla não traz todas as colunas da PK "
+                f"({', '.join(spec['ordem'])}) e não foi migrada nem reinterpretada. "
+                "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+                "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda; reler não troca o id.")
+    return (f"Checkpoint de {tabela} é uma lista sem versão ({len(bruto)} valores) e não é a PK versionada "
+            f"({', '.join(spec['ordem'])}). Não foi reinterpretado. "
+            "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa.")
+
+
+def fecha_cursor(sistema: str, tabela: str, valores: tuple):
+    """JSON do checkpoint. Tabela com keyset versionado grava o envelope; as demais, a lista de sempre."""
+    spec = keyset_de(sistema, tabela)
+    cod = codifica_chave(valores)
+    if not spec:
+        return cod
+    return {"v": int(spec["versao"]), "ordem": list(spec["ordem"]), "valores": cod}
+
+
+def abre_cursor(sistema: str, tabela: str, bruto):
+    """Tupla do keyset, ou None no início. Ordem/versão diferente levanta CheckpointIncompativel sem reler o valor."""
+    spec = keyset_de(sistema, tabela)
+    if not spec:
+        return decodifica_chave(bruto)
+    if bruto is None:
+        return None
+    if isinstance(bruto, list):
+        raise CheckpointIncompativel(_msg_lista_antiga(tabela, spec, bruto))
+    if not isinstance(bruto, dict) or set(bruto) != {"v", "ordem", "valores"}:
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} não está no envelope versionado (v, ordem, valores). "
+            "Não foi reinterpretado. Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda.")
+    if bruto.get("v") != spec["versao"] or list(bruto.get("ordem") or []) != list(spec["ordem"]):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} está na versão {bruto.get('v')!r}, diferente da versão {spec['versao']} "
+            f"({', '.join(spec['ordem'])}). Não foi reinterpretado. "
+            "Zere ultima_chave desta tabela para recomeçar do início da PK. "
+            "Tentar de novo sem zerar repete esta recusa. A identidade na bronze não muda.")
+    vals = bruto["valores"]
+    if not isinstance(vals, list) or len(vals) != len(spec["ordem"]):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} versão {spec['versao']} não tem {len(spec['ordem'])} valores. "
+            "Não foi reinterpretado. Zere ultima_chave desta tabela.")
+    cursor = decodifica_chave(vals)
+    if any(v is None for v in cursor):
+        raise CheckpointIncompativel(
+            f"Checkpoint de {tabela} contém NULL na PK. Não há seek seguro e o valor não foi reinterpretado. "
+            "Zere ultima_chave desta tabela.")
+    return cursor
+
+
+def _cursor_recusado(sistema: str, tabela: str, bruto) -> bool:
+    try:
+        abre_cursor(sistema, tabela, bruto)
+    except CheckpointIncompativel:
+        return True
+    return False
+
+
+def mensagem_cursor_bloqueado(db: Session, sistema: str) -> str | None:
+    """Texto da recusa quando um checkpoint parcial usaria a ordem antiga. Ciclo todo concluído recomeça e não bloqueia."""
+    tabelas = cc.tabelas_do_conector(sistema)
+    cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
+    por = {c.tabela: c for c in cps}
+    if tabelas and all(por.get(t) is not None and por[t].concluida for t in tabelas):
+        return None
+    for t in tabelas:
+        c = por.get(t)
+        if c is None or c.ultima_chave is None:
+            continue
+        try:
+            abre_cursor(sistema, t, c.ultima_chave)
+        except CheckpointIncompativel as exc:
+            return str(exc)
+    return None
+
+
+def le_proxima_pagina(leitor, conn, sistema: str, tabela: str, pol, cursor: tuple | None, limite: int,
+                      desde: tuple | None = None):
+    """Lê uma página. Devolve (linhas, próximo cursor em memória, JSON para o checkpoint ou None)."""
+    spec = keyset_de(sistema, tabela)
+    kw = {}
+    if desde is not None:
+        kw["desde"] = desde
+    if spec:
+        kw["alinhada"] = True
+    brutas = leitor.ler_pagina(conn, tabela, pol, ordem(sistema, tabela), cursor, limite, **kw)
+    if not brutas:
+        return brutas, cursor, None
+    cols = pol.colunas_select(tabela)
+    valores = _valores_chave(brutas[-1], ordem(sistema, tabela), cols)
+    return brutas, valores, fecha_cursor(sistema, tabela, valores)
 
 
 def codifica_chave(valores: tuple) -> list:
@@ -688,14 +1113,20 @@ def reconciliacao(db: Session, sistema: str) -> dict[str, dict]:
         oc = int(db.scalar(select(func.count(func.distinct(RegistroBronze.id_origem))).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == cp.tabela,
             RegistroBronze.quarentena == QUAR_OCULTA)) or 0)
-        if cp.total_origem is None:  # origem sem contagem (API SIL): não há com o que comparar
-            out[cp.tabela] = {"origem": None, "bronze": b, "quarentena": q, "ocultas": oc, "ok": True,
-                              "status": "sem_contagem"}
+        if cp.total_origem is None:  # origem sem contagem (API SIL ou PK só no catálogo): não há com o que comparar
+            item = {"origem": None, "bronze": b, "quarentena": q, "ocultas": oc, "ok": True, "status": "sem_contagem"}
+            if (keyset_de(sistema, cp.tabela) or {}).get("prova") == "catalogo_pk":
+                item["prova"] = "catalogo_pk"
+            out[cp.tabela] = item
             continue
         ok = b + q == cp.total_origem  # CC9: bronze + quarentena == origem, exato
         out[cp.tabela] = {"origem": cp.total_origem, "bronze": b, "quarentena": q, "ocultas": oc, "ok": ok,
                           "status": ("ok_com_pendencias" if q else "ok") if ok else "divergente"}
     return out
+
+
+MOTIVOS_QUARENTENA = {MOTIVO_CHAVE_NULA: "Chave nula na origem",
+                      "sil_resposta_inesperada": "Sequencia pulada: resposta inesperada da API SIL"}
 
 
 def quarentena(db: Session, conector: str) -> list[dict]:
@@ -704,8 +1135,7 @@ def quarentena(db: Session, conector: str) -> list[dict]:
     q = select(RegistroBronze.id, RegistroBronze.tabela, RegistroBronze.quarentena, RegistroBronze.quarentena_campos,
                RegistroBronze.id_origem, RegistroBronze.extraido_em).where(
         RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None)).order_by(RegistroBronze.id)
-    return [{"id": r.id, "tabela": r.tabela, "motivo": "Chave nula na origem" if r.quarentena == MOTIVO_CHAVE_NULA
-             else r.quarentena, "campos_nulos": r.quarentena_campos or [], "referencia": r.id_origem,
+    return [{"id": r.id, "tabela": r.tabela, "motivo": MOTIVOS_QUARENTENA.get(r.quarentena, r.quarentena), "campos_nulos": r.quarentena_campos or [], "referencia": r.id_origem,
              "extraido_em": r.extraido_em} for r in db.execute(q.limit(1000))]
 
 
@@ -716,6 +1146,8 @@ def situacao(db: Session, conector: str) -> dict:
                    .order_by(Execucao.id.desc()).limit(1))
     cps = list(db.scalars(select(CheckpointCarga).where(CheckpointCarga.sistema == sistema, _do_ambiente(sistema))))
     motivo = motivo_bloqueio(db, conector) if conector in cc.CONECTORES else None
+    if motivo is None and (ex is None or ex.status != "em_andamento"):
+        motivo = motivo_pausada_agenda(db, conector)  # CT26: card mostra o motivo e desabilita o botão
     if motivo is None and (ex is None or ex.status != "em_andamento"):
         motivo = recursos.motivo_disco_cheio(exige_leitura=True)
     execucao, sem_progresso = None, False
@@ -740,9 +1172,25 @@ def situacao(db: Session, conector: str) -> dict:
             "erro": ex.erro_publico(), "alerta": ex.alerta_publico(), "status_texto": STATUS_TEXTO.get(ex.status, ex.status),
             "etapa": ex.etapa, "etapa_nome": NOME_ETAPA.get(ex.etapa or ""), "processadas_etapa": ex.processadas_etapa,
             "total_etapa": ex.total_etapa, "atualizado_em": ex.atualizado_em, "sem_progresso": sem_progresso,
-            "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema)}
+            "alerta_min": get_settings().carga_alerta_min, "pode_retomar_camadas": pode_retomar_camadas(db, sistema),
+            "pode_camadas_parcial": ex.status != "em_andamento" and pode_camadas_parcial(db, sistema)}
+    from app.services import contagens_cache
+    camadas, atualizando = contagens_cache.obter(db, f"completa:{sistema}", lambda s: contagens_card(s, sistema))
+    sem_retrato = camadas is None
+    # cache frio: null (a tela mostra "—"), nunca 0 — zero parece perda de dados (TL #56)
+    camadas = camadas or {"camadas": {"bronze": None, "prata": None, "pendencias": None, "gerados_prata": None},
+                          "quarentena": None}
     return {
         "conector": conector, "liberada": motivo is None, "motivo": motivo, "execucao": execucao,
+        "camadas": camadas["camadas"], "contagens_atualizando": atualizando or sem_retrato,
+        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
+        "quarentena": camadas["quarentena"],
+    }
+
+
+def contagens_card(db: Session, sistema: str) -> dict:
+    """Contagens pesadas do card (só SELECT no Postgres), lidas pelo contagens_cache."""
+    return {
         "camadas": {
             "bronze": bronze_do_sistema(db, sistema),
             "prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema)) or 0),
@@ -752,7 +1200,6 @@ def situacao(db: Session, conector: str) -> dict:
             "gerados_prata": int(db.scalar(select(func.count()).select_from(Vinculo).where(Vinculo.sistema == sistema))
                                  or 0) + int(db.scalar(select(func.count()).select_from(CorrelacaoPendente).where(
                                      CorrelacaoPendente.sistema == sistema)) or 0)},
-        "reconciliacao": reconciliacao(db, sistema) if ex is not None and ex.status == "sucesso" else None,
         "quarentena": int(db.scalar(select(func.count()).select_from(RegistroBronze).where(
             RegistroBronze.sistema_origem == sistema, RegistroBronze.quarentena.is_not(None))) or 0),
     }
@@ -781,16 +1228,17 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
     pol = politica(sistema)
     tabelas = cc.tabelas_do_conector(sistema)
     cc._garante_catalogo(db, sistema, tabelas)
+    _registra_origem(ex.id, conector, db, sistema, tabelas, "incremental")
     ex.etapa, ex.processadas_etapa, ex.total_etapa, ex.total_origem = "leitura", 0, None, None
     ex.atualizado_em = datetime.now(UTC)
     db.commit()
     t_leitura = time.monotonic()
     conn = leitor.abrir()
+    pulso = _pulso_leitura(ex.id)  # D1: sinal a cada 30 s mesmo com a origem lenta
     try:
         for t in tabelas:
             m = MAPEAMENTOS[(sistema, t)]
             cols = pol.colunas_select(t)
-            ord_ = ordem(sistema, t)
             campo = m.get("campo_incremental")
             marca = marca_dagua(db, sistema, t) if campo and campo in cols else None
             desde = (campo, marca) if marca is not None else None
@@ -811,11 +1259,14 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                     ex.pausa_motivo, ex.tabela_atual = disco, None
                     return _finaliza(db, ex, "pausada", f"Carga incremental pausada: {disco}")
                 sinal_de_vida(ex.id, "leitura", ex.processadas_etapa, None)
-                brutas = (leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote, desde=desde) if desde
-                          else leitor.ler_pagina(conn, t, pol, ord_, ultima, s.carga_lote))
-                linhas = [linha_json(r, cols) for r in brutas]
+                _subetapa_leitura(ex.id, t, ex.processadas_etapa, None)
+                brutas, ultima, _persistido = le_proxima_pagina(
+                    leitor, conn, sistema, t, pol, ultima, s.carga_lote, desde=desde)
+                boas, pulos = separa_pulos_sil(brutas)
+                linhas = [linha_json(r, cols) for r in boas]
                 if brutas:
-                    ultima = _valores_chave(brutas[-1], ord_, cols)
+                    quarentena_pulos_sil(db, ex, sistema, t, pulos)
+                if linhas:
                     c = ingere(db, sistema, t, m["chave"], campo, linhas, ex.id, s.carga_lote,
                                rowversion=m.get("rowversion"), confirmar=False)
                     for k in ("lidos", "novos", "atualizados", "ignorados", "lotes"):
@@ -827,12 +1278,13 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                 if parcial is not None:
                     ex.tabela_atual = None
                     return _finaliza_parcial(db, ex, conector, parcial, t_leitura)
-                if len(linhas) < s.carga_lote:
+                if len(brutas) < s.carga_lote:
                     break
                 if s.carga_pausa_ms:
                     time.sleep(s.carga_pausa_ms / 1000)
         ex.tabela_atual = None
         _fim_etapa(db, ex, "leitura", t_leitura, {"lidos": ex.lidos, "novos": ex.novos, "modo": "incremental"})
     finally:
+        pulso.__exit__(None, None, None)
         conn.close()
     _camadas(db, ex, conector, sistema)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiErro, dataHoraBR } from './api'
 
-const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério' }
+const NOMES: Record<string, string> = { saude: 'Saúde', cemiterio: 'Cemitério', iptu: 'IPTU', divida: 'Dívida ativa', financeiro: 'Financeiro', sil: 'API SIL', senior: 'Senior' }
 const milhar = (n: number | null | undefined) => (n == null ? '—' : new Intl.NumberFormat('pt-BR').format(n))
 
 export type ExecCompleta = {
@@ -13,6 +13,7 @@ export type ExecCompleta = {
   tabelas_lidas?: number | null; tabelas_total?: number | null
   total_etapa?: number | null; atualizado_em?: string | null; sem_progresso?: boolean; alerta_min?: number
   pode_retomar_camadas?: boolean
+  pode_camadas_parcial?: boolean
 }
 export type Etapa = 'leitura' | 'prata' | 'ouro' | 'concluida'
 export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
@@ -23,12 +24,12 @@ export const ETAPAS: { id: Etapa; nome: string; contador: string }[] = [
 ]
 export type Situacao = {
   conector: string; liberada: boolean; motivo: string | null; execucao: ExecCompleta | null
-  camadas: { bronze: number; prata: number; pendencias: number; gerados_prata?: number }
-  reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string }> | null
-  quarentena?: number
+  camadas: { bronze: number | null; prata: number | null; pendencias: number | null; gerados_prata?: number | null }
+  reconciliacao: Record<string, { origem: number | null; bronze: number; quarentena?: number; ok: boolean; status?: string; prova?: string }> | null
+  quarentena?: number | null
 }
 type LinhaQuarentena = { id: number; tabela: string; motivo: string; campos_nulos: string[]; referencia: string; extraido_em: string | null }
-type Estimativa = { tabelas: Record<string, number>; total: number }
+type Estimativa = { tabelas: Record<string, number | null>; total: number; sem_contagem?: string[] }
 
 export const INTERVALO_MS = 5000
 export const ERRO_ATUALIZAR = 'Não foi possível atualizar o andamento da carga. Tentando de novo…'
@@ -57,6 +58,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   const [erroPoll, setErroPoll] = useState('')
   const [confRetomar, setConfRetomar] = useState(false)
   const [retomando, setRetomando] = useState(false)
+  const [confParcial, setConfParcial] = useState(false)
   const cancelarRetomar = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!confRetomar) return
@@ -150,6 +152,17 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
       setEnviando(false); setRetomando(false)
     }
   }
+  const camadasParcial = async () => {
+    setConfParcial(false); setErro(''); setEnviando(true)
+    try {
+      setSit(await api<Situacao>(`/conectores/${conector}/completa/camadas-parcial`, { method: 'POST' }))
+      anterior.current = 'em_andamento'
+    } catch (e) {
+      setErro(e instanceof ApiErro ? e.message : 'Não foi possível processar as camadas da leitura parcial.')
+    } finally {
+      setEnviando(false)
+    }
+  }
   const cancelar = async () => {
     try {
       setSit(await api<Situacao>(`/conectores/${conector}/completa/cancelar`, { method: 'POST' }))
@@ -166,13 +179,14 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
   return (
     <div className="carga-completa">
       {!rodando && (
-        <span className="com-dica">
-          <button className="btn outlined" disabled={!ok || enviando} aria-label={`Puxar carga completa de ${nome}`}
-            aria-describedby={!ok && porque ? idMotivo : undefined} title={!ok && porque ? porque : undefined} onClick={abrir}>
-            Carga completa
+        <div className="com-dica">
+          {/* M3: liberada, a carga completa é a ação principal (primário); M2: motivo abaixo, em largura total */}
+          <button className={ok ? 'btn' : 'btn outlined'} disabled={!ok || enviando} aria-label={`Executar carga completa de ${nome}`}
+            aria-describedby={!ok && porque ? idMotivo : undefined} onClick={abrir}>
+            Executar carga completa
           </button>
-          {!ok && porque && <span id={idMotivo} className="sutil motivo-desabilitado"> {porque}</span>}
-        </span>
+          {!ok && porque && <p id={idMotivo} className="sutil motivo-desabilitado">{porque}</p>}
+        </div>
       )}
 
       {confRetomar && (
@@ -187,13 +201,26 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
         </div>
       )}
 
+      {confParcial && (
+        <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setConfParcial(false) }}>
+          <div role="dialog" aria-modal="true" aria-labelledby={`t-cp-${conector}`} className="dialogo">
+            <h3 id={`t-cp-${conector}`}>Processar prata e ouro só com o que a leitura parcial já gravou na bronze? A origem não será consultada e a leitura continua de onde parou na próxima carga.</h3>
+            <div className="acoes">
+              <button className="btn secundario" onClick={() => setConfParcial(false)}>Cancelar</button>
+              <button className="btn" onClick={camadasParcial}>Processar camadas da leitura parcial</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modal && (
         <div className="veu-dialogo" onClick={(e) => { if (e.target === e.currentTarget) setModal(false) }}>
           <div role="dialog" aria-modal="true" aria-labelledby={`t-cc-${conector}`} className="dialogo">
             <h3 id={`t-cc-${conector}`}>Carregar todos os registros de {nome}? Isso pode levar alguns minutos.</h3>
             {est ? (
               <p>A origem tem <strong className="num">{milhar(est.total)}</strong> linhas em {Object.keys(est.tabelas).length} tabelas.
-                A leitura é só de consulta, em lotes; nada é apagado e dá para cancelar.</p>
+                {est.sem_contagem?.length ? ` ${est.sem_contagem.join(', ')} não entra nessa conta: a chave é a PK do catálogo e a carga não executa COUNT.` : ''}
+                {' '}A leitura é só de consulta, em lotes; nada é apagado e dá para cancelar.</p>
             ) : estErro ? <p className="erro-texto">{estErro}</p> : <p aria-busy="true">Contando as linhas…</p>}
             <div className="acoes">
               <button ref={cancelarModal} className="btn secundario" onClick={() => setModal(false)}>Cancelar</button>
@@ -217,6 +244,11 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
         <div role="alert" className="aviso erro">
           <p>{ex.mensagem}</p>
           <button className="btn" onClick={abrir} disabled={!ok}>Tentar de novo</button>
+          {ex.pode_camadas_parcial && (
+            <button className="btn outlined" onClick={() => setConfParcial(true)} disabled={enviando}>
+              Processar camadas da leitura parcial
+            </button>
+          )}
         </div>
       )}
       {ex && !rodando && ex.status === 'interrompida' && (
@@ -259,7 +291,7 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           </dl>
           {(sit.quarentena ?? 0) > 0 && (
             <div className="aviso-ambar" role="status">
-              <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena (chave nula)</p>
+              <p>Concluída com {milhar(sit.quarentena)} linha(s) em quarentena{conector === 'sil' ? ' (Sequencias puladas ou chave nula)' : ' (chave nula)'}</p>
               <button className="link-btn" aria-expanded={quar !== null} onClick={verQuarentena}>
                 {quar ? 'Ocultar detalhes da quarentena' : 'Ver detalhes da quarentena'}
               </button>
@@ -278,8 +310,10 @@ export default function CargaCompleta({ conector, liberada, motivo, onFim, onRod
           {sit.reconciliacao && (
             Object.values(sit.reconciliacao).every((r) => r.ok)
               ? <p><span className="selo pronto"><i aria-hidden="true" />
-                {Object.values(sit.reconciliacao).some((r) => (r.quarentena ?? 0) > 0)
-                  ? 'Bronze + quarentena batem com a origem (ok com pendências)' : 'Bronze bate com a origem'}</span></p>
+                {Object.entries(sit.reconciliacao).some(([, r]) => r.prova === 'catalogo_pk')
+                  ? `Tabelas contadas batem com a origem. ${Object.entries(sit.reconciliacao).filter(([, r]) => r.prova === 'catalogo_pk').map(([t]) => t).join(', ')} sem COUNT: a PK do catálogo confirma a chave.`
+                  : Object.values(sit.reconciliacao).some((r) => (r.quarentena ?? 0) > 0)
+                    ? 'Bronze + quarentena batem com a origem (ok com pendências)' : 'Bronze bate com a origem'}</span></p>
               : <p className="aviso-ambar">Bronze diferente da origem em: {Object.entries(sit.reconciliacao).filter(([, r]) => !r.ok)
                 .map(([t, r]) => `${t} (origem ${milhar(r.origem)}, bronze ${milhar(r.bronze)})`).join('; ')}</p>
           )}

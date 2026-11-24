@@ -3,7 +3,8 @@ Cada lote é confirmado (commit) separadamente: se a carga falhar, a próxima re
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select
@@ -19,9 +20,70 @@ def hash_registro(dados: dict[str, Any]) -> str:
     return hashlib.sha256(canon.encode()).hexdigest()
 
 
+def data_movimentacao_id(valor: Any) -> str:
+    """Instante da conta corrente no id, sempre `AAAA-MM-DDTHH:MM:SS.ffffff`.
+
+    Datetime, date e texto ISO (com espaço ou `T`) do mesmo instante produzem o mesmo texto.
+    Sem fuso: o relógio da origem entra como veio. Valor ilegível permanece o texto, sem inventar data.
+    """
+    if valor in (None, ""):
+        return ""
+    dt: datetime | None
+    if isinstance(valor, datetime):
+        dt = valor
+    elif isinstance(valor, date):
+        dt = datetime(valor.year, valor.month, valor.day)
+    else:
+        try:
+            dt = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+        except ValueError:
+            return str(valor).strip()
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+# Colunas int da PK da conta corrente. SEQU e CODI são varchar e não passam por aqui.
+# Sequencia é a mesma suposição de TIPOS_PK_CC: int, ainda não confirmada na origem.
+_COLUNAS_INTEIRAS_ID = frozenset({"ANO", "Sequencia"})
+
+
+def inteiro_id(valor: Any) -> str:
+    """Inteiro da PK sem casa decimal: 1, 1.0, Decimal('1.00') e '1' viram '1'."""
+    if valor is None or valor == "":
+        return ""
+    if isinstance(valor, bool):
+        raise ValueError("Identidade inteira não aceita bool.")
+    if isinstance(valor, int):
+        return str(valor)
+    if isinstance(valor, float):
+        if not valor.is_integer():
+            return str(valor)
+        return str(int(valor))
+    if isinstance(valor, Decimal):
+        numero = valor
+    else:
+        texto = str(valor).strip()
+        try:
+            numero = Decimal(texto)
+        except InvalidOperation:
+            return texto
+    if numero != numero.to_integral_value():
+        return format(numero, "f")
+    return str(int(numero))
+
+
+def _parte_id(coluna: str, valor: Any) -> str:
+    if coluna == "Data_Movimentacao":
+        return data_movimentacao_id(valor)
+    if coluna in _COLUNAS_INTEIRAS_ID:
+        return inteiro_id(valor)
+    return "" if valor is None else str(valor)
+
+
 def _id(chave: str | tuple, r: dict) -> str:
     if isinstance(chave, tuple):
-        return "|".join("" if r.get(c) is None else str(r.get(c)) for c in chave)
+        return "|".join(_parte_id(c, r.get(c)) for c in chave)
     return str(r[chave])
 
 

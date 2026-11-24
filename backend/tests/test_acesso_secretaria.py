@@ -174,7 +174,9 @@ def test_r4_saude_nominal_sem_conteudo_clinico(client, db, rbac):
     _vinculo(db, u, "SAUDE")
     cid = _cidadao(db)
     corpo = client.get(f"/api/gold/cidadaos/{cid}/saude", headers=h).json()
-    assert set(corpo) == {"cidadao_id", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo) == {"cidadao_id", "procedencia", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo["procedencia"]) == {"sistema", "fonte", "fonte_atualizado_em", "atualizado_em"}
+    assert corpo["procedencia"]["sistema"] == "SAUDE"
 
 
 def test_regra_desligada_nao_muda_comportamento(client, db, monkeypatch):
@@ -442,10 +444,14 @@ def test_qa2_rotas_de_qualidade_municipes_e_acessos(client, db, rbac, tokens):
 PESSOAIS = {
     ("GET", "/api/silver/cidadaos"), ("GET", "/api/silver/cidadaos.csv"), ("GET", "/api/silver/pendencias"),
     ("GET", "/api/silver/municipes"), ("GET", "/api/silver/municipes/pendencias"), ("GET", "/api/silver/inconsistencias"),
+    ("GET", "/api/silver/empresas"),  # CN4: MEI/empresário individual é pessoa física
     ("GET", "/api/gold/cidadaos/{cid}"), ("GET", "/api/gold/cidadaos/{cid}/tributario"),
+    ("GET", "/api/gold/cidadaos/{cid}/cemiterio"),
+    ("GET", "/api/gold/cidadaos/{cid}/cemiterio/titulares"),
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
+    ("GET", "/api/gold/cidadaos/{cid}/genealogia"),
     ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
     ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
     ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),
@@ -461,21 +467,26 @@ POR_FUNCAO_COM_MOTIVO = {
     ("GET", "/api/silver/pendencias"), ("GET", "/api/silver/inconsistencias"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/contagens/{eid}/cpfs-repetidos"),
 } | {("POST", "/api/explorar/" + r) for r in ("conectores", "tabelas", "perfil", "amostra", "funil", "linhagem", "revelar")}
-NAO_PESSOAIS = {  # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
+NAO_PESSOAIS = {("GET", "/api/gold/ficha/fontes"),   # operação, catálogo, agregados, auditoria técnica e a própria tela de TI (só admin)
+    ("GET", "/api/audesp/arquivos"), ("POST", "/api/audesp/arquivo"), ("POST", "/api/audesp/carregar"), ("GET", "/api/financas/painel"), ("GET", "/api/iegm/painel"), ("GET", "/api/iegm/estado"),
+    ("POST", "/api/iegm/arquivo"), ("GET", "/api/divida/natureza/estado"), ("POST", "/api/divida/natureza/arquivo"), ("GET", "/api/rh/estado"), ("POST", "/api/rh/carregar"), ("GET", "/api/rh/painel"), ("GET", "/api/cobertura/estado"), ("POST", "/api/cobertura/carregar"), ("GET", "/api/cobertura/painel"), ("GET", "/api/cubos"), ("POST", "/api/cubos/recalcular"), ("GET", "/api/cubos/{cubo}"), ("GET", "/api/cruzamentos"),  # AU1/AU5 e IEG-M (só agregados; upload só admin): metadados e upload (só admin)
     ("GET", "/api/auth/me"), ("GET", "/api/dashboard"), ("GET", "/api/catalogo/sistemas"), ("POST", "/api/catalogo/sistemas"),
     ("PUT", "/api/catalogo/sistemas/{sid}"), ("POST", "/api/catalogo/sistemas/{sid}/tabelas"), ("GET", "/api/conectores"),
     ("POST", "/api/conectores/{conector}/testar"), ("POST", "/api/conectores/demo/executar"), ("POST", "/api/conectores/sil/amostra"),
     ("GET", "/api/conectores/sil/amostra/{eid}"), ("POST", "/api/conectores/{conector}/amostra"),
-    ("GET", "/api/conectores/{conector}/amostra/{eid}"), ("GET", "/api/conectores/sil/status"),
+    ("GET", "/api/conectores/{conector}/amostra/{eid}"), ("POST", "/api/conectores/{conector}/amostra/{eid}/aprovar"),
+    ("GET", "/api/conectores/sil/status"),
     ("GET", "/api/conectores/{conector}/bloqueio"), ("POST", "/api/conectores/{conector}/execucoes/{eid}/interromper"),
     ("POST", "/api/conectores/{base_id:int}/executar"), ("POST", "/api/conectores/{conector}/diagnostico"),
     ("POST", "/api/conectores/diagnostico"), ("GET", "/api/conectores/{conector}/completa"),
     ("GET", "/api/conectores/{conector}/completa/estimativa"), ("POST", "/api/conectores/{conector}/completa"),
     ("GET", "/api/conectores/{conector}/completa/quarentena"), ("POST", "/api/conectores/{conector}/completa/retomar-camadas"),
+    ("POST", "/api/conectores/{conector}/completa/camadas-parcial"),
     ("POST", "/api/conectores/{conector}/completa/cancelar"), ("GET", "/api/sistema/recursos"),
     ("POST", "/api/conectores/iss/municipes/executar"), ("GET", "/api/execucoes/{eid}/logs"), ("GET", "/api/indicadores"),
     ("GET", "/api/politicas"), ("POST", "/api/politicas/retencao/executar"), ("POST", "/api/usuarios"), ("GET", "/api/auditoria"),
-    ("GET", "/api/fontes/progresso"), ("GET", "/api/agenda"), ("PUT", "/api/agenda/{conector}"),
+    ("GET", "/api/fontes/progresso"), ("GET", "/api/cargas/andamento"), ("POST", "/api/cargas/sil/imoveis"), ("GET", "/api/cargas/sil/imoveis/{eid}"),
+    ("GET", "/api/agenda"), ("PUT", "/api/agenda/{conector}"),
     ("POST", "/api/agenda/{conector}/executar-agora"), ("GET", "/api/educacao/releitura-deploy"),
     ("POST", "/api/educacao/conector/cancelar"), ("POST", "/api/educacao/conector/execucoes/{eid:int}/marcar-falha"),
     ("POST", "/api/educacao/conector/{modo}"), ("GET", "/api/health"), ("POST", "/api/auth/login"),

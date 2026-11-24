@@ -3,13 +3,24 @@ import type { ReactNode } from 'react'
 import { useAuth } from './auth'
 import Layout from './Layout'
 import AcessoSecretaria from './pages/AcessoSecretaria'
+import Cargas from './pages/Cargas'
+import ImportarSil from './pages/ImportarSil'
+import ChatDados from './pages/ChatDados'
 import Conectores from './pages/Conectores'
 import Dashboard from './pages/Dashboard'
 import ExplorarDados from './pages/ExplorarDados'
 import Login from './pages/Login'
+import PlanoGoverno from './pages/PlanoGoverno'
+import PortalCidadao from './pages/PortalCidadao'
 import Simulador from './pages/Simulador'
 import Politicas from './pages/Politicas'
 import Vinculos from './pages/Vinculos'
+import { PainelFinancas } from './paineis/Financas'
+import { PainelIegm } from './paineis/Iegm'
+import { PainelRh } from './paineis/Rh'
+import { PainelCruzamentos } from './paineis/Cruzamentos'
+import { PainelCobertura } from './paineis/Cobertura'
+import PainelFolhaModelo from './paineis/shell/FolhaModelo'
 import { MonitorCargas, PainelFazenda, PainelGeral, PainelSaude } from './paineis/Paineis'
 
 function Protegido({ children }: { children: ReactNode }) {
@@ -22,18 +33,29 @@ function Protegido({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <Routes>
+      <Route path="/cidadao" element={<PortalCidadao />} />
       <Route path="/login" element={<Login />} />
       <Route element={<Protegido><Layout /></Protegido>}>
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/plano-governo" element={<PlanoGoverno />} />
         <Route path="/conectores" element={<Conectores />} />
+        <Route path="/cargas" element={<Cargas />} />
+        <Route path="/cargas/sil" element={<ImportarSil />} />
         <Route path="/simulador" element={<Simulador />} />
         <Route path="/explorar" element={<ExplorarDados />} />
         <Route path="/painel" element={<PainelGeral />} />
         <Route path="/painel/saude" element={<PainelSaude />} />
         <Route path="/painel/fazenda" element={<PainelFazenda />} />
+        <Route path="/painel/financas" element={<PainelFinancas />} />
+        <Route path="/painel/iegm" element={<PainelIegm />} />
+        <Route path="/painel/rh" element={<PainelRh />} />
+        <Route path="/painel/cruzamentos" element={<PainelCruzamentos />} />
+        <Route path="/painel/cobertura" element={<PainelCobertura />} />
+        <Route path="/painel/modelo-folha" element={<PainelFolhaModelo />} />
         <Route path="/monitor" element={<MonitorCargas />} />
         <Route path="/vinculos" element={<Vinculos />} />
         <Route path="/politicas" element={<Politicas />} />
+        <Route path="/chat" element={<ChatDados />} />
         <Route path="/ti/acesso-secretaria" element={<AcessoSecretaria />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

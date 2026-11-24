@@ -1,6 +1,8 @@
+import logging
+import re
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -72,6 +74,24 @@ dom = acs.dom
 _AREA_DOMINIO = {"impostos": "tributario"}  # área da linha do tempo -> domínio do ouro
 
 
+def _naturezas_divida(db: Session, codigos: set[int]) -> dict[int, str]:
+    """Nome da natureza (ref.divida_natureza, CSV do DBA); sem a tabela carregada fica só o código."""
+    if not codigos:
+        return {}
+    from sqlalchemy import bindparam
+    q = text("SELECT codigo, descricao FROM ref.divida_natureza WHERE codigo IN :c").bindparams(bindparam("c", expanding=True))
+    return {c: d for c, d in db.execute(q, {"c": sorted(codigos)}).all()}
+
+
+def _origem_divida(natureza_nome: str | None, imovel: str | None) -> str | None:
+    """Origem legível: natureza (ref.divida_natureza) + imóvel quando houver; nunca supõe IPTU."""
+    if natureza_nome and imovel:
+        return f"{natureza_nome} — imóvel {imovel}"
+    if imovel:
+        return f"Imóvel {imovel}"
+    return natureza_nome or None
+
+
 def _menor_cid(db: Session, cid: str) -> bool:
     """R4: o cidadão é menor (ou sem nascimento: trata como menor). Só lê quando a regra está ligada."""
     if not acs.rbac_ativo():
@@ -80,13 +100,27 @@ def _menor_cid(db: Session, cid: str) -> bool:
     return _menor(c.data_nascimento if c else None)
 
 
+_log_health = logging.getLogger(__name__)
+
+
 @publico.get("/health")
 def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("select 1"))
-        return {"status": "ok", "db": "ok", "versao": VERSION}
     except Exception:  # noqa: BLE001
-        return JSONResponse(status_code=503, content={"status": "erro", "db": "down", "versao": VERSION})
+        return JSONResponse(status_code=503, content={"status": "erro", "db": "down", "versao": VERSION, "migracao": None})
+    return {"status": "ok", "db": "ok", "versao": VERSION, "migracao": _migracao(db)}
+
+
+def _migracao(db: Session) -> str | None:
+    """version_num do alembic (só o id da revisão, sem dado sensível). Falha -> None; nunca derruba o health."""
+    try:
+        with db.begin_nested():
+            v = db.execute(text("select version_num from controle.alembic_version limit 1")).scalar()
+        return str(v) if v is not None else None
+    except Exception as exc:  # noqa: BLE001 - só a classe no log, nada na resposta
+        _log_health.warning("health: migracao ilegivel (%s)", type(exc).__name__)
+        return None
 
 
 @publico.post("/auth/login")
@@ -201,8 +235,11 @@ def _404():
 @api.get("/conectores")
 def conectores(db: Session = Depends(get_db)):
     """Um conector por sistema do catálogo, com status e última execução."""
-    cfg = ConfigSqlServer.do_ambiente(get_settings())
-    bases = indicadores(db)
+    from app.services import contagens_cache
+    from app.services.indicadores import contagens_por_sistema
+    cfg = ConfigSqlServer.do_ambiente(get_settings())  # só lê variáveis de ambiente; não conecta na origem
+    cont, atualizando = contagens_cache.obter(db, "conectores", contagens_por_sistema)
+    bases = indicadores(db, cont, frio=cont is None)
     execs = list(db.scalars(select(Execucao).order_by(Execucao.id.desc()).limit(50)))
     lista = []
     for s, tabs in [(x["codigo"], x) for x in lista_sistemas(db)]:
@@ -212,7 +249,8 @@ def conectores(db: Session = Depends(get_db)):
                       "credencial": "Configurada via variável de ambiente" if cfg.resumo_publico()["configurado"] else "Não configurada",
                       "amostra_limite": cfg.amostra_limite, **_banco_origem(s, db)})
     return {"conectores": lista, "execucoes": [_exec(e) for e in execs[:20]], "bases": bases,
-            "totais": totais(bases), "carga_habilitada": carga_habilitada()}
+            "totais": totais(bases), "carga_habilitada": carga_habilitada(),
+            "contagens_atualizando": atualizando or cont is None}
 
 
 def _id_conector(db: Session, conector: str) -> str:
@@ -264,6 +302,14 @@ def executa_demo(req: Request, dados: CargaIn | None = None, u: Usuario = Depend
     return _exec(executar_demo(db, u.email, completa=completa, conjunto=dados.conjunto if dados else "base"))
 
 
+def _recusa_pausada(db: Session, u: Usuario, req: Request, conector: str, acao: str, evento: str) -> None:
+    """CT26 v2: agenda com ativo=false -> 409 antes de qualquer execução; `forcar` não muda. Auditado, sem PII."""
+    motivo = ccomp.motivo_pausada_agenda(db, conector, acao)
+    if motivo:
+        audita(db, u.email, evento, f"conector:{conector}", {"motivo": "agenda_pausada"}, _ip(req))
+        raise HTTPException(409, motivo)
+
+
 # Rotas fixas da SIL antes de /conectores/{conector}/amostra (a ordem decide o casamento).
 @api.post("/conectores/sil/amostra", status_code=202)
 def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
@@ -272,6 +318,7 @@ def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session 
     from app.connectors.sil.cliente import SilDesabilitado
     from app.services import amostra_sil as sil
     audita(db, u.email, "amostra_sil_solicitada", "conector:sil", ip=_ip(req))
+    _recusa_pausada(db, u, req, "sil", "amostra", "amostra_sil_recusada")
     try:
         ex = sil.iniciar_amostra(db, u.email)
     except SilDesabilitado as exc:
@@ -280,7 +327,8 @@ def sil_amostra(req: Request, u: Usuario = Depends(admin_auditado), db: Session 
     except sil.Conflito as exc:
         audita(db, u.email, "amostra_sil_conflito", "conector:sil", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.LOTES_POR_EXECUCAO},
+    audita(db, u.email, "amostra_sil_iniciada", f"execucao:{ex.id}", {"conector": "sil", "lotes": sil.lotes_por_execucao(),
+                                                                     "aprovacao": "manual"},
            _ip(req))
     db.expire_all()  # disparo síncrono nos testes: devolve o estado final
     return _exec_sil(db.get(Execucao, ex.id))
@@ -306,6 +354,7 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     GET /conectores/{conector}/amostra/{id}. 404/409 continuam imediatos (validação e trava #20 antes do 202)."""
     conector = _id_conector(db, conector)
     audita(db, u.email, "amostra_conector_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "amostra", "amostra_conector_recusada")
     try:
         ex = cc.iniciar_amostra(db, u.email, conector)
     except cc.ConectorDesconhecido:
@@ -316,7 +365,8 @@ def amostra_conector(conector: str, req: Request, u: Usuario = Depends(admin_aud
     except cc.Conflito as exc:
         audita(db, u.email, "amostra_conector_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
-    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}", {"conector": conector, **_origem_api(conector)},
+    audita(db, u.email, "amostra_conector_iniciada", f"execucao:{ex.id}",
+           {"conector": conector, "aprovacao": "manual", **_origem_api(conector)},
            _ip(req))
     db.expire_all()  # se o disparo foi síncrono (testes), devolve o estado final
     return _exec_amostra(db.get(Execucao, ex.id))
@@ -336,6 +386,21 @@ def _origem_api(conector: str) -> dict:
 def _exec_amostra(ex: Execucao) -> dict:
     return {**_exec(ex), "etapa": ex.etapa, "processadas_etapa": ex.processadas_etapa, "total_etapa": ex.total_etapa,
             "atualizado_em": ex.atualizado_em, "em_andamento": ex.status == "em_andamento"}
+
+
+@api.post("/conectores/{conector}/amostra/{eid}/aprovar")
+def amostra_aprovar(conector: str, eid: int, req: Request, u: Usuario = Depends(admin_auditado),
+                    db: Session = Depends(get_db)):
+    """PR-A (CT2/CT4): "Aprovar amostra" libera a carga completa. Só admin, auditado (quem, quando, SHA). Não lê a origem."""
+    conector = _id_conector(db, conector)
+    if conector not in cc.CONECTORES:
+        _404()
+    _recusa_pausada(db, u, req, conector, "amostra", "amostra_aprovacao_recusada")
+    try:
+        return ccomp.aprovar_amostra(db, u.email, conector, eid, _ip(req))
+    except ccomp.AprovacaoRecusada as exc:
+        audita(db, u.email, "amostra_aprovacao_recusada", f"execucao:{eid}", {"conector": conector}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
 
 
 @api.get("/conectores/{conector}/amostra/{eid}")
@@ -522,6 +587,10 @@ def completa_estimativa(conector: str, req: Request, u: Usuario = Depends(admin_
         raise HTTPException(409, motivo)
     try:
         return ccomp.estimativa(db, conector)
+    except ccomp.CheckpointIncompativel as exc:
+        audita(db, u.email, "carga_completa_checkpoint_incompativel", f"conector:{conector}",
+               {"motivo": "checkpoint_ordem_antiga"}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
     except ccomp.ChaveInvalida as exc:
         audita(db, u.email, "carga_completa_chave_invalida", f"conector:{conector}", {"motivo": str(exc)}, _ip(req))
         raise HTTPException(409, str(exc)) from None
@@ -538,6 +607,7 @@ def completa_conector(conector: str, req: Request, u: Usuario = Depends(admin_au
     """Carga completa real (CC3): background, lotes com checkpoint, cancelável. Só admin (CC5), auditada (CC4)."""
     conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "completa", "carga_completa_negada")
     try:
         ex = ccomp.iniciar(db, u.email, conector)
     except ccomp.Bloqueado as exc:
@@ -563,6 +633,7 @@ def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(a
     """CC7: carga interrompida com a leitura concluída retoma só prata e ouro a partir da bronze (sem reler a origem)."""
     conector = _conector_completa(db, conector)
     audita(db, u.email, "carga_completa_retomar_camadas_solicitada", f"conector:{conector}", ip=_ip(req))
+    _recusa_pausada(db, u, req, conector, "completa", "carga_completa_negada")
     try:
         ex = ccomp.iniciar(db, u.email, conector, somente_camadas=True)
     except ccomp.Bloqueado as exc:
@@ -572,6 +643,27 @@ def completa_retomar_camadas(conector: str, req: Request, u: Usuario = Depends(a
         audita(db, u.email, "carga_completa_conflito", f"conector:{conector}", ip=_ip(req))
         raise HTTPException(409, str(exc)) from None
     audita(db, u.email, "carga_completa_retomada_camadas", f"execucao:{ex.id}", {"conector": conector}, _ip(req))
+    return ccomp.situacao(db, conector)
+
+
+@api.post("/conectores/{conector}/completa/camadas-parcial", status_code=202)
+def completa_camadas_parcial(conector: str, req: Request, u: Usuario = Depends(admin_auditado),
+                             db: Session = Depends(get_db)):
+    """TL 30/10 (PP1–PP5): prata e ouro sobre a bronze de uma leitura parcial, sem ler a origem e sem mexer no
+    checkpoint. Roda com a agenda desligada (de propósito); 409 só com outra execução em andamento. Auditado."""
+    conector = _conector_completa(db, conector)
+    audita(db, u.email, "camadas_parcial_solicitada", f"conector:{conector}", {"usuario_id": u.id}, _ip(req))
+    try:
+        ex = ccomp.iniciar_camadas_parcial(db, u.email, conector)
+    except ccomp.Bloqueado as exc:
+        audita(db, u.email, "camadas_parcial_negada", f"conector:{conector}", {"usuario_id": u.id, "motivo": str(exc)},
+               _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    except cc.Conflito as exc:
+        audita(db, u.email, "camadas_parcial_conflito", f"conector:{conector}", {"usuario_id": u.id}, _ip(req))
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "camadas_parcial_iniciada", f"execucao:{ex.id}", {"conector": conector, "usuario_id": u.id},
+           _ip(req))
     return ccomp.situacao(db, conector)
 
 
@@ -694,10 +786,101 @@ def municipes_pendencias(u: Usuario = Depends(usuario_atual), db: Session = Depe
             for p in db.scalars(select(MunicipePendencia).order_by(MunicipePendencia.chave))]
 
 
+_LIMPA_DOC = re.compile(r"[\s.\-/]")
+
+
+@api.get("/silver/empresas", dependencies=[Depends(dom("tributario"))])
+def silver_empresas(req: Request, busca: str = "", u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """CN4: empresa pelo CNPJ completo (numérico ou alfanumérico, CN1), pela raiz do CNPJ (8 posições, matriz e filiais)
+    ou pelo CCM da SIL. Junta SIL (empresas_sil), ISS (municipes PJ) e IPTU (possuidor PJ). Não busca por nome: a razão
+    social sai mascarada (SIL16) e a busca por nome a revelaria. A auditoria guarda o modo e a quantidade, nunca o CNPJ."""
+    from app.identity import documento as docmod
+    from app.models.camadas import EmpresaSil, ImovelPossuidor
+    from app.services.vinculos import mascara_doc
+    termo = _LIMPA_DOC.sub("", busca or "").upper()
+    ccm = int(termo) if termo.isdigit() and len(termo) <= 9 else None
+    if re.fullmatch(r"[0-9A-Z]{12}[0-9]{2}", termo):
+        if not docmod.cnpj_valido(termo):
+            raise HTTPException(400, "CNPJ inválido: confira os dígitos verificadores.")
+        modo, casa = "cnpj", (lambda col: col == termo)
+    elif re.fullmatch(r"[0-9A-Z]{8}", termo):
+        modo, casa = "raiz", (lambda col: col.like(f"{termo}%") & (func.length(col) == 14))
+    elif ccm is not None:
+        modo, casa = "ccm", None
+    else:
+        raise HTTPException(400, "Informe o CNPJ completo (14 posições), a raiz do CNPJ (8) ou o CCM. Para CPF, use a busca de cidadão.")
+    docs: set[str] = set()
+    sil_sem_doc: list = []
+    if casa is not None:
+        docs |= set(db.scalars(select(EmpresaSil.documento).where(casa(EmpresaSil.documento)).limit(200)))
+        docs |= set(db.scalars(select(Municipe.documento).where(casa(Municipe.documento), Municipe.tipo_pessoa == "J").limit(200)))
+        docs |= set(db.scalars(select(ImovelPossuidor.documento).where(casa(ImovelPossuidor.documento)).limit(200)))
+    if ccm is not None:  # 8 dígitos podem ser raiz ou CCM: procura os dois
+        for e in db.scalars(select(EmpresaSil).where(EmpresaSil.ccm == ccm)):
+            if e.documento and len(e.documento) == 14:
+                docs.add(e.documento)
+            else:
+                sil_sem_doc.append(e)
+    out = []
+    for doc in sorted(d for d in docs if d)[:50]:
+        sil = list(db.scalars(select(EmpresaSil).where(EmpresaSil.documento == doc).order_by(EmpresaSil.ccm)))
+        mun = db.get(Municipe, doc)
+        imoveis = db.scalar(select(func.count(func.distinct(ImovelPossuidor.codi)))
+                            .where(ImovelPossuidor.documento == doc, ImovelPossuidor.ativo.is_(True))) or 0
+        nome = next((e.nome for e in sil if e.nome), None) or (mun.nome if mun else None)
+        fontes = [f for f, tem in (("SIL", sil), ("ISS", mun), ("IPTU", imoveis)) if tem]
+        out.append({"documento": mascara_doc(doc), "tipo_pessoa": "PJ", "nome": mascara_nome(nome), "ccms": [e.ccm for e in sil],
+                    "possui_debito": any(e.possui_debito for e in sil) if sil else None, "imoveis_ativos": imoveis,
+                    "fontes": fontes, "mascarado": True})
+    out += [{"documento": mascara_doc(e.documento) if e.documento else "—", "tipo_pessoa": e.tipo_pessoa, "nome": mascara_nome(e.nome), "ccms": [e.ccm], "possui_debito": e.possui_debito,
+             "imoveis_ativos": 0, "fontes": ["SIL"], "mascarado": True} for e in sil_sem_doc]
+    audita(db, u.email, "busca_empresa", "empresas", {"modo": modo, "resultados": len(out)}, _ip(req))
+    return out
+
+
 @api.get("/silver/inconsistencias", dependencies=[Depends(acs.dom_ou_lgpd("qualidade_dados"))])
 def inconsistencias(db: Session = Depends(get_db)):
     return [{"id": i.id, "cidadao_id": i.cidadao_id, "sistema": i.sistema, "chave_origem": i.chave_origem, "tipo": i.tipo,
              "campo": i.campo, "detalhe": i.detalhe} for i in db.scalars(select(Inconsistencia).order_by(Inconsistencia.id))]
+
+
+def _cns_mascarado(db: Session, cid: str) -> str | None:
+    from app.identity.cns import mascara as mascara_cns
+    return mascara_cns(db.scalar(select(Identificador.valor).where(Identificador.cidadao_id == cid, Identificador.tipo == "cns").limit(1)))
+
+
+@api.get("/gold/ficha/fontes")
+def fontes_da_ficha(_u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Quais áreas da ficha já têm base carregada (sem dado de pessoa): separa "não tem" de "ainda não sabemos"."""
+    from app.services import ficha_cidadao
+    return ficha_cidadao.fontes(db)
+
+
+@api.get("/gold/cidadaos/{cid}/cemiterio")
+def cemiterio_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Túmulos em que o cidadão é titular ou autorizado, compra em leilão e sepultamento (óbito confirmado)."""
+    from app.services import ficha_cidadao
+    acs.exige(db, u, req, "cemiterio", dominios=["cemiterio"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    from app.gold.procedencia import carimbo, marco_ouro
+    r = ficha_cidadao.cemiterio(db, cid)
+    audita(db, u.email, "consulta_cemiterio", f"cidadao:{cid}", {k: len(v) for k, v in r.items()}, _ip(req))
+    return {"cidadao_id": cid, "procedencia": carimbo("CEMITERIO", marco_ouro(db, cid, "CEMITERIO")), **r}
+
+
+@api.get("/gold/cidadaos/{cid}/cemiterio/titulares")
+def titulares_da_sepultura(cid: str, req: Request, cod: str = "", quadra: str = "", sepultura: str = "",
+                           u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Titulares da sepultura (ativos e inativos). Mesma autorização da ficha de cemitério.
+
+    Só nome, situação (Ativo/Inativo) e se é o atual. Sem CPF, documento, data ou motivo.
+    """
+    from app.services import ficha_cidadao
+    acs.exige(db, u, req, "cemiterio", dominios=["cemiterio"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    itens = ficha_cidadao.titulares_sepultura(db, cod, quadra, sepultura)
+    audita(db, u.email, "consulta_cemiterio_titulares", f"cidadao:{cid}", {"total": len(itens)}, _ip(req))
+    return {"titulares": itens}
 
 
 @api.get("/gold/cidadaos/{cid}")
@@ -710,13 +893,28 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
              if sec.ve(d.dominio)]
     ends = list(db.scalars(select(Endereco).where(Endereco.cidadao_id == cid).order_by(Endereco.fonte_atualizado_em.desc())))
     return {"cidadao_id": cid, "nome": c.nome or "", "cpf": (_cpfs(db, [cid]).get(cid) if sec.sem_mascara else mascara(_cpfs(db, [cid]).get(cid))),
+            "cns": _cns_mascarado(db, cid) if sec.ve("saude") else None, "ve_cadastro": sec.ve("identificacao"),
             "cpf_mascarado": not sec.sem_mascara, "sistemas": (c.sistemas or []) if sec.dominios is None else [],
             "dominios": [d for d in (c.dominios or []) if sec.ve(d)],
             "dados": [{"dominio": d.dominio, "campo": d.campo,
                        "valor": (normaliza_data_iso(d.valor) or d.valor) if d.campo in CAMPOS_DATA else d.valor, "fonte": d.sistema,
                        "atualizado_em": d.fonte_atualizado_em} for d in dados],
-            "enderecos": [{"valor": e.logradouro, "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
-                           "mais_recente": e.mais_recente} for e in ends]}
+            # EN8: 2 linhas (o texto da Saúde vem com "\n"); origem_endereco só diz de qual bloco veio (geral/outro)
+            "enderecos": [{"valor": e.logradouro, "linhas": (e.logradouro or "").split("\n") if e.logradouro else [],
+                           "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
+                           "mais_recente": e.mais_recente, "origem_endereco": e.origem_endereco} for e in ends]}
+
+
+@api.get("/gold/cidadaos/{cid}/genealogia")
+def genealogia_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Ascendentes e descendentes (2 níveis). CadÚnico e BU educação aparecem como provedores sem acesso."""
+    from app.genealogia.arvore import montar
+    acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    r = montar(db, cid)
+    audita(db, u.email, "consulta_genealogia", f"cidadao:{cid}",
+           {"ascendentes": len(r["ascendentes"]), "descendentes": len(r["descendentes"])}, _ip(req))
+    return r
 
 
 def _empresa_sil(e, *, revela: bool) -> dict:
@@ -754,20 +952,33 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     from datetime import date as _date
 
     from app.models.camadas import DividaAtiva, EmpresaSil, Imovel, ImovelPossuidor, Lancamento
+    from app.silver.endereco_imovel import endereco_do_imovel, enderecos_por_inscricoes
     acs.exige(db, u, req, "tributario", dominios=["tributario"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     empresas = list(db.scalars(select(EmpresaSil).where(EmpresaSil.cidadao_id == cid).order_by(EmpresaSil.ccm)))
     posses = list(db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id == cid)
                              .order_by(ImovelPossuidor.ativo.desc(), ImovelPossuidor.desde.desc())))
     imoveis = {i.codi: i for i in db.scalars(select(Imovel).where(Imovel.codi.in_([p.codi for p in posses])))} if posses else {}
+    # Rua, número e bairro da SIL, numa consulta para todas as posses (atual e anterior).
+    chaves_end = [p.codi for p in posses]
+    chaves_end += [i.inscricao for i in imoveis.values() if i.inscricao]
+    enderecos = enderecos_por_inscricoes(db, chaves_end)
     lancs = list(db.scalars(select(Lancamento).where(Lancamento.cidadao_id == cid)
                             .order_by(Lancamento.vencimento.desc().nulls_last()).limit(200)))
     divs = list(db.scalars(select(DividaAtiva).where(DividaAtiva.cidadao_id == cid).order_by(DividaAtiva.ano.desc())))
     hoje = _date.today()
     f = lambda v: None if v is None else float(v)  # noqa: E731
-    em_aberto = [x for x in lancs if not x.pago]
+    naturezas = _naturezas_divida(db, {d.natureza for d in divs if d.natureza is not None})
+    # origem legível da dívida: imóvel (silver.imoveis) pelo CODI da linha do débito
+    insc_div = dict(db.execute(select(Imovel.codi, Imovel.inscricao).where(Imovel.codi.in_({d.codi for d in divs}))).all()) if divs else {}
+    # os totais contam TODOS os lançamentos; a lista é que para nos 200 mais recentes
+    em_aberto = db.execute(select(Lancamento.valor, Lancamento.vencimento).where(Lancamento.cidadao_id == cid, Lancamento.pago.is_(False))).all()
+    total_lancs = db.scalar(select(func.count()).select_from(Lancamento).where(Lancamento.cidadao_id == cid)) or 0
     vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
-    ativa = [d for d in divs if not d.extinta]
+    ativa = [d for d in divs if d.em_aberto]  # DP-P20: só D/G/P/B com saldo líquido
+    from app.gold.procedencia import carimbo, marco_ouro
+    datas_imovel = [i.atualizado_em for i in imoveis.values() if getattr(i, "atualizado_em", None)]
+    quando_iptu = max(datas_imovel) if datas_imovel else marco_ouro(db, cid, "IPTU")
     audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
                                                                   "dividas": len(divs), "empresas": len(empresas)}, _ip(req))
     return {
@@ -776,25 +987,35 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
                    "em_aberto": round(sum(f(x.valor) or 0 for x in em_aberto), 2), "parcelas_em_aberto": len(em_aberto),
                    "vencido": round(sum(f(x.valor) or 0 for x in vencido), 2), "parcelas_vencidas": len(vencido),
                    "divida_ativa": round(sum(f(d.saldo) or 0 for d in ativa), 2), "inscricoes_divida": len(ativa),
-                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas)},
+                   "protestada": any((d.protestos or 0) > 0 for d in ativa), "empresas": len(empresas), "lancamentos": total_lancs},
         "imoveis": [{"codi": p.codi, "inscricao": getattr(imoveis.get(p.codi), "inscricao", None),
                      "numero": getattr(imoveis.get(p.codi), "numero", None),
                      "complemento": getattr(imoveis.get(p.codi), "complemento", None),
                      "cd_bairro": getattr(imoveis.get(p.codi), "cd_bairro", None),
                      "iptu_anual": f(getattr(imoveis.get(p.codi), "iptu_anual", None)),
+                     "endereco": endereco_do_imovel(enderecos, p.codi, getattr(imoveis.get(p.codi), "inscricao", None)),
                      "tipo_posse": p.tipo_posse, "desde": p.desde, "ate": p.ate, "ativo": p.ativo} for p in posses],
         "lancamentos": [{"exercicio": x.exercicio, "tributo": x.tributo, "parcela": x.parcela, "codi": x.codi,
                          "vencimento": x.vencimento, "valor": f(x.valor), "valor_pago": f(x.valor_pago),
                          "pagamento": x.pagamento, "pago": x.pago,
                          "situacao": "pago" if x.pago else ("vencido" if x.vencimento and x.vencimento < hoje else "a_vencer")}
                         for x in lancs],
-        "dividas": [{"codi": d.codi, "ano": d.ano, "natureza": d.natureza, "inscricao": d.inscricao, "saldo": f(d.saldo),
+        # DP-P11: `inscrita_em` (data DT_INSCR); `saldo` é o líquido por linha; `em_aberto` segue a regra DP-P20
+        "dividas": [{"codi": d.codi, "sequ": d.sequ, "ano": d.ano, "natureza": d.natureza, "natureza_nome": naturezas.get(d.natureza),
+                     "inscrita_em": d.inscricao, "origem": _origem_divida(naturezas.get(d.natureza), insc_div[d.codi] or d.codi if d.codi in insc_div else None), "saldo": f(d.saldo), "saldo_bruto": f(d.saldo_bruto),
+                     "pago": f(d.pago_conta_corrente), "situacao": d.compo, "em_aberto": bool(d.em_aberto),
                      "valor_origem": f(d.valor_origem), "protestos": d.protestos or 0, "extinta": d.extinta}
                     for d in divs],
         # API SIL: empresas (inscrições municipais) no CPF do cidadão — MEI, autônomo, empresário individual
         # SIL16 + MÉDIO-1: sempre mascarado aqui, para todos os perfis (inclusive admin_lgpd). Em claro só pelo
         # POST .../tributario/revelar-empresas (admin_lgpd, motivo obrigatório, auditoria revelar_empresa_sil).
         "empresas": [_empresa_sil(e, revela=False) for e in empresas],
+        "procedencia": {
+            "imoveis": carimbo("IPTU", quando_iptu),
+            "lancamentos": carimbo("FINANCEIRO", marco_ouro(db, cid, "FINANCEIRO")),
+            "dividas": carimbo("DIVIDA", marco_ouro(db, cid, "DIVIDA")),
+            "empresas": carimbo("SIL", marco_ouro(db, cid, "SIL")),
+        },
     }
 
 
@@ -816,9 +1037,18 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
             raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
     evs = [e for e in db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200))))
            if sec.ve(_AREA_DOMINIO.get((e.area or "").lower(), (e.area or "").lower()))]
+    from app.gold.procedencia import FONTE_EVENTO, iso, marco_ouro
+    marcos: dict[str, object] = {}
+
+    def quando_fonte(fonte: str | None):
+        sistema = FONTE_EVENTO.get(fonte or "", fonte or "")
+        if sistema not in marcos:
+            marcos[sistema] = marco_ouro(db, cid, sistema)
+        return marcos[sistema]
+
     audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
     return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
-                                            "fonte": e.fonte} for e in evs]}
+                                            "fonte": e.fonte, "atualizado_em": iso(quando_fonte(e.fonte))} for e in evs]}
 
 
 @api.get("/gold/cidadaos/{cid}/saude")
@@ -827,21 +1057,25 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     from datetime import date as _date
 
     from app.models.camadas import Agendamento, Atendimento, UnidadeSaude, Vacinacao
-    from app.silver.fatos import nomes
+    from app.silver.fatos import nomes, rotulo_especialidade
     acs.exige(db, u, req, "saude", dominios=["saude"], alvo=f"cidadao:{cid}")  # clínico: só a Saúde (inclusive menor)
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     uni = {x.codigo: x.nome for x in db.scalars(select(UnidadeSaude))}
     esp = nomes(db)["especialidades"]
     hoje = _date.today()
     ag = list(db.scalars(select(Agendamento).where(Agendamento.cidadao_id == cid, Agendamento.data_consulta >= hoje)
-                         .order_by(Agendamento.data_consulta).limit(10)))
-    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc()).limit(10)))
-    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc()).limit(30)))
+                         .order_by(Agendamento.data_consulta).limit(50)))
+    at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc().nulls_last()).limit(200)))
+    va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc().nulls_last()).limit(200)))
+    conta = lambda m: db.scalar(select(func.count()).select_from(m).where(m.cidadao_id == cid)) or 0  # noqa: E731
+    from app.gold.procedencia import carimbo, marco_ouro
     audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
-    return {"cidadao_id": cid,
-            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade),
+    return {"cidadao_id": cid, "procedencia": carimbo("SAUDE", marco_ouro(db, cid, "SAUDE")),
+            "totais": {"atendimentos": conta(Atendimento), "vacinas": conta(Vacinacao)},
+            "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp),
                           "dias_espera": a.dias_espera} for a in ag],
-            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": esp.get(a.especialidade)} for a in at],
+            "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp)}
+                             for a in at],
             "vacinas": [{"data": v.data, "vacina": v.vacina, "dose": v.dose, "unidade": uni.get(v.unidade)} for v in va]}
 
 
@@ -852,12 +1086,16 @@ def indicadores_gestao(series: str | None = None, db: Session = Depends(get_db))
     q = select(Indicador)
     if series:
         q = q.where(Indicador.serie.in_([x.strip() for x in series.split(",") if x.strip()]))
+    from app.gold.procedencia import carimbo, sistema_da_serie
     out: dict[str, list] = {}
+    por_serie = {}
     atualizado = None
     for i in db.scalars(q.order_by(Indicador.serie, Indicador.periodo, Indicador.dim)):
         out.setdefault(i.serie, []).append({"periodo": i.periodo, "dim": i.dim, "valor": i.valor})
+        por_serie[i.serie] = max(por_serie[i.serie], i.atualizado_em) if i.serie in por_serie else i.atualizado_em
         atualizado = max(atualizado, i.atualizado_em) if atualizado else i.atualizado_em
-    return {"atualizado_em": atualizado, "series": out}
+    procedencia = {s: carimbo(sistema_da_serie(s), em) for s, em in por_serie.items()}
+    return {"atualizado_em": atualizado, "series": out, "procedencia": procedencia}
 
 
 @api.get("/gold/cidadaos/{cid}/acessos")
@@ -869,7 +1107,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_linha_do_tempo": "Linha do tempo",
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_genealogia": "Árvore genealógica", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))
@@ -1054,8 +1292,8 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
                _ip(req))
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.")
-    if conector == ag.EDUCACAO:  # educação: trava de concorrência, amostra e janela (mesma regra da carga manual)
-        recusa = ag.educacao_recusa(db)
+    if conector in (ag.EDUCACAO, ag.AUDESP, ag.RH_PORTAL, ag.CUBOS, ag.ANS):  # trava de concorrência (educação: também amostra e janela)
+        recusa = {ag.EDUCACAO: ag.educacao_recusa, ag.AUDESP: ag.audesp_recusa, ag.RH_PORTAL: ag.rh_recusa, ag.CUBOS: ag.cubos_recusa, ag.ANS: ag.ans_recusa}[conector](db)
         if recusa:
             audita(db, u.email, "agenda_executar_agora_recusada", f"agendamento:{conector}",
                    {"motivo": recusa[0], "conector": conector}, _ip(req))
@@ -1070,6 +1308,235 @@ def agenda_executar_agora(conector: str, req: Request, u: Usuario = Depends(admi
         raise HTTPException(409, f"O agendamento de {conector} está desligado. Ligue o agendamento antes de "
                                  "executar agora.") from None
     return ag.estado(db)
+
+
+# ---------- AUDESP (TCE-SP): AU1 ----------
+AUDESP_MAX_UPLOAD = 110 * 1024 * 1024
+
+
+@api.get("/audesp/arquivos")
+def audesp_arquivos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela do AUDESP: arquivos carregados por tipo e ano (linhas, último mês, publicação no TCE), anos configurados e a
+    carga em andamento ou a última. Só metadados."""
+    from app.services import carga_audesp as ca
+    return ca.estado(db)
+
+
+@api.post("/audesp/carregar", status_code=202)
+def audesp_carregar(req: Request, dados: dict | None = None, u: Usuario = Depends(admin_auditado),
+                    db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): confere o portal do TCE e carrega o que mudou, em background, sem depender da agenda.
+    `{"forcar": true}` baixa de novo mesmo com a data do TCE igual (o conteúdo idêntico continua sendo pulado)."""
+    from app.services import carga_audesp as ca
+    forcar = bool((dados or {}).get("forcar") is True)
+    try:
+        ex = ca.iniciar_em_fundo(db, u.email, forcar=forcar)
+    except ca.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "audesp_carregar", f"execucao:{ex.id}", {"forcar": forcar}, _ip(req))
+    return ca.estado(db)
+
+
+@api.post("/audesp/arquivo")
+async def audesp_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Plano B (AU1): o admin envia o zip do TCE ou o CSV no corpo (application/zip ou text/csv). O tipo vem do cabeçalho;
+    arquivo fora do contrato é recusado sem carregar nada. Auditado só com o resultado (nunca o conteúdo)."""
+    from app.services import carga_audesp as ca
+    tamanho = req.headers.get("content-length")
+    if tamanho and tamanho.isdigit() and int(tamanho) > AUDESP_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 110 MB).")
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo do AUDESP no corpo da requisição.")
+    if len(conteudo) > AUDESP_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 110 MB).")
+    try:
+        ex = ca.carrega_upload(db, u.email, conteudo)
+    except ca.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "audesp_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo do AUDESP recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
+@api.get("/financas/painel")
+def financas_painel(ano: int | None = None, mes_ate: int | None = None, orgao: str | None = None, funcao: str | None = None,
+                    fonte: str | None = None, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Painel Finanças (AUDESP): receita, despesa por fase, função, natureza, fonte, modalidade, fornecedores PJ e
+    restos a pagos, do ano até o mês escolhido e o mesmo período do ano anterior. Só agregados (PF só somado)."""
+    from app.gold.procedencia import carimbo
+    from app.services import painel_financas as pf
+    r = pf.painel(db, ano, mes_ate, pf.filtro_valido(orgao), pf.filtro_valido(funcao), pf.filtro_valido(fonte))
+    r["procedencia"] = carimbo("AUDESP", (r.get("disponivel") or {}).get("carregado_em"))
+    return r
+
+
+# ---------- IEG-M (TCE-SP) ----------
+IEGM_MAX_UPLOAD = 2 * 1024 * 1024
+
+
+@api.get("/iegm/painel")
+def iegm_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """IEG-M de Franca: faixa de cada índice por ano base, distribuição do estado e posição no último ano."""
+    from app.gold.procedencia import carimbo
+    from app.services import iegm
+    r = iegm.painel(db)
+    r["procedencia"] = carimbo("IEGM", r.get("carregado_em"))
+    return r
+
+
+@api.get("/iegm/estado")
+def iegm_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: anos do IEG-M carregados e a última importação."""
+    from app.services import iegm
+    return iegm.estado_carga(db)
+
+
+@api.post("/iegm/arquivo")
+async def iegm_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Importação anual do IEG-M (admin): CSV no corpo, no formato de app/services/iegm.py. Inválido = nada gravado."""
+    from app.services import iegm
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo do IEG-M no corpo da requisição.")
+    if len(conteudo) > IEGM_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 2 MB).")
+    ex = iegm.importa(db, u.email, conteudo)
+    audita(db, u.email, "iegm_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo do IEG-M recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
+# ---------- Dicionário da natureza da dívida (CSV) ----------
+@api.get("/divida/natureza/estado")
+def natureza_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: naturezas carregadas, as mais usadas e os códigos em uso sem nome."""
+    from app.services import natureza_divida
+    return natureza_divida.estado(db)
+
+
+@api.post("/divida/natureza/arquivo")
+async def natureza_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Dicionário exportado pelo DBA (admin): CSV com COD_NATU e DESCRICAO. Inválido = nada gravado."""
+    from app.services import natureza_divida
+    conteudo = await req.body()
+    if not conteudo:
+        raise HTTPException(400, "Envie o arquivo das naturezas no corpo da requisição.")
+    if len(conteudo) > IEGM_MAX_UPLOAD:
+        raise HTTPException(413, "Arquivo grande demais (limite de 2 MB).")
+    ex = natureza_divida.importa(db, u.email, conteudo)
+    audita(db, u.email, "natureza_divida_upload", f"execucao:{ex.id}", {"status": ex.status}, _ip(req))
+    if ex.status != "sucesso":
+        raise HTTPException(422, ex.mensagem or "Arquivo das naturezas recusado.")
+    return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem}
+
+
+# ---------- RH pelo Portal da Transparência: RH1 e RH2 ----------
+@api.get("/rh/estado")
+def rh_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: meses de RH carregados e a carga em andamento ou a última. Só contagens."""
+    from app.services import carga_rh as cr
+    return cr.estado(db)
+
+
+@api.post("/rh/carregar", status_code=202)
+def rh_carregar(req: Request, dados: dict | None = None, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): baixa do portal os meses que faltam, em background, sem depender da agenda."""
+    from app.services import carga_rh as cr
+    forcar = (dados or {}).get("forcar") is True
+    try:
+        ex = cr.iniciar_em_fundo(db, u.email, forcar=forcar)
+    except cr.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "rh_carregar", f"execucao:{ex.id}", {"forcar": forcar}, _ip(req))
+    return cr.estado(db)
+
+
+@api.get("/rh/painel")
+def rh_painel(ano: int | None = None, mes: int | None = None, secretaria: str | None = None, grupo: str | None = None,
+              u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Painel de RH: só agregados, com supressão de grupos com menos de 5 servidores. Nenhuma linha por pessoa."""
+    from app.gold.procedencia import carimbo
+    from app.services import painel_rh as pr
+    r = pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
+    r["procedencia"] = carimbo("PORTAL_RH", (r.get("disponivel") or {}).get("carregado_em"))
+    return r
+
+
+# ---------- Cobertura de planos de saúde (ANS e IBGE) ----------
+@api.get("/cobertura/estado")
+def cobertura_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Tela Conectores: meses da ANS carregados e a carga em andamento ou a última."""
+    from app.services import carga_ans
+    return carga_ans.estado(db)
+
+
+@api.post("/cobertura/carregar", status_code=202)
+def cobertura_carregar(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """"Carregar agora" (admin): baixa da ANS os meses que faltam, em background."""
+    from app.services import carga_ans
+    try:
+        ex = carga_ans.iniciar_em_fundo(db, u.email)
+    except carga_ans.CargaRecusada as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "cobertura_carregar", f"execucao:{ex.id}", None, _ip(req))
+    return carga_ans.estado(db)
+
+
+@api.get("/cobertura/painel")
+def cobertura_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Cobertura de planos em Franca. Só agregados; a estimativa por bairro vem rotulada."""
+    from app.gold.procedencia import carimbo
+    from app.services import painel_cobertura
+    r = painel_cobertura.painel(db)
+    r["procedencia"] = carimbo("ANS", r.get("carregado_em"))
+    return r
+
+
+# ---------- Cubos e cruzamentos: CB1 a CB3 ----------
+@api.get("/cubos")
+def cubos_estado(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Catálogo dos cubos (dimensões e medidas), tabelas calculadas e o recálculo em andamento ou o último."""
+    from app.gold import cubos, cubos_consulta
+    return {"catalogo": cubos_consulta.catalogo(), **cubos.estado(db)}
+
+
+@api.post("/cubos/recalcular", status_code=202)
+def cubos_recalcular(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Recalcula os cubos em background (admin), sem depender da agenda."""
+    from app.gold import cubos
+    try:
+        ex = cubos.iniciar_em_fundo(db, u.email)
+    except cubos.CalculoRecusado as exc:
+        raise HTTPException(409, str(exc)) from None
+    audita(db, u.email, "cubos_recalcular", f"execucao:{ex.id}", None, _ip(req))
+    return cubos.estado(db)
+
+
+@api.get("/cubos/{cubo}")
+def cubo_consulta(cubo: str, req: Request, agrupar: str = "", medidas: str = "", mes_ate: int | None = Query(None, ge=1, le=13), u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Consulta a um cubo: `agrupar` e `medidas` separados por vírgula e `f_<dimensão>=valor` para filtrar. Lista fechada;
+    grupo com menos de 5 pessoas não sai."""
+    from app.gold import cubos_consulta as cc_
+    filtros = {k[2:]: v for k, v in req.query_params.items() if k.startswith("f_")}
+    separa = lambda x: [i.strip() for i in x.split(",") if i.strip()]  # noqa: E731
+    try:
+        return cc_.consulta(db, cubo, separa(agrupar), separa(medidas) or None, filtros, mes_ate)
+    except cc_.ConsultaInvalida as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@api.get("/cruzamentos")
+def cruzamentos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Matriz por bairro, destaques, correlações e cruzamentos da cidade. Só agregados."""
+    from app.gold import cruzamentos as cz
+    from app.gold.procedencia import carimbo
+    r = cz.tudo(db)
+    quando = r.get("gerado_em")
+    return {**r, "procedencia": [carimbo(s, quando) for s in (
+        "SAUDE", "IPTU", "FINANCEIRO", "DIVIDA", "EDUCACAO", "AUDESP", "PORTAL_RH", "SIL")]}
 
 
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
@@ -1126,9 +1593,12 @@ def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atu
     sec = acs.exige(db, u, req, "educacao", dominios=["educacao"], alvo=f"cidadao:{cid}", revelou_cpf=acs.rbac_ativo())
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     # R1 (TL 29/10): com vínculo vigente à Educação, tudo sai sem máscara, inclusive o CPF completo (auditado).
+    from app.gold.procedencia import carimbo
+    from app.models.camadas import EscolaAluno
     alunos = _educacao(db, cid, revela=sec.sem_mascara)
+    quando = db.scalar(select(func.max(EscolaAluno.atualizado_em)).where(EscolaAluno.cidadao_id == cid))
     audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
-    return {"cidadao_id": cid, "alunos": alunos}
+    return {"cidadao_id": cid, "alunos": alunos, "procedencia": carimbo("EDUCACAO", quando)}
 
 
 @api.post("/gold/cidadaos/{cid}/educacao/revelar")
@@ -1200,6 +1670,8 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
     from app.services import carga_gestaoescolar as cge
     if modo not in ("amostra", "completa", "incremental"):
         _404()
+    # CT26 R1: agenda da educação com ativo=false -> 409 antes de tudo (sem execução, sem ler a origem, forcar intacto)
+    _recusa_pausada(db, u, req, "educacao", "amostra" if modo == "amostra" else "completa", "gestaoescolar_negado")
     cfg = ConfigGE.do_ambiente(get_settings())
     janela_ignorada = fora_da_janela = False
     try:
@@ -1232,3 +1704,50 @@ def gestaoescolar_executar(modo: str, req: Request, u: Usuario = Depends(usuario
         detalhe["janela_ignorada"], detalhe["fora_da_janela"] = janela_ignorada, fora_da_janela
     audita(db, u.email, f"gestaoescolar_{modo}", f"execucao:{ex.id}", detalhe, _ip(req))
     return {"execucao_id": ex.id, "status": ex.status, "mensagem": ex.mensagem, "lidos": ex.lidos, "lotes": ex.lotes}
+
+
+# ---------- Tela de Conectores e Cargas (PR-B: CT5–CT12, CT16–CT22) ----------
+@api.get("/cargas/andamento")
+def cargas_andamento(db: Session = Depends(get_db)):
+    """Status, etapa, subetapa, contador, último sinal, histórico (30) e log (10 subetapas) por fonte.
+    Só lê o Postgres (controle), nunca a origem; só contagens e nomes de etapa/tabela (CT12/CT19)."""
+    from app.services import andamento
+    return andamento.tela(db)
+
+
+# ---------- Upload do CSV de imóveis da SIL (só admin) ----------
+@api.post("/cargas/sil/imoveis", status_code=202)
+async def sil_imoveis_upload(req: Request, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """CSV do cadastro físico (multipart, campo arquivo). Só admin. A carga roda em background, com o usuário logado."""
+    from app.services import carga_sil_imoveis as ic
+    from app.services import upload_sil_imoveis as up
+    caminho = up.novo_temporario()
+    entregue = False
+    try:
+        await up.salvar_request(req, caminho)
+        with caminho.open(encoding="latin-1", newline="") as stream:
+            ic.validar_cabecalho(stream)
+        ex = ic.abrir_execucao(db, u.email)
+        audita(db, u.email, "sil_imoveis_upload", f"execucao:{ex.id}", {"status": "em_andamento"}, _ip(req))
+        ic.disparar_arquivo(str(caminho), ex.id, u.email)
+        entregue = True
+        return {"id": ex.id, "status": ex.status, "situacao": "em_andamento", "total": 0}
+    except up.ExcedeuLimite:
+        raise HTTPException(413, up.mensagem_grande()) from None
+    except up.EnvioInvalido as exc:
+        raise HTTPException(400, str(exc)) from None
+    except ic.ArquivoInvalido as exc:
+        raise HTTPException(400, f"Arquivo inválido: {exc}") from None
+    finally:
+        if not entregue:
+            caminho.unlink(missing_ok=True)
+
+
+@api.get("/cargas/sil/imoveis/{eid}")
+def sil_imoveis_status(eid: int, u: Usuario = Depends(admin_auditado), db: Session = Depends(get_db)):
+    """Situação da carga (em andamento, concluído ou erro) e o total de linhas lidas. Só admin."""
+    from app.services import carga_sil_imoveis as ic
+    ex = db.get(Execucao, eid)
+    if ex is None or ex.tipo != ic.TIPO or ex.sistema != ic.SISTEMA:
+        raise HTTPException(404, "Execução não encontrada")
+    return ic.resumo(ex)

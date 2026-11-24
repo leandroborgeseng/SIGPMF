@@ -17,9 +17,9 @@ def test_apoio_sem_colunas_da_tabela_recusada(pol, tabela):
 
 
 def test_apoio_continua_autorizado_mas_sem_select():
-    SAUDE.autoriza("Aux_Bairro")  # não levanta
+    SAUDE.autoriza("Aux_Rua")  # não levanta
     with pytest.raises(TabelaRecusada, match="sem colunas"):
-        SAUDE.colunas_select("Aux_Bairro")
+        SAUDE.colunas_select("Aux_Rua")
 
 
 def test_ler_amostra_exige_politica():

@@ -31,6 +31,13 @@ class Cursor:
 
     def execute(self, sql, params=None):
         self.o.sqls.append((sql, params))
+        if "sys.indexes" in sql:  # catálogo da PK: a origem sintética ecoa a ordem declarada (não é o SQL Server)
+            from app.ingestion.mapeamentos import keyset_de
+            nome = params[1] if params and len(params) > 1 else ""
+            spec = keyset_de(self.o.sistema, nome)
+            self.res = ([] if not spec else
+                        [(col, i, 0, 0, 1, 1, "CLUSTERED") for i, col in enumerate(spec["ordem"], start=1)])
+            return
         tabela = _FROM.search(sql).group(1)
         linhas = self.o.linhas(tabela)
         chave = ccomp.ordem(self.o.sistema, tabela)
@@ -95,9 +102,9 @@ class Origem(SqlServerConnector):
         chave = ccomp.ordem(self.sistema, tabela)
         return sorted(rows, key=lambda r: _k(tuple(r.get(c) for c in chave)))
 
-    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite):
+    def ler_pagina(self, conn, tabela, politica, ordem, ultima, limite, desde=None, alinhada=False):
         self.ultima = ultima  # a origem sintética aplica o mesmo keyset que o SQL montado pelo conector
-        return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite)
+        return super().ler_pagina(conn, tabela, politica, ordem, ultima, limite, desde=desde, alinhada=alinhada)
 
     def _conectar(self):
         return Conn(self)
@@ -144,9 +151,9 @@ def _ultima(db, sistema):
 def test_cc1_bloqueada_sem_amostra_ok_e_liberada_depois(client, tokens, origem, db):
     db.add(Execucao(tipo=cc.TIPO_AMOSTRA, sistema="CEMITERIO", status="falha", usuario="t"))
     db.commit()
-    assert ccomp.motivo_bloqueio(db, "cemiterio") == "Rode uma amostra com sucesso primeiro"
+    assert ccomp.motivo_bloqueio(db, "cemiterio") == ccomp.SEM_AMOSTRA
     r = client.post("/api/conectores/cemiterio/completa", headers=tokens["admin"])
-    assert r.status_code == 409 and "amostra com sucesso" in r.json()["detail"]
+    assert r.status_code == 409 and r.json()["detail"] == ccomp.SEM_AMOSTRA  # CT13/M2: diz o que fazer
     _amostra(db, "cemiterio")
     assert ccomp.motivo_bloqueio(db, "cemiterio") is None
     s = client.get("/api/conectores/cemiterio/completa", headers=tokens["admin"]).json()
@@ -198,7 +205,7 @@ def test_cc3_cc4_cc6_carga_completa_em_lotes(client, tokens, origem, db):
     assert paginas and all("TOP (2)" in s for s, _ in paginas)
     for sql, _ in o.sqls:
         assert garante_somente_leitura(sql) and "*" not in sql.replace("COUNT(*)", "")
-        assert not re.search(r"\[(?:\w*_)?CID\w*\]|senha", sql, re.IGNORECASE)
+        assert not re.search(r"\[(?:\w*_)?CID(?!ade\])\w*\]|senha", sql, re.IGNORECASE)
         assert "OFFSET" not in sql
     for t in tabs:
         sqls_t = [(s, p) for s, p in paginas if f"[dbo].[{t}]" in s]

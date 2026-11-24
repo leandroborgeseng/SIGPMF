@@ -42,16 +42,16 @@ describe('carga completa (CC1-CC6)', () => {
   it('CC1: habilitada para admin com amostra ok; desabilitada com motivo visível e tooltip', async () => {
     mock((u) => [200, u.endsWith('/conectores') ? resp({}) : sit()])
     const { unmount } = montar('admin')
-    const b = within(await cartao()).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    const b = within(await cartao()).getByRole('button', { name: 'Executar carga completa de Saúde' })
     await waitFor(() => expect(b).toBeEnabled())
     unmount()
     const motivo = 'Rode uma amostra com sucesso primeiro'
     mock((u) => [200, u.endsWith('/conectores') ? resp({ completa_liberada: false, completa_motivo: motivo }) : sit({ liberada: false, motivo })])
     montar('admin')
     const c = await cartao()
-    const b2 = within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    const b2 = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
     await waitFor(() => expect(b2).toBeDisabled())
-    expect(b2).toHaveAttribute('title', motivo)
+    expect(document.getElementById(b2.getAttribute('aria-describedby') as string)).toHaveTextContent(motivo)  // M2: aria-describedby
     expect(b2).toHaveAccessibleDescription(motivo)
     expect(within(c).getByText(motivo)).toBeVisible()
   })
@@ -74,7 +74,7 @@ describe('carga completa (CC1-CC6)', () => {
     })
     const { container } = montar('admin')
     const c = await cartao()
-    await userEvent.click(within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' }))
+    await userEvent.click(within(c).getByRole('button', { name: 'Executar carga completa de Saúde' }))
     const d = await screen.findByRole('dialog', { name: 'Carregar todos os registros de Saúde? Isso pode levar alguns minutos.' })
     expect(await within(d).findByText('13')).toBeInTheDocument()
     expect(within(d).getByRole('button', { name: 'Cancelar' })).toBeInTheDocument()
@@ -125,7 +125,7 @@ describe('carga completa (CC1-CC6)', () => {
     }))
     montar('admin')
     const c = await cartao()
-    const b = within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    const b = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
     await waitFor(() => expect(b).toBeEnabled())
     await userEvent.click(b)
     const d = await screen.findByRole('dialog')
@@ -157,7 +157,7 @@ describe('carga completa (CC1-CC6)', () => {
     mock((u) => (u.endsWith('/conectores') ? [200, resp({})] : u.endsWith('/estimativa') ? resposta : [200, sit()]))
     montar('admin')
     const c = await cartao()
-    const b = within(c).getByRole('button', { name: 'Puxar carga completa de Saúde' })
+    const b = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
     await waitFor(() => expect(b).toBeEnabled())
     await userEvent.click(b)
     let d = await screen.findByRole('dialog')
@@ -188,6 +188,28 @@ describe('carga completa (CC1-CC6)', () => {
     await userEvent.click(within(c).getByRole('button', { name: 'Continuar carga completa' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Iniciar carga completa' }))
     await waitFor(() => expect(posts).toBe(1))  // dispara a carga completa (retoma pelos checkpoints no servidor)
+  })
+
+  it('conta corrente fora do COUNT e selo sem afirmar que a PK foi contada', async () => {
+    mock((u) => {
+      if (u.endsWith('/conectores')) return [200, resp({})]
+      if (u.endsWith('/estimativa')) return [200, { tabelas: { Divida: 125, Divida_Conta_Corrente: null }, total: 125, sem_contagem: ['Divida_Conta_Corrente'] }]
+      return [200, sit({ execucao: { ...EX, status: 'sucesso', lidos: 125, gravados: 125, finalizado_em: '2026-10-26T15:02:00Z' },
+        reconciliacao: { Divida: { origem: 125, bronze: 125, ok: true },
+          Divida_Conta_Corrente: { origem: null, bronze: 0, ok: true, status: 'sem_contagem', prova: 'catalogo_pk' } } })]
+    })
+    montar('admin')
+    const c = await cartao()
+    const b = within(c).getByRole('button', { name: 'Executar carga completa de Saúde' })
+    await waitFor(() => expect(b).toBeEnabled())
+    await userEvent.click(b)
+    const d = await screen.findByRole('dialog')
+    expect(within(d).getByText('125')).toBeInTheDocument()
+    expect(d).toHaveTextContent('Divida_Conta_Corrente não entra nessa conta')
+    expect(d).toHaveTextContent('não executa COUNT')
+    await userEvent.click(within(d).getByRole('button', { name: 'Cancelar' }))
+    expect(within(c).getByText(/sem COUNT: a PK do catálogo confirma a chave/)).toBeInTheDocument()
+    expect(within(c).queryByText('Bronze bate com a origem')).toBeNull()
   })
 })
 

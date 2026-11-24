@@ -16,17 +16,31 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.identity import documento as docmod
 from app.identity.cpf import normaliza, valido
 from app.models.camadas import DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor, Lancamento, RegistroBronze
 
 SISTEMAS = ("IPTU", "DIVIDA", "FINANCEIRO", "SIL")
 
 
+def id_conta_corrente_legado(id_origem: str | None) -> bool:
+    """True para o id de 4 colunas (CODI|SEQU|ANO|Sequencia), sem Data_Movimentacao.
+
+    A prata vigente não soma esse id. A linha continua na bronze: apagar ou reescrever a produção
+    não faz parte desta entrega e exige OK do Leandro. Três separadores distinguem o formato;
+    o id novo tem quatro (a data canônica no fim) e ids sintéticos sem `|` não são legado.
+    """
+    return str(id_origem or "").count("|") == 3
+
+
 def _ultimas(db: Session, sistema: str, tabela: str):
-    sub = (select(func.max(RegistroBronze.id))
-           .where(RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
-                  RegistroBronze.quarentena.is_(None), RegistroBronze.ambiente_origem == "producao")
-           .group_by(RegistroBronze.id_origem))
+    cond = [RegistroBronze.sistema_origem == sistema, RegistroBronze.tabela == tabela,
+            RegistroBronze.quarentena.is_(None), RegistroBronze.ambiente_origem == "producao"]
+    if sistema == "DIVIDA" and tabela == "Divida_Conta_Corrente":
+        # length - length(replace) = quantidade de '|'. 3 = identidade antiga de 4 colunas.
+        pipes = func.length(RegistroBronze.id_origem) - func.length(func.replace(RegistroBronze.id_origem, "|", ""))
+        cond.append(pipes != 3)
+    sub = (select(func.max(RegistroBronze.id)).where(*cond).group_by(RegistroBronze.id_origem))
     q = (select(RegistroBronze.id_origem, RegistroBronze.dados).where(RegistroBronze.id.in_(sub))
          .order_by(RegistroBronze.id).execution_options(yield_per=5000))
     yield from db.execute(q)
@@ -69,7 +83,31 @@ def _s(v, n: int) -> str | None:
 
 
 def _digitos(v) -> str:
-    return "".join(ch for ch in str(v or "") if ch.isdigit())
+    """Documento só com dígitos; o CNPJ alfanumérico (CN1) mantém as letras, em maiúsculas."""
+    return docmod.normaliza(str(v or "")) or ""
+
+
+# Regra liberada (Leandro, 05/11/2026 — provisória): só estas situações COMPO entram no saldo em aberto.
+# R/S/X/T aguardam decisão; Q/K/H/E/Z (quitado/cancelado), A/C e os mestres de consolidação N/M/W ficam fora
+# (DP-P4: o mestre N duplica os membros, que reabrem como D/G e contam uma vez cada). O original parcelado não é
+# D/G/P/B, então o parcelamento conta só pelas parcelas P/B em aberto (DP-P1/DP-P10).
+COMPO_ABERTO = frozenset({"D", "G", "P", "B"})
+
+
+def _chave_divida(d: dict) -> tuple:
+    return (_s(d.get("CODI"), 22), (_s(d.get("SEQU"), 4) or "").zfill(2), _i(d.get("ANO")))
+
+
+def situacao_divida(compo: str | None, bruto: Decimal | None, pago: Decimal | None, extinta: bool):
+    """(compo, saldo líquido, em_aberto, qualidade) de UMA linha do débito.
+
+    saldo = GREATEST(0, VR_TOTA_DIVI − pago Conta_Corrente); em aberto só COMPO D/G/P/B, não extinta e saldo > 0.
+    Q com valor e sem nenhum pagamento na Conta_Corrente = "quitado_sem_baixa" (DP-P19): qualidade, nunca KPI."""
+    compo = (compo or "").strip().upper()[:1] or None
+    liquido = None if bruto is None else max(Decimal(0), bruto - (pago or Decimal(0)))
+    aberto = bool(compo in COMPO_ABERTO and not extinta and liquido and liquido > 0)
+    qualidade = "quitado_sem_baixa" if compo == "Q" and not extinta and (bruto or 0) > 0 and not pago else None
+    return compo, liquido, aberto, qualidade
 
 
 def _grava(db: Session, model, objs, lote: int = 5000) -> int:
@@ -142,17 +180,32 @@ def reconstruir(db: Session) -> dict[str, int]:
                              pago=pagamento is not None or pago_v > 0, status=_s(d.get("Status"), 50))
     n_lanc = _grava(db, Lancamento, lancamentos())
 
+    # Cada movimento entra pela identidade de 5 colunas (id_origem). A soma do #85 agrupa esses
+    # movimentos na chave da dívida (CODI/SEQU/ANO), que é a PK de Divida, não uma PK menor da conta corrente.
+    pagos: dict[tuple, Decimal] = defaultdict(Decimal)
+    for io, c in _ultimas(db, "DIVIDA", "Divida_Conta_Corrente"):
+        if id_conta_corrente_legado(io):
+            continue
+        v = _n(c.get("Vr_Pago"))
+        if v is not None and v > 0:
+            pagos[_chave_divida(c)] += v
+
     def dividas():
         for io, d in _ultimas(db, "DIVIDA", "Divida"):
             codi = _s(d.get("CODI"), 22)
             if not codi:
                 continue
-            yield DividaAtiva(chave_origem=io[:200], codi=codi, ano=_i(d.get("ANO")), natureza=_i(d.get("Cod_Nat")),
+            extinta = _dt(d.get("Data_Extincao")) is not None
+            bruto = _n(d.get("VR_TOTA_DIVI"))
+            pago = pagos.get(_chave_divida(d))
+            compo, liquido, aberto, qualidade = situacao_divida(_s(d.get("COMPO"), 1), bruto, pago, extinta)
+            yield DividaAtiva(sequ=_s(d.get("SEQU"), 4), compo=compo, saldo_bruto=bruto, pago_conta_corrente=pago,
+                              em_aberto=aberto, qualidade=qualidade, chave_origem=io[:200], codi=codi, ano=_i(d.get("ANO")), natureza=_i(d.get("Cod_Nat")),
                               cidadao_id=dono.get(codi), inscricao=_d(d.get("DT_INSCR")), vencimento=_d(d.get("DT_VENC")),
-                              valor_origem=_n(d.get("VR_ORIGEM")), saldo=_n(d.get("VR_TOTA_DIVI")),
+                              valor_origem=_n(d.get("VR_ORIGEM")), saldo=liquido,
                               pago_total=_n(d.get("VR_PAGO_TOTAL")), status=_s(d.get("STATUS"), 5),
                               situacao=_i(d.get("SITUACAO")), protestos=_i(d.get("QTDE_PROTESTO")),
-                              processo=_s(d.get("NR_PROC"), 30), extinta=_dt(d.get("Data_Extincao")) is not None)
+                              processo=_s(d.get("NR_PROC"), 30), extinta=extinta)
     n_div = _grava(db, DividaAtiva, dividas())
     ligados = defaultdict(int)
     for p in posses:

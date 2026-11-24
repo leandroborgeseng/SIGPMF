@@ -9,6 +9,7 @@ Comuns:                 SIGPMF_SRC_SEI_IDP_CLIENT_ID, _IDP_CLIENT_SECRET, _SIGLA
 Nunca há fallback entre os ambientes: com a flag desligada, só as variáveis oficiais valem; com ela ligada, só as de
 homologação. Uma URL "oficial" com cara de homologação (hml) deixa o conector inerte.
 """
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ def _num(nome: str, padrao: float, minimo: float, maximo: float) -> float:
     try:
         x = float(_env(nome) or padrao)
     except ValueError:
+        x = padrao
+    if not math.isfinite(x):  # nan/inf: float() aceita, min/max não resolvem (D1)
         x = padrao
     return min(max(x, minimo), maximo)
 

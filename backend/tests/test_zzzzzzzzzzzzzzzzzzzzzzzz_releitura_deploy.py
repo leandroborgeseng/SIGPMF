@@ -42,10 +42,11 @@ class Fab:
 
 @pytest.fixture
 def base(janela_env, limpo, monkeypatch):  # noqa: F811
-    """Educação já carregada com PES_PessoaDocumento vazia (como na produção), agenda da educação desligada."""
+    """Educação já carregada com PES_PessoaDocumento vazia (como na produção), agenda da educação LIGADA (RD1:
+    desligada não relê)."""
     db = limpo
     janela_env("false")  # boot de dia: o teste não depende do relógio
-    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=False))
+    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=True, forcar=False))
     db.execute(text("DELETE FROM controle.acoes_unicas"))
     db.commit()
     d = _dados_99()
@@ -190,20 +191,26 @@ def _confere_recusa(db, r, codigo, antes, lm, client=None):
         assert m.status != "concluida"
 
 
-def test_recusa_agenda_ligada(base, client, tokens):
+def test_rd1_fonte_desligada_nao_cria_releitura(base):
+    """RD1 (caso 348): com ativo=false o deploy não cria releitura: nenhuma execução, nenhum marcador, nada lido."""
     db, d = base
-    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=True))
+    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=False))
     db.commit()
     try:
         antes = contagens(db)
+        n_ex = db.scalar(select(func.count()).select_from(Execucao))
         r, lm, _ = boot(d)
-        _confere_recusa(db, r, "agenda_ligada", antes, lm)
-        ult = client.get("/api/dashboard", headers=tokens["leitura"]).json()["ultima_execucao"]
-        assert ult["alerta"]["codigo"] == "agenda_ligada"  # visível no painel
+        assert r == {"resultado": "pulada", "codigo": "fonte_desligada", "execucao_id": None}
+        assert lm.sqls == [] and contagens(db) == antes
+        db.expire_all()
+        assert db.scalar(select(func.count()).select_from(Execucao)) == n_ex
+        assert db.scalar(select(AcaoUnica).where(AcaoUnica.fonte == FONTE)) is None
+        aud = db.scalar(select(Auditoria).where(Auditoria.acao == "educacao_releitura_deploy_pulada")
+                        .order_by(Auditoria.id.desc()))
+        assert aud.usuario == "sistema-deploy" and aud.detalhe == {"codigo": "fonte_desligada"}
     finally:
-        db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=False))
+        db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=True))
         db.commit()
-
 
 def test_recusa_carga_em_andamento(base):
     db, d = base

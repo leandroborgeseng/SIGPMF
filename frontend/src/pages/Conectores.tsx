@@ -3,13 +3,18 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataHoraBR } from '../api'
 import { useAuth } from '../auth'
 import AgendaCargas from '../AgendaCargas'
+import CargaAudesp from '../CargaAudesp'
+import CargaIegm from '../CargaIegm'
+import CargaAns from '../CargaAns'
+import CargaNatureza from '../CargaNatureza'
+import CargaRh from '../CargaRh'
 import PainelProgresso from '../PainelProgresso'
 import { Esqueleto, SeloStatus } from '../componentes'
 import PainelBases, { CARGA_EM_PREPARACAO, type Base } from './PainelBases'
 
 type Exec = { id: number; tipo: string; status: string; iniciado_em: string; finalizado_em: string | null; lidos: number; novos: number; atualizados: number; ignorados: number; lotes: number }
 type Conector = { id: number; codigo: string; nome: string; status: string; ultima_execucao: Exec | null; credencial: string; amostra_limite: number; tabelas: { nome: string; chave: string; campo_incremental: string | null }[] }
-type Resp = { conectores: Conector[]; execucoes: Exec[]; bases?: Base[]; carga_habilitada?: boolean }
+type Resp = { conectores: Conector[]; execucoes: Exec[]; bases?: Base[]; carga_habilitada?: boolean; contagens_atualizando?: boolean }
 
 export default function Conectores() {
   const { sessao } = useAuth()
@@ -22,6 +27,8 @@ export default function Conectores() {
   const podeExecutar = sessao?.perfil === 'admin' || sessao?.perfil === 'operador'
   const ehAdmin = sessao?.perfil === 'admin'
 
+  // M3: âncora fonte-<id> também nos cards fixos (SIL, Educação); sem duplicar a do card da base
+  const idsBases = new Set((d?.bases ?? []).map((b) => b.conector_id).filter(Boolean) as string[])
   const carregar = useCallback(() => {
     setErro(false); setD(null)
     api<Resp>('/conectores').then(setD).catch(() => setErro(true))
@@ -59,7 +66,12 @@ export default function Conectores() {
       </header>
       <PainelProgresso />
       <AgendaCargas ehAdmin={ehAdmin} />
-      <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} />
+      <CargaAudesp ehAdmin={ehAdmin} />
+      <CargaIegm ehAdmin={ehAdmin} />
+      <CargaNatureza ehAdmin={ehAdmin} />
+      <CargaAns ehAdmin={ehAdmin} />
+      <CargaRh ehAdmin={ehAdmin} />
+      <PainelBases bases={erro ? null : d ? (d.bases ?? []) : null} erro={erro} onRecarregar={carregar} ehAdmin={ehAdmin} cargaHabilitada={d?.carga_habilitada === true} contagensAtualizando={d?.contagens_atualizando === true} />
       <h2>Sistemas cadastrados (demonstração)</h2>
       <div className="acoes">
         {podeExecutar && <button className="btn" onClick={executar} disabled={executando || d?.carga_habilitada !== true}>Executar carga (demo)</button>}
@@ -80,7 +92,7 @@ export default function Conectores() {
           <>
             <ul className="lista-cartoes" aria-label="Conectores">
               {d.conectores.map((c) => (
-                <li key={c.id} className="cartao">
+                <li key={c.id} className="cartao" id={idsBases.has(c.codigo.toLowerCase()) ? undefined : `fonte-${c.codigo.toLowerCase()}`}>
                   <h2>{c.nome} ({c.codigo})</h2>
                   <p>Status: <span className="selo mapeado"><i aria-hidden="true" />{c.status}</span></p>
                   <p>Última execução: {c.ultima_execucao ? `${dataHoraBR(c.ultima_execucao.iniciado_em)} · ${c.ultima_execucao.lidos} lidos e ${c.ultima_execucao.novos} novos` : '—'}</p>

@@ -22,7 +22,8 @@ DOMINIO_CAMPO = {"nome": "identificacao", "data_nascimento": "identificacao", "n
                  "nome_pai": "identificacao", "sexo": "identificacao", "data_obito": "identificacao",
                  "endereco": "endereco"}
 CAMPOS_DATA = {"data_nascimento", "data_obito"}
-FORA_DA_GOLD = {"cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado", "pista_matricula_correta"}
+FORA_DA_GOLD = {"endereco_partes", "cpf", "cns", "atualizado_em", "chave_pessoa", "pista_normalizado",
+                "pista_matricula_correta", "folha_nominal"}
 GOLD_LOTE = 5000
 
 _SQL_CIDADAO_SISTEMAS = text("""
@@ -30,11 +31,16 @@ INSERT INTO gold.cidadao_sistemas (cidadao_id, nome, sistemas, dominios, atualiz
 SELECT c.cidadao_id, c.nome, COALESCE(s.sistemas, '[]'::jsonb), COALESCE(d.dominios, '[]'::jsonb), c.atualizado_em
   FROM silver.cidadaos c
   LEFT JOIN (SELECT cidadao_id, jsonb_agg(sistema ORDER BY sistema COLLATE "C") AS sistemas
-               FROM (SELECT DISTINCT cidadao_id, sistema FROM silver.vinculos) x
+               FROM (SELECT DISTINCT cidadao_id, sistema FROM silver.vinculos
+                     UNION
+                     SELECT DISTINCT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) x
               GROUP BY cidadao_id) s ON s.cidadao_id = c.cidadao_id
   LEFT JOIN (SELECT cidadao_id, jsonb_agg(dominio ORDER BY dominio COLLATE "C") AS dominios
-               FROM (SELECT DISTINCT v.cidadao_id, COALESCE(NULLIF(ss.dominio, ''), 'outros') AS dominio
-                       FROM silver.vinculos v LEFT JOIN silver.sistemas ss ON ss.codigo = v.sistema) y
+               FROM (SELECT DISTINCT v.cidadao_id, COALESCE(NULLIF(ss.dominio, ''), CASE WHEN v.sistema = 'SIL' THEN 'tributario' ELSE 'outros' END) AS dominio
+                       FROM (SELECT cidadao_id, sistema FROM silver.vinculos
+                             UNION
+                             SELECT cidadao_id, 'SIL' FROM silver.empresas_sil WHERE cidadao_id IS NOT NULL) v
+                       LEFT JOIN silver.sistemas ss ON ss.codigo = v.sistema) y
               GROUP BY cidadao_id) d ON d.cidadao_id = c.cidadao_id
 """)
 
@@ -43,8 +49,29 @@ def _mais_novo(v_data, atual_data) -> bool:
     return bool(v_data and (atual_data is None or v_data > atual_data))
 
 
+_SQL_SIL = text("""
+SELECT e.cidadao_id, max(e.ccm) AS ccm
+  FROM silver.empresas_sil e JOIN silver.cidadaos c ON c.cidadao_id = e.cidadao_id
+ WHERE e.cidadao_id IS NOT NULL
+ GROUP BY e.cidadao_id ORDER BY e.cidadao_id
+""")
+
+
+def _presenca_sil(db: Session, dominios: dict, buf: list, descarrega) -> None:
+    """SO1-SO3: a SIL não grava em silver.vinculos (é tributário, por CCM). Ela entra no ouro só como presença do
+    cidadão PF já correlacionado (cadastro = "Empresas:<ccm>", maior CCM do cidadão). Nenhum campo da empresa
+    (nome, documento, endereço) vai para a gold; PJ fica fora porque não tem cidadao_id."""
+    dom = dominios.get("SIL") or "tributario"  # M1: mesmo domínio do cidadao_sistemas
+    for cid, ccm in db.execute(_SQL_SIL):
+        buf.append({"cidadao_id": cid, "dominio": dom, "campo": "cadastro", "valor": f"Empresas:{ccm}",
+                    "sistema": "SIL", "fonte_atualizado_em": None, "mais_recente": True})
+        descarrega()
+
+
 def reconstruir(db: Session, progresso=None) -> dict[str, int]:
     """progresso(processados, total): sinal de vida a cada lote (vínculos processados / total de vínculos)."""
+    from app.silver import endereco_saude
+    endereco_saude.carrega(db)  # EN10: mesma referência da prata
     db.execute(delete(DadoGold))
     db.execute(delete(CidadaoSistemas))
     db.flush()
@@ -103,6 +130,12 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
     for cid in sorted(falecidos):  # falecido sem vínculo (raro): só a marca de óbito
         fecha_cidadao(cid, {})
     descarrega(forca=True)
+    _presenca_sil(db, dominios, buf, descarrega)
+    from app.silver.senior import linhas_ouro
+    for linha in linhas_ouro(db):
+        buf.append(linha)
+        descarrega()
+    descarrega(forca=True)
     db.execute(_SQL_CIDADAO_SISTEMAS)
     if progresso:
         progresso(feitos, total)
@@ -142,6 +175,8 @@ def reconstruir_legado(db: Session) -> dict[str, int]:
                                                       valor="sim (confirmado)", sistema=sis, fonte_atualizado_em=None,
                                                       mais_recente=True)
     db.add_all(melhor.values())
+    from app.silver.senior import linhas_ouro
+    db.add_all(DadoGold(**linha) for linha in linhas_ouro(db))
     for c in db.scalars(select(Cidadao)):
         sis = sorted(sistemas.get(c.cidadao_id, set()))
         db.add(CidadaoSistemas(cidadao_id=c.cidadao_id, nome=c.nome, sistemas=sis,

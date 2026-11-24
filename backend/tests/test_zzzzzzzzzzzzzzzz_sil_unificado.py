@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.connectors.sil.cliente import OperacaoProibida
 from app.connectors.sil.conector import ConfigSil, ErroSil, SilConnector
@@ -132,6 +132,7 @@ def test_teto_de_lotes_por_execucao_configuravel(monkeypatch):
     api = Api(ccms=range(1, 1000))
     con = _con(api, max_lotes=3)
     s = con.abrir()
+    s.teto = con.max_lotes  # SL1: o teto só existe na sessão da amostra (ler_amostra liga)
     try:
         assert len(con.ler_pagina(s, "Empresas", None, ("Ccm",), None, 10_000)) == 150
         assert con.ler_pagina(s, "Empresas", None, ("Ccm",), (150,), 10_000) == []  # teto vale para a sessão toda
@@ -242,40 +243,20 @@ def test_amostra_no_teto_com_mais_dados_fica_parcial(db, sil_mock):
 
 
 def test_carga_completa_no_teto_fica_parcial_e_nao_vira_completa(db, sil_mock, monkeypatch):
-    from app.services import camadas_estado
-    from app.silver import processamento
+    """SL1 (substitui o teste antigo): com SIL_MAX_LOTES_POR_EXECUCAO ausente (teto 1), a carga completa NÃO para
+    no teto: lê até a API acabar e conclui com reconciliação numa execução só."""
+    monkeypatch.delenv("SIL_MAX_LOTES_POR_EXECUCAO", raising=False)
     a = cc.executar_amostra(db, "admin@aion.local", "sil")
     assert a.status in ("sucesso", "sem_novidades"), a.mensagem
     _zera_checkpoint_sil(db)
-    estado_antes = camadas_estado.assinatura(db), db.scalar(select(func.count()).select_from(
-        __import__("app.models.camadas", fromlist=["EmpresaSil"]).EmpresaSil))
-
-    def proibido(*a, **k):
-        raise AssertionError("execução parcial não reconstrói prata/ouro")
-    monkeypatch.setattr(processamento, "reconstruir", proibido)
     antes = len(sil_mock.gets())
     ex = ccomp.iniciar(db, "admin@aion.local", "sil")
     db.expire_all()
     ex = db.get(Execucao, ex.id)
-    assert ex.status == "parcial", ex.mensagem
-    assert ex.mensagem.startswith("parcial: 1 lote(s) lido(s), há mais") and "reconciliacao" not in ex.mensagem
-    assert len(sil_mock.gets()) - antes == 1 and {h[0] for h in sil_mock.hits} == {SANDBOX}
-    cp = _checkpoint_sil(db)
-    assert cp.concluida is False and cp.ultima_chave == [50]          # checkpoint aberto: continua do CCM 51
-    from app.models.camadas import EmpresaSil
-    assert db.scalar(select(func.count()).select_from(EmpresaSil)) == estado_antes[1]  # nada apagado da silver
-    aud = _ultima_aud(db, "carga_completa_finalizada")
-    assert aud.alvo == f"execucao:{ex.id}" and aud.detalhe["resultado"] == "parcial"
-    assert aud.detalhe["parcial"] is True and aud.detalhe["lotes_lidos"] == 1 and aud.detalhe["ha_mais"] is True
-    # a próxima execução continua de onde parou (Sequencia=51), ainda parcial
-    ex2 = ccomp.iniciar(db, "admin@aion.local", "sil")
-    db.expire_all()
-    assert db.get(Execucao, ex2.id).status == "parcial"
-    ultimo_get = [r for r in sil_mock.gets()][-1]
-    assert ultimo_get[2].endswith("/consultarlote")
-    assert _checkpoint_sil(db).ultima_chave == [100]
+    assert ex.status == "sucesso" and "reconciliacao=" in ex.mensagem, ex.mensagem
+    assert len(sil_mock.gets()) - antes > 1 and {h[0] for h in sil_mock.hits} == {SANDBOX}
+    assert _checkpoint_sil(db).concluida is True
     _zera_checkpoint_sil(db)
-
 
 def test_carga_completa_que_acaba_dentro_do_teto_e_completa(db, sil_mock):
     sil_mock.ccms = list(range(1, 31))                               # 30 empresas: um lote incompleto = fim
@@ -291,6 +272,7 @@ def test_carga_completa_que_acaba_dentro_do_teto_e_completa(db, sil_mock):
 
 
 def test_agenda_parcial_nao_marca_completa_nem_assinatura(db, sil_mock):
+    """SL1: pela agenda a completa da SIL também não para no teto (antes ficava 'parcial' com 1 lote)."""
     from app.models.controle import Agendamento
     from app.services import agenda
     a = cc.executar_amostra(db, "admin@aion.local", "sil")
@@ -298,16 +280,11 @@ def test_agenda_parcial_nao_marca_completa_nem_assinatura(db, sil_mock):
     _zera_checkpoint_sil(db)
     ag = db.scalar(select(Agendamento).where(Agendamento.conector == "sil"))
     assert ag is not None and ag.ativo is False                      # 0015: nasce desligado
-    antes = (ag.ultima_completa_em, ag.assinatura_origem)
     n_get = len(sil_mock.gets())
     st = agenda.executar(db, ag)
     db.refresh(ag)
-    assert st == "parcial", ag.ultima_mensagem
-    assert len(sil_mock.gets()) - n_get == 1 and {h[0] for h in sil_mock.hits} == {SANDBOX}
-    assert (ag.ultima_completa_em, ag.assinatura_origem) == antes   # IN3/AG3 não veem carga completa
-    assert ag.ultimo_status == "parcial" and ag.ultima_mensagem.startswith("parcial:")
-    if antes[0] is None:  # R3: parcial não marca completa, então a próxima segue sendo a primeira completa
-        assert agenda.modo_da_vez(ag, datetime.now(ZoneInfo("UTC"))) == "completa"
+    assert st == "sucesso", ag.ultima_mensagem
+    assert len(sil_mock.gets()) - n_get > 1 and {h[0] for h in sil_mock.hits} == {SANDBOX}
     _zera_checkpoint_sil(db)
 
 
@@ -322,7 +299,6 @@ def _agd(**kw):
 
 
 def test_sil15_forcar_nao_liga_agendamento_desligado():
-    from zoneinfo import ZoneInfo
 
     from app.services import agenda as ag
     ini, fim = ag.janela("00:00-06:00")
@@ -400,32 +376,19 @@ def test_sil15_executar_agora_sil_desligado_409_auditado_sem_rede(client, tokens
 # ---------------------------------------------------------------- QA #25 ciclo 1
 
 def test_risco_teto_1_lote_marca_carga_completa_como_concluida(db, sil_mock):
-    """ACH-1 (QA #25 @18f8fb1): 150 empresas na API, teto 1. A carga NÃO pode virar "concluída": fica parcial, o
-    checkpoint não fecha e a 2ª execução continua do CCM 51."""
+    """ACH-1 revisto pelo SL1: 150 empresas, teto 1 (só da amostra). A completa lê 1, 51, 101 e 151 (fim) e só
+    então conclui com reconciliação; nunca 'concluída' sem ter chegado ao fim da API."""
     from app.models.controle import CheckpointCarga
     _zera_checkpoint_sil(db)
     cc.executar_amostra(db, "admin@aion.local", "sil")
+    n0 = len(sil_mock.gets())
     ex1 = ccomp.iniciar(db, "admin@aion.local", "sil")
     db.expire_all()
     ex1 = db.get(Execucao, ex1.id)
     cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
-    assert not (ex1.status == "sucesso" and "concluída" in (ex1.mensagem or "")), "teto de 1 lote vira 'concluída'"
-    assert ex1.status == "parcial" and "reconciliacao" not in ex1.mensagem
-    assert cp.concluida is False and cp.ultima_chave == [50]
-    n0 = len(sil_mock.gets())
-    ex2 = ccomp.iniciar(db, "admin@aion.local", "sil")
-    db.expire_all()
-    seqs = sil_mock.gets()[n0:]
-    cp = db.scalar(select(CheckpointCarga).where(CheckpointCarga.sistema == "SIL"))
-    assert db.get(Execucao, ex2.id).status == "parcial" and len(seqs) == 1, sil_mock.sequencias
-    assert sil_mock.sequencias[-1] == 51 and cp.concluida is False and cp.ultima_chave == [100]
-    # 3ª execução: lote 101-150 (cheio) ainda parcial; a 4ª acha o fim (lote vazio) e conclui com reconciliação
-    ccomp.iniciar(db, "admin@aion.local", "sil")
-    ex4 = ccomp.iniciar(db, "admin@aion.local", "sil")
-    db.expire_all()
-    ex4 = db.get(Execucao, ex4.id)
-    assert ex4.status == "sucesso" and "reconciliacao=" in ex4.mensagem, ex4.mensagem
-    assert sil_mock.sequencias[-1] == 151
+    assert ex1.status == "sucesso" and "reconciliacao=" in ex1.mensagem, ex1.mensagem
+    assert sil_mock.sequencias[-4:] == [1, 51, 101, 151] and len(sil_mock.gets()) - n0 == 4
+    assert cp.concluida is True
     _zera_checkpoint_sil(db)
 
 

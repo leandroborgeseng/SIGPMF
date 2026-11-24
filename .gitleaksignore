@@ -1,0 +1,2 @@
+# Falso positivo: constante sintética ZZTESTE em teste (#67), já trocada no commit seguinte
+ac984b5b3e4e3c06d79cb06c779b5421f97c9384:backend/tests/test_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz_sil_pulo.py:generic-api-key:25

@@ -135,9 +135,14 @@ def test_tr7_api_tributario_do_cidadao_e_auditada(client, tokens, db, origem):
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["totais"]["imoveis"] == 1 and d["totais"]["parcelas_em_aberto"] == 1
-    assert d["totais"]["divida_ativa"] == pytest.approx(646.2) and d["totais"]["protestada"] is True
+    assert d["totais"]["divida_ativa"] == pytest.approx(546.2) and d["totais"]["protestada"] is True
     assert [i["ativo"] for i in d["imoveis"]] == [True] and d["imoveis"][0]["iptu_anual"] == pytest.approx(420.75)
     assert {x["situacao"] for x in d["lancamentos"]} <= {"pago", "vencido", "a_vencer"}
+    # DP-P11: `inscricao` (data) virou `inscrita_em`; DP-P20: saldo líquido = 646,20 − 100,00 pago na Conta_Corrente
+    dv = next(x for x in d["dividas"] if x["em_aberto"])
+    assert "inscricao" not in dv and dv["inscrita_em"] == "2025-03-01"
+    assert dv["saldo"] == pytest.approx(546.2) and dv["saldo_bruto"] == pytest.approx(646.2) and dv["pago"] == pytest.approx(100.0)
+    assert dv["situacao"] == "D" and dv["origem"] in ("Imóvel 0111101001010", f"{dv['natureza_nome']} — imóvel 0111101001010")
     aud = db.scalar(select(Auditoria).where(Auditoria.acao == "consulta_tributario").order_by(Auditoria.id.desc()))
     assert aud.alvo == f"cidadao:{cid}" and aud.usuario == "leitura@aion.local"
     assert client.get("/api/gold/cidadaos/nao-existe/tributario", headers=tokens["leitura"]).status_code == 404

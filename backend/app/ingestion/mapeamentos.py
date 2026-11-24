@@ -5,7 +5,7 @@ Papéis: pessoa (cadastro), cns_extra (CNS adicionais de uma pessoa), revisao (s
 terceiro (titular/autorizado/comprador: só CPF válido associa), obito (nunca associa sozinho).
 Um campo canônico pode juntar várias colunas (tupla) como texto livre.
 """
-from app.connectors.sqlserver.politicas import HISTORICAS_OBITO
+from app.connectors.sqlserver.politicas import HISTORICAS_OBITO, ORDEM_KEYSET_CC, TIPOS_PK_CC
 
 CANONICOS = ("nome", "data_nascimento", "cpf", "nome_mae", "endereco", "atualizado_em")
 CHAVE_SEPULTAMENTO = ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "GAVETA", "LADO", "SEQUENCIA")
@@ -29,11 +29,31 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
     ("SAUDE", "Unidades"): {**_FATO_SAUDE, "chave": "Codigo", "campo_incremental": None},
     ("SAUDE", "Aux_Vacina"): {**_FATO_SAUDE, "chave": "Cod_Vacina", "campo_incremental": None},
     ("SAUDE", "Aux_Especialidades"): {**_FATO_SAUDE, "chave": "Codi_Espe", "campo_incremental": None},
+    ("SAUDE", "Aux_Bairro"): {**_FATO_SAUDE, "chave": "Cd_Bai", "campo_incremental": None},
     ("IPTU", "Cadastro"): {**_FATO, "chave": "CODI", "campo_incremental": "Data_Alte"},
     ("IPTU", "Cadastro_Possuidor"): {**_FATO, "chave": ("CODI", "CPF_CNPJ"), "campo_incremental": "Data_Inclusao"},
     ("DIVIDA", "Divida"): {**_FATO, "chave": ("CODI", "SEQU", "ANO"), "campo_incremental": "DT_CALCULO"},
+    # Identidade da bronze = as 5 colunas da PK, nesta ordem (a data por último, em texto canônico).
+    # O id antigo (CODI|SEQU|ANO|Sequencia, 3 separadores) continua reconhecível e fica fora da prata vigente.
+    # O keyset pagina na ordem física da PK (Data_Movimentacao primeiro): as mesmas 5 colunas, sem chave menor.
+    # ordem_legada só recusa checkpoint antigo.
+    ("DIVIDA", "Divida_Conta_Corrente"): {**_FATO, "chave": ("CODI", "SEQU", "ANO", "Sequencia", "Data_Movimentacao"),
+                                          "campo_incremental": "Data_Movimentacao",
+                                          "keyset": {"versao": 2, "ordem": ORDEM_KEYSET_CC, "tipos": TIPOS_PK_CC,
+                                                     "prova": "catalogo_pk",
+                                                     "ordem_legada": ("CODI", "SEQU", "ANO", "Sequencia")}},
     # API SIL (tributário novo): empresas por CCM; fato (não cria cidadão). Sem data de alteração na API.
     ("SIL", "Empresas"): {**_FATO, "chave": "Ccm", "campo_incremental": None},
+    # Senior: pessoa (cria/une cidadão por CPF). folha_nominal é gravada pelo conector depois do SELECT
+    # e vai ao ouro por linhas_ouro (fica de fora do loop genérico: ver FORA_DA_GOLD).
+    ("SENIOR", "r034fun"): {
+        "dominio": "rh", "chave": ("numemp", "tipcol", "numcad"), "campo_incremental": "datafa", "papel": "pessoa",
+        "campos": {"nome": "nomfun", "data_nascimento": "datnas", "cpf": "numcpf", "atualizado_em": "datafa",
+                   "folha_nominal": "folha_nominal"}},
+    ("SENIOR", "r036dep"): {
+        "dominio": "rh", "chave": ("numemp", "tipcol", "numcad", "coddep"), "campo_incremental": None,
+        "papel": "pessoa",
+        "campos": {"nome": "nomdep", "data_nascimento": "datnas", "cpf": "numcpf", "folha_nominal": "folha_nominal"}},
     ("FINANCEIRO", "Financeiro_Exercicio"): {**_FATO, "chave": ("Exercicio", "Tributo", "Nr_Carne", "Sequencia",
                                                                "Referencia", "Renovacao", "Parcela", "Duplicidade"),
                                              "campo_incremental": "Data_Ultima_Alteracao_Registro"},
@@ -50,7 +70,7 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
         "dominio": "saude", "chave": "Matricula", "campo_incremental": "dt_ultimaatual", "papel": "pessoa",
         "rowversion": None,  # S2: usar a coluna rowversion no lugar do hash quando existir na origem
         "campos": {"nome": "Nome", "data_nascimento": "Dt_Nasc", "cpf": "Cpf", "cns": "Cartao_Sus", "nome_mae": "Mae",
-                   "nome_pai": "Pai", "sexo": "Sexo", "endereco": ("Complemento", "Nr", "Cep"),
+                   "nome_pai": "Pai", "sexo": "Sexo", "endereco": "endereco_saude",  # EN10–EN12: app.silver.endereco_saude
                    "atualizado_em": "dt_ultimaatual", "pista_normalizado": "Normalizado",
                    "pista_matricula_correta": "Matricula_Correta"}},
     ("SAUDE", "Pacientes_CNS"): {
@@ -76,19 +96,18 @@ MAPEAMENTOS: dict[tuple[str, str], dict] = {
         "dominio": "cemiterio", "chave": ("Cod_Cemiterio", "Quadra", "Sepultura", "DataVenda"),
         "campo_incremental": "DataVenda", "papel": "terceiro",
         "campos": {"nome": "Nome", "cpf": "CPF", "atualizado_em": "DataVenda"}},
+    ("CEMITERIO", "Cemiterio"): {"dominio": "cemiterio", "papel": "fato", "campos": {}, "chave": "codcemite", "campo_incremental": None},
 }
 
 NOMES_SISTEMAS = {"DEMO_SAUDE": "Saúde — Prontuário", "DEMO_CEMITERIO": "Cemitério — Sepultamentos",
                   "SAUDE": "Saúde (sintético, estrutura real)", "CEMITERIO": "Cemitério (sintético, estrutura real)",
                   "IPTU": "IPTU — imóveis e possuidores", "DIVIDA": "Dívida ativa", "FINANCEIRO": "Lançamentos tributários",
-                  "SIL": "API SIL — empresas"}
+                  "SIL": "API SIL — empresas", "SENIOR": "Senior — folha nominal e dependentes"}
 
 
 def chave_origem(m: dict, dados: dict) -> str:
-    ch = m["chave"]
-    if isinstance(ch, tuple):
-        return "|".join("" if dados.get(c) is None else str(dados.get(c)) for c in ch)
-    return str(dados[ch])
+    from app.bronze.ingestao import _id
+    return _id(m["chave"], dados)
 
 
 def canonico(sistema: str, tabela: str, dados: dict) -> dict:
@@ -97,7 +116,11 @@ def canonico(sistema: str, tabela: str, dados: dict) -> dict:
         return {k: dados.get(k) for k in CANONICOS}
     out = {}
     for k, orig in m["campos"].items():
-        if isinstance(orig, tuple):
+        if orig == "endereco_saude":  # EN10/EN11: Rua/Bairro do Geral, senão o bloco Outro_*
+            from app.silver import endereco_saude
+            out[k] = endereco_saude.texto(dados)
+            out["endereco_partes"] = endereco_saude.partes(dados)
+        elif isinstance(orig, tuple):
             partes = [str(dados[c]) for c in orig if dados.get(c) not in (None, "")]
             out[k] = ", ".join(partes) or None
         else:
@@ -107,3 +130,10 @@ def canonico(sistema: str, tabela: str, dados: dict) -> dict:
 
 def papel(sistema: str, tabela: str) -> str:
     return MAPEAMENTOS.get((sistema, tabela), {}).get("papel", "pessoa")
+
+
+def keyset_de(sistema: str, tabela: str) -> dict | None:
+    """Especificação de paginação alinhada à PK, quando a chave da bronze não é essa ordem."""
+    m = MAPEAMENTOS.get((sistema, str(tabela).split(".")[-1]))
+    spec = m.get("keyset") if m else None
+    return spec if isinstance(spec, dict) else None

@@ -17,7 +17,7 @@ from app.core.db import get_engine
 from app.models.controle import Execucao, Log
 
 NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iss": "ISS", "iptu": "IPTU", "divida": "Dívida ativa",
-         "financeiro": "Financeiro", "sil": "API SIL"}
+         "financeiro": "Financeiro", "sil": "API SIL", "senior": "Senior"}
 TIPO_COMPLETA = "carga_completa_conector"
 TIPOS_AMOSTRA = ("amostra_conector", "carga_municipe_amostra")
 TIPOS_CARGA = (*TIPOS_AMOSTRA, TIPO_COMPLETA)
@@ -42,7 +42,7 @@ def trava_livre(db: Session, sistema: str) -> bool:
 def sinal_de_vida(ex_id: int, etapa: str | None = None, processadas: int | None = None,
                   total: int | None = None) -> None:
     """Heartbeat (conexão separada, commit próprio). Com `etapa`, grava também etapa e contador (como a completa)."""
-    vals = {"atualizado_em": datetime.now(UTC)}
+    vals = {"atualizado_em": datetime.now(UTC), "ultimo_sinal_em": datetime.now(UTC)}
     if etapa is not None:
         vals.update(etapa=etapa, processadas_etapa=processadas, total_etapa=total)
     with get_engine().begin() as c:

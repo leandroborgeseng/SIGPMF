@@ -23,7 +23,7 @@ async function abrirFicha(corpo: unknown, status = 200) {
   mockFetch((u) => (u.includes('/gold/cidadaos/') ? [status, corpo] : [200, LISTA]))
   salvaSessao({ token: 't', perfil: 'operador', nome: 'Teste' })
   render(<MemoryRouter initialEntries={['/simulador']}><AuthProvider><App /></AuthProvider></MemoryRouter>)
-  await userEvent.type(screen.getByLabelText('Nome ou CPF completo'), 'Fulano')
+  await userEvent.type(screen.getByLabelText('Nome, CPF, CNPJ ou CCM'), 'Fulano')
   await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
   await userEvent.click(await screen.findByRole('button', { name: 'Fulano Sintético' }))
 }
@@ -54,11 +54,11 @@ describe('ficha do cidadão (tela branca)', () => {
     expect(screen.getByText(/lixo/)).toBeInTheDocument()
     expect(screen.getByTestId('cpf')).toHaveTextContent('não informado')
   })
-  it('pessoa sem vínculos mostra —', async () => {
+  it('pessoa sem vínculos diz que não tem', async () => {
     await abrirFicha(ficha(null))
     expect(await screen.findByRole('heading', { name: 'Fulano Sintético' })).toBeInTheDocument()
     const cadastro = screen.getByRole('heading', { name: 'Dados cadastrais' }).closest('section') as HTMLElement
-    expect(within(cadastro).getByText('—')).toBeInTheDocument()
+    expect(within(cadastro).getByText('Nenhum sistema vinculado')).toBeInTheDocument()
   })
   it('500 na rota de detalhe mostra erro com motivo e volta à busca', async () => {
     await abrirFicha({ detail: 'x' }, 500)

@@ -13,8 +13,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.connectors.sqlserver.politicas import politica
+from app.core.config import get_settings
 from app.models.camadas import CorrelacaoPendente, DadoGold, RegistroBronze, Vinculo
 from app.models.controle import BaseCatalogo, Execucao
+from app.services.tipo_execucao import texto_limite, tipo_texto
 
 
 def _por_sistema(db: Session, stmt) -> dict[str, int]:
@@ -51,7 +53,8 @@ def contagem_bronze(db: Session) -> dict[str, int]:
                         .group_by(RegistroBronze.sistema_origem))
 
 
-def indicadores(db: Session) -> list[dict]:
+def contagens_por_sistema(db: Session) -> dict[str, dict[str, int]]:
+    """As agregações pesadas (milhões de linhas). Só SELECT no Postgres; a rota lê isto pelo contagens_cache."""
     bronze = contagem_bronze(db)
     prata = _por_sistema(db, select(Vinculo.sistema, func.count()).group_by(Vinculo.sistema))
     ouro = _por_sistema(db, select(DadoGold.sistema, func.count(func.distinct(DadoGold.cidadao_id))).group_by(DadoGold.sistema))
@@ -60,10 +63,23 @@ def indicadores(db: Session) -> list[dict]:
     prata["ISS"] = prata.get("ISS", 0) + int(db.scalar(select(func.count()).select_from(Municipe)) or 0)
     pend = _por_sistema(db, select(CorrelacaoPendente.sistema, func.count())
                         .where(CorrelacaoPendente.status == "pendente").group_by(CorrelacaoPendente.sistema))
+    return {"bronze": bronze, "prata": prata, "ouro": ouro, "pendentes": pend}
+
+
+def indicadores(db: Session, contagens: dict[str, dict[str, int]] | None = None, frio: bool = False) -> list[dict]:
+    """contagens=None calcula na hora (lento em produção); a rota /conectores passa o retrato do cache.
+    frio=True (cache sem retrato): contagens saem null, nunca 0 — zero parece perda de dados (TL #56)."""
+    if contagens is None and not frio:
+        contagens = contagens_por_sistema(db)
+    contagens = contagens or {}
+    bronze, prata, ouro, pend = (contagens.get(k, {}) for k in ("bronze", "prata", "ouro", "pendentes"))
     execs = list(db.scalars(select(Execucao).where(Execucao.sistema.is_not(None)).order_by(Execucao.id.desc()).limit(500)))
     out = []
+    from app.catalogo.bases import RETIRADAS
     bases = db.scalars(select(BaseCatalogo).order_by(BaseCatalogo.prioridade.is_(None), BaseCatalogo.prioridade, BaseCatalogo.nome))
     for b in bases:
+        if b.nome in RETIRADAS:  # linha antiga permanece no banco; a tela não lista nem oferece carga
+            continue
         sis = list(b.sistemas or [])
         ult = ultima_execucao(execs, b)
         amostra = ultima_execucao(execs, b, TIPOS_AMOSTRA)
@@ -75,12 +91,15 @@ def indicadores(db: Session) -> list[dict]:
             "tem_amostra": amostra is not None and amostra.status in ("sucesso", "sem_novidades"),
             **_completa(db, b),
             "bloqueio": _bloqueio(db, b),
+            **_pausada(db, b),
             "com_erro": ult is not None and ult.status == "falha",
             "origem_vazia": ult is not None and ult.status == "origem_vazia",
-            "contagens": {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
-                          "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)},
+            "contagens": ({k: None for k in ("bronze", "prata", "ouro", "pendentes")} if frio else
+                          {"bronze": sum(bronze.get(s, 0) for s in sis), "prata": sum(prata.get(s, 0) for s in sis),
+                           "ouro": sum(ouro.get(s, 0) for s in sis), "pendentes": sum(pend.get(s, 0) for s in sis)}),
             "ultima_carga": None if ult is None else {
-                "id": ult.id, "tipo": ult.tipo, "status": ult.status, "iniciado_em": ult.iniciado_em,
+                "id": ult.id, "tipo": ult.tipo, "tipo_texto": tipo_texto(ult), "texto_limite": texto_limite(ult),
+                "status": ult.status, "iniciado_em": ult.iniciado_em,
                 "finalizado_em": ult.finalizado_em, "lidos": ult.lidos, "novos": ult.novos,
                 "atualizados": ult.atualizados, "ignorados": ult.ignorados, "mensagem": ult.mensagem,
                 "erro": ult.erro_publico()},
@@ -100,16 +119,29 @@ def _bloqueio(db: Session, b: BaseCatalogo) -> dict | None:
     return tv.estado(db, sistema, tv.NOMES.get(b.conjunto, b.conjunto))
 
 
+def _pausada(db: Session, b: BaseCatalogo) -> dict:
+    """CT26c: fonte pausada na agenda (ativo=false): a tela desabilita amostra, aprovação e carga completa."""
+    from app.services import carga_completa as ccomp
+    motivo = ccomp.motivo_pausada_agenda(db, b.conjunto, "amostra") if b.conjunto else None
+    return {"agenda_pausada": motivo is not None, "agenda_pausada_motivo": motivo}
+
+
 def _completa(db: Session, b: BaseCatalogo) -> dict:
     """CC1: liberação da carga completa real por conector (Saúde/Cemitério) e o motivo quando bloqueada."""
     from app.services import carga_completa as ccomp
     if (b.conjunto or "") not in ccomp.CONECTORES_COMPLETA or b.status != "implementado":
         return {"completa_disponivel": False, "completa_liberada": False, "completa_motivo": None}
-    motivo = ccomp.motivo_bloqueio(db, b.conjunto)
+    motivo = ccomp.motivo_bloqueio(db, b.conjunto) or ccomp.motivo_pausada_agenda(db, b.conjunto)  # CT26c
     rodando = ccomp.ativa(db, ccomp._sistema(b.conjunto)) is not None  # CC7.4: card esconde números parciais
     return {"completa_disponivel": True, "completa_liberada": motivo is None, "completa_motivo": motivo,
-            "completa_em_andamento": rodando}
+            "completa_em_andamento": rodando, "exige_amostra": True, "amostra": ccomp.resumo_amostra(db, b.conjunto),
+            "amostra_limite": int(get_settings().amostra_limite)}
 
 
-def totais(bases: list[dict]) -> dict[str, int]:
-    return {k: sum(b["contagens"][k] for b in bases) for k in ("bronze", "prata", "ouro", "pendentes")}
+def totais(bases: list[dict]) -> dict[str, int | None]:
+    """Total null se alguma base estiver sem contagem (cache frio)."""
+    out: dict[str, int | None] = {}
+    for k in ("bronze", "prata", "ouro", "pendentes"):
+        vals = [b["contagens"][k] for b in bases]
+        out[k] = None if any(v is None for v in vals) else sum(vals)
+    return out

@@ -421,8 +421,9 @@ def test_amostra_sil_403_para_quem_nao_e_admin(client, tokens, db, sil_env, sil_
     assert sil_env.req == []  # nenhuma chamada à SIL
 
 
-def test_amostra_sil_admin_um_lote_e_auditoria(client, tokens, db, sil_env, sil_sincrono):
+def test_amostra_sil_admin_um_lote_e_auditoria(client, tokens, db, sil_env, sil_sincrono, monkeypatch):
     from app.models.controle import Execucao
+    monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "1")  # PR-A: padrão 20 (teste próprio); aqui fixa 1 lote
     r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
     assert r.status_code == 202, r.text
     j = r.json()
@@ -445,8 +446,9 @@ def test_amostra_sil_admin_um_lote_e_auditoria(client, tokens, db, sil_env, sil_
     assert client.get("/api/conectores/sil/amostra/999999", headers=tokens["admin"]).status_code == 404
 
 
-def test_amostra_sil_409_enquanto_roda(client, tokens, db, sil_env):
+def test_amostra_sil_409_enquanto_roda(client, tokens, db, sil_env, monkeypatch):
     """Thread real: a SIL sintética demora; o 2º pedido recebe 409 e nada é interrompido; no fim a trava é solta."""
+    monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "1")  # PR-A: padrão 20 (teste próprio); aqui fixa 1 lote
     import time
     sil_env.atraso_s = 1.5
     t0 = time.monotonic()
@@ -591,3 +593,14 @@ def test_sandbox_rede_nao_cai_para_producao_com_warning_limpo(erro, caplog):
     tudo = " ".join(r.getMessage() for r in caplog.records)
     for proibido in ("zzteste.invalid", "http", SEGREDO_SINTETICO, "zz-id", "ZZTOKEN"):
         assert proibido not in tudo
+
+
+def test_amostra_sil_com_nan_roda_com_padrao(client, tokens, db, sil_env, sil_sincrono, monkeypatch):
+    """SIL_AMOSTRA_MAX_LOTES=nan não derruba a amostra: roda até o padrão de lotes e conclui."""
+    from app.services import amostra_sil as sil
+    monkeypatch.setenv("SIL_AMOSTRA_MAX_LOTES", "nan")
+    r = client.post("/api/conectores/sil/amostra", headers=tokens["admin"])
+    assert r.status_code == 202, r.text
+    j = r.json()
+    assert j["status"] in ("sucesso", "sem_novidades"), j
+    assert 1 <= j["lotes"] <= sil.LOTES_AMOSTRA_PADRAO

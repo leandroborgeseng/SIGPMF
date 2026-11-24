@@ -10,6 +10,10 @@ mapeamentos/
 *.dump
 *.sql.gz
 *.csv
+# Exceção: IEG-M do TCE-SP (agregado público por município e faixa; nenhum dado pessoal), fixture dos testes
+!backend/tests/fixtures/iegm-franca-2014-2024.csv
+# Exceção: amostra FICTÍCIA (2 linhas) do CSV do cadastro físico da SIL, só para o teste da carga
+!backend/tests/fixtures/sil_imoveis_fisico_amostra.csv
 *.xlsx
 backups/
 # python

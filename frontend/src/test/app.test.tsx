@@ -45,11 +45,9 @@ describe('acesso', () => {
     montar('/dashboard', 'admin')
     const nav = await screen.findByRole('navigation', { name: 'Navegação principal' })
     const links = within(nav).getAllByRole('link')
-    expect(links.map((l) => l.textContent)).toEqual(['Visão geral', 'Saúde', 'Fazenda', 'Dashboard das cargas', 'Monitor de cargas',
-      'Conectores', 'Simulador do Cidadão', 'Explorar dados', 'Explorador de vínculos', 'Políticas de dados',
-      'Acesso por secretaria'])  // PR-06: grupo TI só para admin
-    expect(links[3]).toHaveAttribute('aria-current', 'page')
-    expect(links[0]).not.toHaveAttribute('aria-current')  // /painel não fica ativo em outras rotas (end)
+    expect(links.map((l) => l.textContent)).toEqual(['Ações, projetos e entregas', 'Visão geral', 'Saúde', 'Fazenda', 'Finanças', 'IEG-M (TCE)', 'Recursos Humanos', 'Cobertura de planos', 'Cruzamentos', 'Folha (modelo · exemplo)', 'Portal do Cidadão', 'Consulta interna de cadastros', 'Dashboard das cargas', 'Monitor de cargas', 'Conectores', 'Andamento das cargas', 'Importar imóveis SIL', 'Explorar dados', 'Explorador de vínculos', 'Políticas de dados', 'Chat de dados', 'Acesso por secretaria'])
+    expect(links.find(l => l.textContent === 'Dashboard das cargas')).toHaveAttribute('aria-current', 'page')
+    expect(links.find(l => l.textContent === 'Visão geral')).not.toHaveAttribute('aria-current')  // /painel não fica ativo em outras rotas (end)
   })
 
   it('gaveta abre com ☰ e fecha com Esc devolvendo o foco (UX-S2)', async () => {
@@ -138,8 +136,8 @@ describe('simulador', () => {
   async function abrir(perfil: string) {
     mockFetch(rota)
     const r = montar('/simulador', perfil)
-    expect(await screen.findByText('Busque um cidadão por nome ou CPF para ver os dados integrados.')).toBeInTheDocument()
-    await userEvent.type(screen.getByLabelText('Nome ou CPF completo'), 'Bruno')
+    expect(await screen.findByText('Busque um cidadão por nome ou CPF, ou uma empresa pelo CNPJ ou CCM.')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Nome, CPF, CNPJ ou CCM'), 'Bruno')
     await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Bruno Exemplo Souza' }))
     await screen.findByRole('heading', { name: 'Bruno Exemplo Souza' })
@@ -148,8 +146,10 @@ describe('simulador', () => {
 
   it('fonte e data dd/mm/aaaa e CPF mascarado (UX-S9/S10)', async () => {
     const { container } = await abrir('leitura')
-    expect(screen.getByText(/Rua Teste 2 — Fonte: DEMO_SAUDE · Atualizado em 05\/03\/2026/)).toBeInTheDocument()
-    expect(screen.getByText('Há outras versões em outras fontes')).toBeInTheDocument()
+    // EN5/UXO1: o valor fica sozinho e a procedência vai para o chip <OrigemDado> (aria-label não depende do relógio)
+    expect(screen.getByText('Rua Teste 2')).toBeInTheDocument()
+    expect(screen.getByRole('note', { name: 'Fonte: Demo_saude, atualizado em 5 de março de 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Ver (outro valor|outros \d+ valores)$/ })).toBeInTheDocument()
     expect(screen.getByTestId('cpf')).toHaveTextContent(CPF_MASC)
     expect(screen.queryByRole('button', { name: 'Revelar CPF' })).toBeNull()
     await semViolacoesSerias(container)
@@ -158,6 +158,35 @@ describe('simulador', () => {
   it('admin não vê o botão Revelar (UX-S11)', async () => {
     await abrir('admin')
     expect(screen.queryByRole('button', { name: 'Revelar CPF' })).toBeNull()
+  })
+
+  it('CNPJ, raiz ou CCM buscam empresa mascarada; DV errado mostra o motivo (CN4)', async () => {
+    const urls: string[] = []
+    mockFetch((url) => {
+      urls.push(url)
+      if (url.includes('/silver/empresas')) {
+        return url.includes('01DE-36') ? [400, { detail: 'CNPJ inválido: confira os dígitos verificadores.' }]
+          : [200, [{ documento: '**.***.***/01DE-**', tipo_pessoa: 'PJ', nome: 'P****** E******', ccms: [990001], possui_debito: true, imoveis_ativos: 1, fontes: ['SIL', 'IPTU'] }]]
+      }
+      return [200, []]
+    })
+    const { container } = montar('/simulador', 'leitura')
+    const campo = await screen.findByLabelText('Nome, CPF, CNPJ ou CCM')
+    await userEvent.type(campo, '12.abc.345/01de-35')
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    const lista = await screen.findByRole('list', { name: 'Empresas encontradas' })
+    expect(within(lista).getByText(/CNPJ: \*\*\.\*\*\*\.\*\*\*\/01DE-\*\* · CCM: 990001/)).toBeVisible()
+    expect(within(lista).getByText(/Com débito na SIL · 1 imóvel ativo · Fontes: SIL, IPTU/)).toBeVisible()
+    expect(urls.some((u) => u.includes('/silver/cidadaos'))).toBe(false)
+    await semViolacoesSerias(container)
+    await userEvent.clear(campo)
+    await userEvent.type(campo, '12.ABC.345/01DE-36')
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('CNPJ inválido: confira os dígitos verificadores.')
+    await userEvent.clear(campo)
+    await userEvent.type(campo, '123.456.789-09')  // CPF continua na busca de cidadão
+    await userEvent.click(screen.getByRole('button', { name: 'Buscar' }))
+    await waitFor(() => expect(urls.at(-1)).toContain('/silver/cidadaos'))
   })
 
   it('admin_lgpd revela com motivo, aviso e remascara em 60 s (UX-S11/S12/S13)', async () => {

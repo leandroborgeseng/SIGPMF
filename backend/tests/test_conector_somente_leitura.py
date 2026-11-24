@@ -19,10 +19,14 @@ PROIBIDOS = ["INSERT INTO t VALUES (1)", "UPDATE x SET y=1", "DELETE FROM t", "M
              "CREATE TABLE t (c int)", "GRANT SELECT ON t TO u", "SELECT * INTO nova FROM t", "SELECT 1; DROP TABLE t"]
 
 
+# Texto exato que não é SQL: nome de campo do formulário JSF do Portal da Transparência (conector portal_rh, sem banco).
+LITERAIS_PERMITIDOS = frozenset({"javax.faces.partial.execute"})
+
+
 def _literais_proibidos(fonte: str) -> list[str]:
     achados = []
     for no in ast.walk(ast.parse(fonte)):
-        if isinstance(no, ast.Constant) and isinstance(no.value, str):
+        if isinstance(no, ast.Constant) and isinstance(no.value, str) and no.value not in LITERAIS_PERMITIDOS:
             if PROIBIDO_RE.search(no.value) or SELECT_INTO_RE.search(no.value):
                 achados.append(no.value)
     return achados

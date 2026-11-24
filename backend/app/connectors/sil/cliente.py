@@ -49,7 +49,26 @@ def _segmento_proibido(seg: str) -> bool:
 
 
 class ErroSil(RuntimeError):
-    """Erro do conector com mensagem segura (sem segredo, token, URL completa nem chave consultada)."""
+    """Erro do conector com mensagem segura (sem segredo, token, URL completa nem chave consultada).
+
+    Contexto de diagnóstico (preenchido quando conhecido, nunca com CCM/CNPJ, query, URL, token ou corpo):
+    `status` HTTP, `tentativa` (1..n) e `sequencia` (posição Sequencia da paginação de consultarlote)."""
+    status: int | None = None
+    tentativa: int | None = None
+    sequencia: int | None = None
+    repeticao: int | None = None  # repetição da mesma Sequencia no lote (1..2) quando houve
+
+
+def contexto_erro_sil(exc: BaseException) -> dict:
+    """Só campos seguros para log/auditoria: classe, status HTTP, tentativa e Sequencia."""
+    return {"classe": type(exc).__name__, "status": getattr(exc, "status", None),
+            "tentativa": getattr(exc, "tentativa", None), "repeticao": getattr(exc, "repeticao", None),
+            "sequencia": getattr(exc, "sequencia", None)}
+
+
+def descreve_erro_sil(exc: BaseException) -> str:
+    c = contexto_erro_sil(exc)
+    return " ".join(f"{k}={'-' if v is None else v}" for k, v in c.items())
 
 
 class RespostaAuthInvalida(ErroSil):
@@ -92,6 +111,13 @@ class FalhaSil(ErroSil):
     def __init__(self, motivo: str, status: int | None = None):
         super().__init__(motivo)
         self.motivo, self.status = motivo, status
+
+
+class RespostaNaoJson(FalhaSil):
+    """200 cujo corpo não é JSON (vazio, HTML...). Nunca carrega o corpo."""
+
+
+NAO_LOCALIZADO = object()  # sentinela do 404 quando o chamador pede (get(..., sentinela_404=True))
 
 
 class FalhaRede(FalhaSil):
@@ -151,6 +177,8 @@ class ClienteSil:
         self._trava_token = threading.Lock()
         self._throttle = _Throttle(config.req_por_s, relogio, dormir)
         self.chamadas = {"auth": 0, "get": 0}
+        self.ultimo_status: int | None = None  # diagnóstico do ErroSil (sem corpo nem URL)
+        self.ultima_tentativa: int | None = None
 
     def __repr__(self) -> str:
         return f"ClienteSil({self.config!r})"
@@ -243,6 +271,7 @@ class ClienteSil:
         for tentativa in range(self.config.tentativas + 1):
             self._throttle.espera()
             t0 = self.relogio()
+            self.ultima_tentativa, self.ultimo_status = tentativa + 1, None
             try:
                 r = self._http.request(metodo, caminho, **kw)
             except httpx.TimeoutException:  # a exceção do httpx traz a URL com a query: não é encadeada
@@ -253,6 +282,7 @@ class ClienteSil:
                 log.info("SIL %s %s erro de conexão %s (tentativa %d)", metodo, caminho, type(exc).__name__,
                             tentativa + 1)
             else:
+                self.ultimo_status = r.status_code
                 log.info("SIL %s %s -> %d em %.0f ms (tentativa %d)", metodo, caminho, r.status_code,
                          (self.relogio() - t0) * 1000, tentativa + 1)
                 if r.status_code != 429 and r.status_code < 500:
@@ -274,8 +304,19 @@ class ClienteSil:
                 pass
         return base
 
-    def get(self, caminho: str, params: dict[str, Any]) -> Any | None:
-        """GET permitido. 404 -> None (não localizado). 401 renova o token uma vez; o segundo vira FalhaCredencial."""
+    def get(self, caminho: str, params: dict[str, Any], sentinela_404: bool = False) -> Any | None:
+        """GET permitido. 404 -> None (não localizado). 401 renova o token uma vez; o segundo vira FalhaCredencial.
+        Um ErroSil sai com `status` e `tentativa` da última requisição preenchidos (diagnóstico sem PII)."""
+        try:
+            return self._get(caminho, params, sentinela_404)
+        except ErroSil as exc:
+            if exc.status is None:
+                exc.status = self.ultimo_status
+            if exc.tentativa is None:
+                exc.tentativa = self.ultima_tentativa
+            raise
+
+    def _get(self, caminho: str, params: dict[str, Any], sentinela_404: bool = False) -> Any | None:
         c = checa_operacao("GET", caminho)
         for renovou in (False, True):
             token = self._garante_token(forcar=renovou)
@@ -286,11 +327,11 @@ class ClienteSil:
                     raise FalhaCredencial("SIL recusou o token renovado (401 duas vezes)")
                 continue
             if r.status_code == 404:
-                return None
+                return NAO_LOCALIZADO if sentinela_404 else None
             if r.status_code != 200:
                 raise FalhaSil(f"SIL respondeu {r.status_code}", r.status_code)
             try:
                 return r.json()
             except ValueError:
-                raise FalhaSil("resposta da SIL não é JSON") from None
+                raise RespostaNaoJson("resposta da SIL não é JSON", 200) from None
         raise FalhaCredencial("SIL recusou o token")  # pragma: no cover

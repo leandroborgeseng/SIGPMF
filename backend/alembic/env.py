@@ -1,7 +1,9 @@
 from alembic import context
 from sqlalchemy import create_engine, pool, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import get_settings
+from app.core.seguranca_log import instalar_filtro, mensagem_erro_banco
 from app.models import Base
 
 target_metadata = Base.metadata
@@ -16,8 +18,13 @@ def include_name(name, type_, parent_names):
 
 def run_migrations_online() -> None:
     url = context.config.get_main_option("sqlalchemy.url") or get_settings().database_url
+    instalar_filtro()
     engine = create_engine(url, poolclass=pool.NullPool)
-    with engine.connect() as conn:
+    try:
+        conn_ctx = engine.connect()
+    except SQLAlchemyError as exc:  # sem DSN/senha no terminal do deploy (só a classe do erro)
+        raise SystemExit(mensagem_erro_banco(exc)) from None
+    with conn_ctx as conn:
         # A tabela de versão do Alembic vive em controle; o schema precisa existir antes.
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS controle"))
         conn.commit()

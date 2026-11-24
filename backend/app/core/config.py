@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     cpf_preenchimento: str = Field("12345678909", alias="CPF_PREENCHIMENTO")
     # PR-03 (R1 do QA #48): segredo (>= 32 caracteres, checado no create_app sem ecoar o valor) do HMAC-SHA256 das chaves da prata do modelo. Sem padrão; nunca vai para log.
     chave_hash_segredo: SecretStr | None = Field(None, alias="SIGPMF_CHAVE_HASH_SEGREDO", repr=False)
+    portal_smtp_host: str | None = Field(None, alias="PORTAL_SMTP_HOST")
+    portal_smtp_port: int = Field(465, alias="PORTAL_SMTP_PORT")
+    portal_smtp_from: str | None = Field(None, alias="PORTAL_SMTP_FROM")
+    portal_smtp_user: str | None = Field(None, alias="PORTAL_SMTP_USER")
+    portal_smtp_password: SecretStr | None = Field(None, alias="PORTAL_SMTP_PASSWORD", repr=False)
+    portal_tributos_url: str | None = Field(None, alias="PORTAL_TRIBUTOS_URL")
+    portal_tributos_token: SecretStr | None = Field(None, alias="PORTAL_TRIBUTOS_TOKEN", repr=False)
+    portal_guias_hosts: str = Field("", alias="PORTAL_GUIAS_HOSTS")
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     # Conector SQL Server (somente leitura). Nenhuma origem real nesta entrega.
     sqlserver_host: str | None = Field(None, alias="SQLSERVER_HOST")
@@ -36,6 +44,7 @@ class Settings(BaseSettings):
     sqlserver_database_iptu: str | None = Field(None, alias="SQLSERVER_DATABASE_IPTU")
     sqlserver_database_divida: str | None = Field(None, alias="SQLSERVER_DATABASE_DIVIDA")
     sqlserver_database_financeiro: str | None = Field(None, alias="SQLSERVER_DATABASE_FINANCEIRO")
+    sqlserver_database_senior: str | None = Field(None, alias="SQLSERVER_DATABASE_SENIOR")
     # TR1: Financeiro_Exercicio só a partir deste exercício (vazio = ano anterior ao atual)
     financeiro_exercicio_min: int | None = Field(None, alias="FINANCEIRO_EXERCICIO_MIN", ge=1990, le=2100)
     sqlserver_user: str | None = Field(None, alias="SQLSERVER_USER")
@@ -115,8 +124,14 @@ class Settings(BaseSettings):
     smtp_starttls: bool = Field(True, alias="SMTP_STARTTLS")
     alerta_de: str | None = Field(None, alias="ALERTA_DE")
     alerta_para: str = Field("", alias="ALERTA_PARA")  # e-mails separados por vírgula
+    # Chat de dados. A chave não tem padrão e não entra em log (repr=False). Vazio = chat responde 503.
+    litellm_base_url: str | None = Field(None, alias="LITELLM_BASE_URL")
+    litellm_model: str | None = Field(None, alias="LITELLM_MODEL")
+    litellm_api_key: SecretStr | None = Field(None, alias="LITELLM_API_KEY", repr=False)
+    litellm_timeout_s: int = Field(30, alias="LITELLM_TIMEOUT_S", ge=5, le=120)
 
-    @field_validator("financeiro_exercicio_min", "ge_port", mode="before")
+    @field_validator("financeiro_exercicio_min", "ge_port", "litellm_base_url", "litellm_model", "litellm_api_key",
+                     mode="before")
     @classmethod
     def _vazio_e_nulo(cls, v):
         """Variável presente e vazia no .env (como no .env.example) = não definida."""

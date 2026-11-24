@@ -1252,3 +1252,52 @@ def test_migracao_0025_falha_com_duplicatas_sem_apagar_nada(banco):
         with eng.connect() as c:
             assert c.execute(text("SELECT to_regclass('controle.uq_execucoes_educacao_completa_em_andamento')")).scalar()
         eng.dispose()
+
+
+# ---------- CT26 R1: POST /educacao/conector/{modo} respeita a agenda pausada ----------
+def _agenda_educacao(db, ativo: bool, forcar: bool = False):
+    from sqlalchemy import update
+
+    from app.models.controle import Agendamento
+    db.execute(update(Agendamento).where(Agendamento.conector == "educacao").values(ativo=ativo, forcar=forcar))
+    db.commit()
+
+
+class _LeitorProibido:
+    def __init__(self, *_a, **_k):
+        raise AssertionError("a origem não pode ser lida com a agenda pausada")
+
+
+@pytest.mark.agenda_real
+@pytest.mark.parametrize("modo", ["amostra", "completa", "incremental"])
+def test_ct26_rota_educacao_pausada_409_sem_execucao(modo, monkeypatch, limpo, client, tokens):
+    from app.models.controle import Agendamento, Execucao
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_HOST", "zz-host-teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_USER", "zz_leitor_teste")
+    monkeypatch.setenv("SIGPMF_SRC_GESTAOESCOLAR_PASSWORD", "zz-senha-teste")
+    monkeypatch.setattr(cq, "LeitorGE", _LeitorProibido)  # nunca abre conexão (falha se chamado)
+    _agenda_educacao(limpo, ativo=False, forcar=True)
+    try:
+        antes = limpo.scalar(select(func.count()).select_from(Execucao))
+        r = client.post(f"/api/educacao/conector/{modo}", headers=tokens["admin"])
+        assert r.status_code == 409 and "pausada na agenda" in r.json()["detail"].lower(), r.text
+        limpo.expire_all()
+        assert limpo.scalar(select(func.count()).select_from(Execucao)) == antes  # nenhuma execução criada
+        ag = limpo.scalar(select(Agendamento).where(Agendamento.conector == "educacao"))
+        assert ag.ativo is False and ag.forcar is True  # forcar intacto
+        a = _ultima_auditoria(limpo, "gestaoescolar_negado")
+        assert a is not None and a.detalhe == {"motivo": "agenda_pausada"} and a.alvo == "conector:educacao"
+        assert "zz-senha-teste" not in r.text and "zz_leitor_teste" not in r.text
+    finally:
+        _agenda_educacao(limpo, ativo=False, forcar=False)
+
+
+@pytest.mark.agenda_real
+def test_ct26_rota_educacao_ativa_segue_normal(monkeypatch, janela_env, limpo, client, tokens):
+    _rota_prep(monkeypatch, janela_env, "false")  # leitor mockado (_LeitorRota): nunca a origem real
+    _agenda_educacao(limpo, ativo=True)
+    try:
+        r = client.post("/api/educacao/conector/amostra", headers=tokens["admin"])
+        assert r.status_code == 200 and r.json()["execucao_id"], r.text
+    finally:
+        _agenda_educacao(limpo, ativo=False, forcar=False)

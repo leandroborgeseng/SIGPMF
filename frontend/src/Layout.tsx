@@ -5,26 +5,41 @@ import { ErrorBoundary } from './componentes'
 import { PERFIS_EXPLORADOR } from './explorar'
 
 const GRUPOS: { titulo: string; itens: Item[] }[] = [
-  { titulo: 'Gestão', itens: [
+  { titulo: 'Plano de Governo', itens: [
+    { to: '/plano-governo', rotulo: 'Ações, projetos e entregas', curto: 'Plano' },
+  ] },
+  { titulo: 'Informações estratégicas', itens: [
     { to: '/painel', rotulo: 'Visão geral', curto: 'Painel' },
     { to: '/painel/saude', rotulo: 'Saúde', curto: 'Saúde' },
     { to: '/painel/fazenda', rotulo: 'Fazenda', curto: 'Fazenda' },
+    { to: '/painel/financas', rotulo: 'Finanças', curto: 'Finanças' },
+    { to: '/painel/iegm', rotulo: 'IEG-M (TCE)', curto: 'IEG-M' },
+    { to: '/painel/rh', rotulo: 'Recursos Humanos', curto: 'RH' },
+    { to: '/painel/cobertura', rotulo: 'Cobertura de planos', curto: 'Planos' },
+    { to: '/painel/cruzamentos', rotulo: 'Cruzamentos', curto: 'Cruzam.' },
+    { to: '/painel/modelo-folha', rotulo: 'Folha (modelo · exemplo)', curto: 'Modelo' },
   ] },
-  { titulo: 'Dados', itens: [
+  { titulo: 'Serviços ao cidadão', itens: [
+    { to: '/cidadao', rotulo: 'Portal do Cidadão', curto: 'Cidadão' },
+    { to: '/simulador', rotulo: 'Consulta interna de cadastros', curto: 'Cadastros' },
+  ] },
+  { titulo: 'Bases e integrações', itens: [
     { to: '/dashboard', rotulo: 'Dashboard das cargas', curto: 'Dashboard' },
     { to: '/monitor', rotulo: 'Monitor de cargas', curto: 'Monitor' },
     { to: '/conectores', rotulo: 'Conectores', curto: 'Conectores' },
-    { to: '/simulador', rotulo: 'Simulador do Cidadão', curto: 'Simulador' },
+    { to: '/cargas', rotulo: 'Andamento das cargas', curto: 'Cargas' },
+    { to: '/cargas/sil', rotulo: 'Importar imóveis SIL', curto: 'SIL', perfis: ['admin'] },
     { to: '/explorar', rotulo: 'Explorar dados', curto: 'Explorar', perfis: PERFIS_EXPLORADOR },
     { to: '/vinculos', rotulo: 'Explorador de vínculos', curto: 'Vínculos', perfis: ['admin', 'admin_lgpd'] },
     { to: '/politicas', rotulo: 'Políticas de dados', curto: 'Políticas' },
+    { to: '/chat', rotulo: 'Chat de dados', curto: 'Chat' },
   ] },
   { titulo: 'TI', itens: [
     { to: '/ti/acesso-secretaria', rotulo: 'Acesso por secretaria', curto: 'Acesso', perfis: ['admin'] },
   ] },
 ]
 // Barra inferior do celular: só os atalhos principais (o menu lateral tem todos)
-const ATALHOS = ['/painel', '/painel/saude', '/painel/fazenda', '/simulador']
+const ATALHOS = ['/painel', '/painel/saude', '/painel/fazenda', '/cidadao']
 type Item = { to: string; rotulo: string; curto: string; perfis?: string[] }
 const visivel = (i: Item, perfil?: string) => !i.perfis || (!!perfil && i.perfis.includes(perfil))
 

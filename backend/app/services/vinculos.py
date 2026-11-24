@@ -13,6 +13,7 @@ novos tipos de aresta quando esses conectores forem ligados.
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.identity import documento as docmod
 from app.identity.cpf import mascara
 from app.identity.nome import mascara_nome
 from app.models.camadas import Cidadao, DividaAtiva, EmpresaSil, Identificador, Imovel, ImovelPossuidor
@@ -26,14 +27,14 @@ class NoInvalido(ValueError):
 
 
 def mascara_doc(doc: str | None) -> str:
-    d = "".join(ch for ch in str(doc or "") if ch.isdigit())
+    d = docmod.normaliza(str(doc or "")) or ""  # CN1: mantém as letras do CNPJ alfanumérico
     if len(d) == 14:
         return f"**.***.***/{d[8:12]}-**"
     return mascara(d) if d else "—"
 
 
 def _divida(db: Session, *, cidadao: str | None = None, codi: str | None = None) -> float:
-    q = select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.extinta.is_(False))
+    q = select(func.coalesce(func.sum(DividaAtiva.saldo), 0)).where(DividaAtiva.em_aberto.is_(True))
     q = q.where(DividaAtiva.cidadao_id == cidadao) if cidadao else q.where(DividaAtiva.codi == codi)
     return float(db.scalar(q) or 0)
 

@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from app.connectors.sil.cliente import ClienteSil, ErroSil, SilDesabilitado
+from app.connectors.sil.cliente import NAO_LOCALIZADO, ClienteSil, ErroSil, RespostaNaoJson, SilDesabilitado
 from app.connectors.sil.config import ConfigSil
 
 __all__ = ["ConfigSil", "ErroSil", "SilConnector", "achata_empresa"]
@@ -26,10 +26,38 @@ __all__ = ["ConfigSil", "ErroSil", "SilConnector", "achata_empresa"]
 log = logging.getLogger("sigpmf.sil")
 
 LOTE_API = 50
+_NAO_JSON = object()
 CAMINHO_LOTE = "/franca/empresa/consultarlote"
 TABELA_EMPRESAS = "Empresas"
 COLUNAS_EMPRESAS = ("Ccm", "CNPJCPF", "Nome", "PossuiDebito", "Endereco", "Bairro", "CEP", "Complemento",
                     "AreaOcupada", "AreaUtilizada")
+MOTIVO_PULO = "sil_resposta_inesperada"  # quarentena: Sequencia pulada por 200 inesperado (sem valores)
+CHAVE_PULO = "_pulo_sil"  # marcador na linha devolvida por ler_pagina (a carga grava na quarentena, não na bronze)
+PULOS_SEGUIDOS_PADRAO = 3
+
+
+def max_pulos_seguidos() -> int:
+    """SIL_MAX_PULOS_SEGUIDOS (padrão 3): inteiro de 1 a 100, mesma regra do #66. Valor inválido (não numérico, nan,
+    inf, fracionário, <= 0 ou > 100) -> padrão e WARNING só com o nome da variável (nunca o valor).
+
+    Semântica (decisão TL 30/10, B3): N é o número de Sequencias problemáticas SEGUIDAS que param a carga. Com o
+    padrão 3, a carga pula 2 Sequencias seguidas e para com ErroSil na 3ª. N=1 desliga o pulo (para na 1ª)."""
+    import math
+    import os
+    bruto = (os.environ.get("SIL_MAX_PULOS_SEGUIDOS") or "").strip()
+    if not bruto:
+        return PULOS_SEGUIDOS_PADRAO
+    try:
+        x = float(bruto)
+    except ValueError:
+        x = math.nan
+    if math.isfinite(x) and x == int(x) and 1 <= x <= 100:
+        return int(x)
+    log.warning("SIL_MAX_PULOS_SEGUIDOS inválida (esperado inteiro de 1 a 100); usando o padrão %d.",
+                PULOS_SEGUIDOS_PADRAO)
+    return PULOS_SEGUIDOS_PADRAO
+
+
 MSG_NAO_CONFIGURADA = "API SIL não configurada no ambiente (SIL_BASE_URL, SIL_CLIENT_ID, SIL_CLIENT_SECRET)."
 
 
@@ -38,7 +66,11 @@ class _Sessao:
 
     def __init__(self, cliente: ClienteSil):
         self.cliente, self.lotes, self.truncado = cliente, 0, False
+        self.teto: int | None = None  # SL1: só a amostra tem teto de lotes; a carga (completa/incremental) não
         self.ultimo_lote_cheio = False  # o último lote veio com LOTE_API itens: a API provavelmente tem mais
+        self.pular = False  # TL 30/10: só a carga (completa/incremental) pula Sequencia com 200 inesperado
+        self.pulos_seguidos = 0  # Sequencias problemáticas seguidas; um lote bom zera
+        self.max_pulos = PULOS_SEGUIDOS_PADRAO
         self.alerta: dict | None = None  # página com CCM repetido / sem CCM novo: a execução para (sem pular checkpoint)
 
     @property
@@ -103,17 +135,55 @@ class SilConnector:
         return _Sessao(ClienteSil(self.config, transport=self._transporte, relogio=self._relogio, dormir=self._esperar))
 
     # ------------------------------------------------------------------ empresas
+    def _get_lote(self, s: _Sessao, sequencia: int) -> Any:
+        """NAO_LOCALIZADO no 404; _NAO_JSON num 200 sem JSON; senão o JSON (inclusive None para `null`)."""
+        try:
+            return s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)}, sentinela_404=True)
+        except RespostaNaoJson:
+            return _NAO_JSON
+        except ErroSil as exc:
+            if exc.sequencia is None:
+                exc.sequencia = int(sequencia)
+            raise
+
     def lote_empresas(self, s: _Sessao, sequencia: int) -> list[dict]:
-        j = s.cliente.get(CAMINHO_LOTE, {"Sequencia": int(sequencia)})  # allowlist + token + retry no ClienteSil
+        j = self._get_lote(s, sequencia)
         s.lotes += 1
-        if j is None:  # 404: fim da sequência
-            return []
-        itens = _empresas(j)
-        s.ultimo_lote_cheio = isinstance(itens, list) and len(itens) >= LOTE_API
-        if itens is None:
-            if isinstance(j, dict) and not j:
+        for repeticao in (1, 2):
+            if j is NAO_LOCALIZADO:  # 404: fim da sequência
                 return []
-            raise ErroSil("Resposta inesperada da API SIL em empresa/consultarlote.")
+            itens = None if j is _NAO_JSON else _empresas(j)
+            if itens is not None or (isinstance(j, dict) and not j):
+                break
+            # 200 inesperado (null, não-JSON, formato errado): só Sequencia, tipo e NOMES das chaves de topo.
+            tipo = "nao_json" if j is _NAO_JSON else type(j).__name__
+            chaves = sorted(str(k) for k in j)[:20] if isinstance(j, dict) else []
+            log.warning("SIL: resposta inesperada em consultarlote: Sequencia=%d status=200 tipo_json=%s chaves=%s "
+                        "(repetição %d de 2)", int(sequencia), tipo, chaves, repeticao)
+            if repeticao == 1:  # TL 30/10: repete a mesma Sequencia uma vez antes de falhar
+                j = self._get_lote(s, sequencia)
+                continue
+            if s.pular:
+                s.pulos_seguidos += 1
+                if s.pulos_seguidos < s.max_pulos:
+                    # TL 30/10: registro problemático na origem -> pula a Sequencia (vai para a quarentena).
+                    log.warning("SIL: Sequencia=%d pulada para a quarentena (tipo_json=%s chaves=%s); %d de %d "
+                                "seguidas", int(sequencia), tipo, chaves, s.pulos_seguidos, s.max_pulos)
+                    return [{**dict.fromkeys(COLUNAS_EMPRESAS), "Ccm": int(sequencia),
+                             CHAVE_PULO: {"sequencia": int(sequencia), "status": 200, "tipo_json": tipo,
+                                          "chaves": chaves}}]
+            exc = ErroSil("Resposta inesperada da API SIL em empresa/consultarlote."
+                          + (f" {s.pulos_seguidos} Sequencias seguidas com problema (limite SIL_MAX_PULOS_SEGUIDOS="
+                             f"{s.max_pulos}): a carga parou em vez de pular." if s.pular else ""))
+            exc.status, exc.sequencia, exc.repeticao = 200, int(sequencia), 2
+            exc.tentativa = getattr(s.cliente, "ultima_tentativa", None)
+            raise exc
+        if itens:
+            s.pulos_seguidos = 0  # lote bom zera a contagem de pulos seguidos
+        if itens is None:  # {}: comportamento de sempre (fim)
+            s.ultimo_lote_cheio = False
+            return []
+        s.ultimo_lote_cheio = len(itens) >= LOTE_API
         linhas = [achata_empresa(x.get("empresa") or {}) for x in itens
                   if isinstance(x, dict) and (x.get("empresa") or {}).get("Ccm")]
         validas = [r for r in linhas if r["Ccm"] >= sequencia]
@@ -141,15 +211,17 @@ class SilConnector:
         (`max_lotes`, por sessão). No teto devolve o que leu e as próximas chamadas devolvem [] (fim da execução)."""
         self._checa_tabela(tabela)
         seq = int(ultima[0]) + 1 if ultima and ultima[0] is not None else 1
+        if conn.teto is None and not conn.pular:  # carga completa/incremental (a amostra tem teto e não pula)
+            conn.pular, conn.max_pulos = True, max_pulos_seguidos()
         out: list[dict] = []
         while len(out) < limite:
             if conn.alerta:
                 break
-            if conn.lotes >= self.max_lotes:
+            if conn.teto is not None and conn.lotes >= conn.teto:
                 if not conn.truncado:
                     conn.truncado = True
                     log.info("SIL: teto de %d lote(s) por execução atingido (SIL_MAX_LOTES_POR_EXECUCAO)",
-                             self.max_lotes)
+                             conn.teto)
                 break
             lote = self.lote_empresas(conn, seq)
             out.extend(lote)
@@ -158,7 +230,7 @@ class SilConnector:
                 break
             if not lote:
                 break
-            if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:
+            if conn.teto is not None and conn.lotes >= conn.teto and conn.ultimo_lote_cheio:
                 conn.truncado = True  # teto atingido e a API ainda tem lotes: execução parcial
             prox = lote[-1]["Ccm"] + 1
             if prox <= seq:  # nunca repete a mesma Sequencia
@@ -168,6 +240,7 @@ class SilConnector:
 
     def ler_amostra(self, tabela: str, politica=None, campo_incremental=None, desde=None) -> list[dict]:
         conn = self.abrir()
+        conn.teto = self.max_lotes  # SL1: o teto (SIL_MAX_LOTES_POR_EXECUCAO, padrão 1) vale só aqui
         try:
             out = self.ler_pagina(conn, tabela, politica, ("Ccm",), None, self.amostra_limite)[: self.amostra_limite]
             if conn.lotes >= self.max_lotes and conn.ultimo_lote_cheio:

@@ -22,6 +22,7 @@ from app.models.camadas import (
     Vacinacao,
     Vinculo,
 )
+from app.silver.endereco_imovel import mapa_enderecos, so_digitos, titulo_posse
 from app.silver.tributario import _d, _grava, _i, _s, _ultimas
 
 NOMES_TRIBUTO = {"001": "IPTU", "002": "ISS", "003": "Taxas"}
@@ -32,6 +33,14 @@ def nomes(db: Session) -> dict[str, dict]:
     vac = {_i(d.get("Cod_Vacina")): (_s(d.get("Vacina"), 60), _s(d.get("Dose"), 10)) for _io, d in _ultimas(db, "SAUDE", "Aux_Vacina")}
     esp = {_i(d.get("Codi_Espe")): _s(d.get("Desc_Espe"), 80) for _io, d in _ultimas(db, "SAUDE", "Aux_Especialidades")}
     return {"vacinas": vac, "especialidades": esp}
+
+
+def rotulo_especialidade(codigo: int | None, especialidades: dict) -> str:
+    """Nome da especialidade para tela e painel. Código fora de Aux_Especialidades (o dicionário da Saúde só tem parte dos
+    códigos usados em Consultas/Agendamento_Consulta) aparece como código sem nome, nunca com um nome inventado."""
+    if codigo is None:
+        return "Sem especialidade informada"
+    return especialidades.get(codigo) or f"Código {codigo} (sem nome no cadastro)"
 
 
 def reconstruir(db: Session) -> dict[str, int]:
@@ -96,9 +105,10 @@ def _eventos(db: Session, unidades: dict, dims: dict):
     for v in db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id.is_not(None), Vacinacao.data.is_not(None))):
         yield Evento(cidadao_id=v.cidadao_id, data=v.data, area="saude", tipo="vacina",
                      titulo=f"Vacina {v.vacina}{' · ' + v.dose if v.dose else ''}"[:300], fonte="Saúde")
+    enderecos = mapa_enderecos(db)
     for p in db.scalars(select(ImovelPossuidor).where(ImovelPossuidor.cidadao_id.is_not(None), ImovelPossuidor.desde.is_not(None))):
         yield Evento(cidadao_id=p.cidadao_id, data=p.desde.date(), area="impostos", tipo="posse",
-                     titulo=f"Passou a constar como possuidor do imóvel {p.codi}", fonte="IPTU")
+                     titulo=titulo_posse(p.codi, enderecos.get(so_digitos(p.codi))), fonte="IPTU")
     for x in db.scalars(select(Lancamento).where(Lancamento.cidadao_id.is_not(None), Lancamento.vencimento.is_not(None))):
         trib = NOMES_TRIBUTO.get(x.tributo or "", "Tributo")
         if x.pago and x.pagamento:

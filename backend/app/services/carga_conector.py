@@ -29,7 +29,7 @@ from app.silver import processamento
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
 CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS"),
               "iptu": ("IPTU", "IPTU"), "divida": ("DIVIDA", "Divida"), "financeiro": ("FINANCEIRO", "Financeiro"),
-              "sil": ("SIL", "API SIL")}
+              "sil": ("SIL", "API SIL"), "senior": ("SENIOR", "DBSENIOR")}
 CONECTORES_API = ("sil",)  # origem REST: leitor próprio, sem banco SQL Server
 
 
@@ -38,6 +38,9 @@ def leitor_de(conector: str, cfg):
     if conector == "sil":
         from app.connectors.sil.conector import SilConnector
         return SilConnector(nome=conector)
+    if conector == "senior":
+        from app.connectors.senior.conector import ConectorSenior
+        return ConectorSenior(cfg, nome=conector)
     return SqlServerConnector(cfg, nome=conector)
 def base_sil_log() -> str:
     """Base da SIL desta execução (TL 29/10), sem credencial: 'ambiente=producao host=...'."""
@@ -81,7 +84,9 @@ def banco_do_catalogo(db: Session | None, conector: str) -> str | None:
 
 
 def config_do_conector(conector: str, db: Session | None = None) -> tuple[ConfigSqlServer, bool]:
-    """Ordem: SQLSERVER_DATABASE_<CONECTOR> (override explícito) > catálogo (PB12) > SQLSERVER_DATABASE (fallback)."""
+    """Ordem: SQLSERVER_DATABASE_<CONECTOR> (override explícito) > catálogo (PB12) > SQLSERVER_DATABASE (fallback).
+
+    A base declarada na política não entra nesta escolha."""
     cfg, fallback = ConfigSqlServer.para_conector(get_settings(), conector)
     if fallback:
         nome = banco_do_catalogo(db, conector)
@@ -89,6 +94,26 @@ def config_do_conector(conector: str, db: Session | None = None) -> tuple[Config
             cfg.database = nome
             return cfg, False
     return cfg, fallback
+
+
+def descreve_banco(conector: str, db: Session | None) -> tuple[str, str] | None:
+    """(nível, mensagem) com o banco resolvido e a origem da decisão. Sem host, usuário ou senha.
+    None para conector que não é SQL Server."""
+    if conector in CONECTORES_API or conector not in CONECTORES:
+        return None
+    cfg, fallback = config_do_conector(conector, db)
+    especifico = getattr(get_settings(), f"sqlserver_database_{conector}", None)
+    if not fallback and especifico:
+        via = f"SQLSERVER_DATABASE_{conector.upper()}"
+    elif not fallback:
+        via = "catálogo (controle.bases_catalogo)"
+    else:
+        via = "SQLSERVER_DATABASE (fallback)"
+    base = CONECTORES[conector][1]
+    nivel = "WARN" if fallback else "INFO"
+    msg = (f"Banco de origem do conector {conector}: {cfg.database or '-'} via {via}. "
+           f"A política (base {base}) não escolhe a conexão.")
+    return nivel, msg
 
 
 def _garante_catalogo(db: Session, sistema: str, tabelas: list[str]) -> None:
@@ -100,11 +125,15 @@ def _garante_catalogo(db: Session, sistema: str, tabelas: list[str]) -> None:
         db.add(sis)
         db.flush()
     for t in tabelas:
-        if db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == t)) is None:
-            m = MAPEAMENTOS[(sistema, t)]
-            ch = m["chave"]
-            db.add(TabelaCatalogo(sistema_id=sis.id, nome=t, chave=",".join(ch) if isinstance(ch, tuple) else ch,
-                                  campo_incremental=m["campo_incremental"]))
+        m = MAPEAMENTOS[(sistema, t)]
+        ch = m["chave"]
+        texto = ",".join(ch) if isinstance(ch, tuple) else ch
+        existente = db.scalar(select(TabelaCatalogo).where(TabelaCatalogo.sistema_id == sis.id, TabelaCatalogo.nome == t))
+        if existente is None:
+            db.add(TabelaCatalogo(sistema_id=sis.id, nome=t, chave=texto, campo_incremental=m["campo_incremental"]))
+        elif sistema == "DIVIDA" and t == "Divida_Conta_Corrente" and existente.chave != texto:
+            # Catálogo antigo gravou 4 colunas. A identidade vigente é a PK inteira; não apaga bronze.
+            existente.chave = texto
 
 
 def amostra_reconciliada(db: Session, sistema: str) -> Execucao | None:
@@ -214,11 +243,9 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
             tv.limpa_orfas(db, sistema, usuario)
         ex = db.get(Execucao, execucao_id) if execucao_id is not None else None
         cfg, fallback = config_do_conector(conector, db)
-        especifico = getattr(get_settings(), f"sqlserver_database_{conector}", None)
-        origem_banco = ("SQLSERVER_DATABASE (fallback)" if fallback else f"SQLSERVER_DATABASE_{conector.upper()}"
-                        if especifico else "catálogo (controle.bases_catalogo)")
+        desc = descreve_banco(conector, db)
         if sistema == "ISS":
-            return _amostra_iss(db, usuario, cfg, fallback, origem_banco, leitor, ex)
+            return _amostra_iss(db, usuario, cfg, fallback, desc, leitor, ex)
         if ex is None:
             ex = Execucao(tipo=TIPO_AMOSTRA, sistema=sistema, status="em_andamento", usuario=usuario, etapa="leitura",
                           atualizado_em=datetime.now(UTC))
@@ -226,21 +253,22 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
             db.commit()
         db.add(Log(execucao_id=ex.id, nivel="INFO", mensagem="Origem do conector sil: API SIL (REST, só leitura); "
                    + base_sil_log())
-               if conector in CONECTORES_API else
-               Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
-                   mensagem=f"Banco de origem do conector {conector}: {cfg.database or '-'} via {origem_banco}"))
+               if desc is None else
+               Log(execucao_id=ex.id, nivel=desc[0], mensagem=desc[1]))
         db.commit()
         leitor = leitor or leitor_de(conector, cfg)
         tot = {"lidos": 0, "novos": 0, "atualizados": 0, "ignorados": 0, "lotes": 0}
         try:
             lidas = {}
-            for t in tabelas:  # tudo lido antes de gravar
-                try:
-                    cols = pol.colunas_select(t)
-                    lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
-                    tv.sinal_de_vida(ex.id)
-                except Exception as exc:  # noqa: BLE001
-                    raise FalhaLeitura(t, exc) from exc
+            from app.services import subetapa as sub
+            with sub.Pulso(ex.id):  # D1: sinal a cada 30 s mesmo com a origem lenta
+                for t in tabelas:  # tudo lido antes de gravar
+                    try:
+                        cols = pol.colunas_select(t)
+                        lidas[t] = [linha_json(r, cols) for r in leitor.ler_amostra(t, politica=pol)]
+                        tv.sinal_de_vida(ex.id)
+                    except Exception as exc:  # noqa: BLE001
+                        raise FalhaLeitura(t, exc) from exc
             if not any(lidas.values()):  # 0 linhas: nunca "sem_novidades"
                 ex.status, ex.mensagem = ORIGEM_VAZIA, MSG_ORIGEM_VAZIA
                 ex.finalizado_em = datetime.now(UTC)
@@ -260,9 +288,15 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
                 tv.sinal_de_vida(ex.id)
             tv.aguarda_camadas(db, ex.id)  # prata/ouro são globais: uma reconstrução por vez (trava de transação)
             tv.sinal_de_vida(ex.id, "prata", 0, None)
-            sres = processamento.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "prata", n, t))
-            tv.sinal_de_vida(ex.id, "ouro", 0, sres["vinculos"])
-            gres = visao.reconstruir(db, progresso=lambda n, t: tv.sinal_de_vida(ex.id, "ouro", n, t))
+            try:
+                with sub.Pulso(ex.id):  # CT16/CT17: sinal a cada 30 s, inclusive em consulta longa
+                    med = sub.MedicaoComSinal(ex.id)
+                    sres = processamento.reconstruir(db, progresso=med.progresso, medicao=med)
+                sub.marca(ex.id, "ouro", sub.TEXTO_OURO, 0, sres["vinculos"])
+                with sub.Pulso(ex.id):
+                    gres = visao.reconstruir(db, progresso=sub.progresso_ouro(ex.id))
+            finally:
+                sub.finaliza(ex.id)
             for k, v in tot.items():
                 setattr(ex, k, v)
             ex.status = "sucesso" if (tot["novos"] or tot["atualizados"]) else "sem_novidades"
@@ -297,14 +331,14 @@ def executar_amostra(db: Session, usuario: str, conector: str, leitor=None, exec
             _solta_trava(trava, sistema)
 
 
-def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, origem_banco: str, leitor,
-                 ex: Execucao | None = None):
+def _amostra_iss(db: Session, usuario: str, cfg: ConfigSqlServer, fallback: bool, desc: tuple[str, str] | None,
+                 leitor, ex: Execucao | None = None):
     """ISS: mesma rota/lock/auditoria; leitura e classificação do Munícipe (#6), também transacional."""
     from app.services.carga_municipe import executar_carga_municipe
     ex = executar_carga_municipe(db, usuario, connector=leitor or SqlServerConnector(cfg, nome="iss"), bronze=True,
                                  ex=ex)
-    db.add(Log(execucao_id=ex.id, nivel="WARN" if fallback else "INFO",
-               mensagem=f"Banco de origem do conector iss: {cfg.database or '-'} via {origem_banco}"))
+    if desc:
+        db.add(Log(execucao_id=ex.id, nivel=desc[0], mensagem=desc[1]))
     if ex.status == "falha" and ex.erro_publico():
         ex.mensagem = f"Falha na amostra de iss: {ex.erro_publico()['motivo']}"
     db.commit()

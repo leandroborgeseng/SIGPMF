@@ -111,8 +111,9 @@ def devido(ag: Agendamento, agora: datetime, ini: int, fim: int) -> bool:
     a espera entre tentativas."""
     if not ag.ativo:
         return False
-    if ag.forcar:
-        return True
+    if ag.forcar:  # FA4: forçado roda fora da janela, mas respeita a espera depois de uma tentativa sem carga
+        prox = _utc(ag.proxima_tentativa_em)
+        return prox is None or agora >= prox
     local = agora.astimezone(_fuso())
     m = local.hour * 60 + local.minute
     if not na_janela(m, ini, fim) or ag.ultima_data == dia_da_janela(local, ini, fim):
@@ -141,10 +142,10 @@ def modo_da_vez(ag: Agendamento, agora: datetime) -> str:
 
 def proxima(ag: Agendamento, agora: datetime, ini: int, fim: int) -> datetime | None:
     """Próximo início previsto (para a tela)."""
+    if not ag.ativo:  # agenda desligada nunca tem "próxima", nem com "Executar agora" pendente (forcar)
+        return None
     if ag.forcar:
         return agora
-    if not ag.ativo:
-        return None
     fz = _fuso()
     local = agora.astimezone(fz)
     h, m = (int(x) for x in ag.horario.split(":"))
@@ -237,11 +238,31 @@ EDUCACAO_SISTEMAS = ("GESTAOESCOLAR",)
 # PR-07: job de contagens (J1–J4) na agenda, 05:45 (depois das cargas da noite); nasce desligado (0034)
 CONTAGENS = "contagens"
 NOME_CONTAGENS = "Contagens automáticas (só agregados)"
+# AU1: arquivos do AUDESP no portal do TCE-SP (receita, despesa, restos a pagar); nasce desligado (0038)
+AUDESP = "audesp"
+NOME_AUDESP = "AUDESP (TCE-SP): receita, despesa e restos a pagar"
+# RH1: remuneração dos servidores no Portal da Transparência; nasce desligado (0040)
+RH_PORTAL = "rh_portal"
+NOME_RH_PORTAL = "RH (Portal da Transparência): remuneração dos servidores"
+# Cobertura de planos: dados abertos da ANS e população do IBGE; nasce desligado (0043)
+ANS = "ans"
+NOME_ANS = "ANS e IBGE: cobertura de planos de saúde"
+# CB1: recálculo dos cubos do ouro, depois das cargas da noite; nasce desligado (0041)
+CUBOS = "cubos"
+NOME_CUBOS = "Cubos e cruzamentos (recálculo do ouro)"
 
 
 def _nome(conector: str) -> str:
     if conector == CONTAGENS:
         return NOME_CONTAGENS
+    if conector == AUDESP:
+        return NOME_AUDESP
+    if conector == RH_PORTAL:
+        return NOME_RH_PORTAL
+    if conector == CUBOS:
+        return NOME_CUBOS
+    if conector == ANS:
+        return NOME_ANS
     return NOME_EDUCACAO if conector == EDUCACAO else ccomp.NOMES.get(conector, conector)
 
 
@@ -278,6 +299,7 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
     """IN6/IN9: a agenda dispara a carga INCREMENTAL da educação (cge.incremental); a completa é só manual (ADMIN)."""
     from app.connectors.gestaoescolar.consultas import ConfigGE, LeitorGE
     from app.services import carga_gestaoescolar as cge
+    forcado = bool(ag.forcar)
     recusa = educacao_recusa(db, agora)
     if recusa:
         return _encerra(db, ag, "ocupada" if recusa[0] == "ocupado" else "bloqueada", recusa[1], agora,
@@ -290,6 +312,8 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
                 ex = cge.incremental(db, lt, cfg, USUARIO, agora=agora)
         else:
             ex = cge.incremental(db, leitor, cfg, USUARIO, agora=agora)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
     except (PermissionError, cge.CargaRecusada) as exc:
         return _encerra(db, ag, "bloqueada", cge.mensagem_segura(exc), agora, resolvido=False)
     except Exception as exc:  # noqa: BLE001
@@ -306,11 +330,113 @@ def _executar_educacao(db: Session, ag: Agendamento, agora: datetime, leitor=Non
                     resolvido=False)
 
 
+def audesp_recusa(db: Session) -> tuple[str, str] | None:
+    from app.services import carga_audesp as ca
+    return ("ocupado", "Já existe uma carga do AUDESP em andamento.") if ca.em_andamento(db) is not None else None
+
+
+def _executar_audesp(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """AU1: confere os arquivos no portal do TCE e carrega só os que mudaram. Falha vira mensagem segura."""
+    from app.services import carga_audesp as ca
+    forcado = bool(ag.forcar)
+    recusa = audesp_recusa(db)
+    if recusa:
+        return _encerra(db, ag, "ocupada", recusa[1], agora, resolvido=False)
+    try:
+        ex = ca.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except ca.CargaRecusada as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Carga do AUDESP não concluída ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = {"sucesso": "sucesso", "sem_novidades": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
+    return _encerra(db, ag, status, ex.mensagem or "Carga do AUDESP concluída.", agora, resolvido=status != "falha")
+
+
+def rh_recusa(db: Session) -> tuple[str, str] | None:
+    from app.services import carga_rh as cr
+    return ("ocupado", "Já existe uma carga de RH em andamento.") if cr.em_andamento(db) is not None else None
+
+
+def _executar_rh(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """RH1: confere no portal os meses novos e os recentes. Falha vira mensagem segura."""
+    from app.services import carga_rh as cr
+    forcado = bool(ag.forcar)
+    try:
+        ex = cr.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except cr.CargaRecusada as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Carga de RH não concluída ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = {"sucesso": "sucesso", "sem_novidades": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
+    return _encerra(db, ag, status, ex.mensagem or "Carga de RH concluída.", agora, resolvido=status != "falha")
+
+
+def ans_recusa(db: Session) -> tuple[str, str] | None:
+    from app.services import carga_ans
+    return ("ocupado", "Já existe uma carga da ANS em andamento.") if carga_ans.em_andamento(db) is not None else None
+
+
+def _executar_ans(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """Busca os meses novos da ANS. Falha vira mensagem segura."""
+    from app.services import carga_ans
+    forcado = bool(ag.forcar)
+    try:
+        ex = carga_ans.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except carga_ans.CargaRecusada as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Carga da ANS não concluída ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = {"sucesso": "sucesso", "parcial": "parcial"}.get(ex.status, "falha")
+    return _encerra(db, ag, status, ex.mensagem or "Carga da ANS concluída.", agora, resolvido=status != "falha")
+
+
+def cubos_recusa(db: Session) -> tuple[str, str] | None:
+    from app.gold import cubos
+    return ("ocupado", "Já existe um recálculo dos cubos em andamento.") if cubos.em_andamento(db) is not None else None
+
+
+def _executar_cubos(db: Session, ag: Agendamento, agora: datetime) -> str:
+    """CB1: recalcula os cubos. Falha vira mensagem segura e não afeta nenhuma carga."""
+    from app.gold import cubos
+    forcado = bool(ag.forcar)
+    try:
+        ex = cubos.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
+    except cubos.CalculoRecusado as exc:
+        return _encerra(db, ag, "ocupada", str(exc), agora, resolvido=False)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return _encerra(db, ag, "falha", f"Recálculo não concluído ({type(exc).__name__}).", agora, resolvido=False)
+    ag.ultima_execucao_id = ex.id
+    db.commit()
+    status = "sucesso" if ex.status == "sucesso" else "falha"
+    return _encerra(db, ag, status, ex.mensagem or "Cubos recalculados.", agora, resolvido=status == "sucesso")
+
+
 def _executar_contagens(db: Session, ag: Agendamento, agora: datetime) -> str:
     """Roda o job J1–J4 (só leitura, só agregados). Falha vira mensagem fixa, nunca str(exc)."""
     from app.contagens import job
+    forcado = bool(ag.forcar)
     try:
         ex = job.executar(db, USUARIO)
+        if forcado:
+            _consome_forcar(db, ag, ex.id)
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         return _encerra(db, ag, "falha", f"Contagens não concluídas ({type(exc).__name__}).", agora, resolvido=False)
@@ -329,12 +455,23 @@ def _alerta_tabela_vazia(ag: Agendamento, ex: Execucao) -> None:
         alertar(f"Carga de {_nome(ag.conector)}: tabela(s) com 0 linhas", f"{a['texto']}\n\nVeja o Monitor de cargas no SIGPMF.")
 
 
+def _consome_forcar(db: Session, ag: Agendamento, execucao_id: int | None) -> None:
+    """FA4: o forcar só é limpo aqui, depois que uma carga foi criada a partir dele (execução com id)."""
+    if not ag.forcar:
+        return
+    ag.forcar = False
+    db.commit()
+    registra_forcar(db, ag.conector, USUARIO, True, False, "agenda", motivo=f"carga_criada execucao_id={execucao_id}")
+
+
 def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: datetime, resolvido: bool) -> str:
     s = get_settings()
     if len(mensagem) > MAX_MENSAGEM:
         mensagem = mensagem[: MAX_MENSAGEM - 1] + "…"
     anterior = ag.ultimo_status
-    ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em, ag.forcar = status, mensagem, datetime.now(UTC), False
+    # FA4: _encerra NUNCA mexe no forcar. Antes ele zerava o forcar em todo encerramento (ocupada, bloqueada,
+    # sem_mudanca, falha ao iniciar...), inclusive quando nenhuma carga tinha sido criada a partir dele.
+    ag.ultimo_status, ag.ultima_mensagem, ag.ultimo_fim_em = status, mensagem, datetime.now(UTC)
     ini, fim = janela(s.agenda_janela)
     hoje = dia_da_janela(agora.astimezone(_fuso()), ini, fim)
     if resolvido:
@@ -349,6 +486,8 @@ def _encerra(db: Session, ag: Agendamento, status: str, mensagem: str, agora: da
             ag.ultima_mensagem = mensagem
         else:
             ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
+    if ag.forcar and ag.proxima_tentativa_em is None:  # forcar pendente sem carga criada: tenta de novo depois
+        ag.proxima_tentativa_em = agora + timedelta(minutes=s.agenda_reespera_min)
     db.commit()
     audita(db, USUARIO, f"agenda_{status}", f"agendamento:{ag.conector}",
            {"execucao_id": ag.ultima_execucao_id, "tentativas": ag.tentativas, "resolvido": resolvido})
@@ -383,12 +522,21 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
     agora = agora or datetime.now(UTC)
     conector, nome = ag.conector, _nome(ag.conector)
     anterior = ag.ultimo_status
+    forcado = bool(ag.forcar)
     ag.ultimo_inicio_em, ag.ultimo_status, ag.ultima_mensagem = datetime.now(UTC), "em_andamento", None
     db.commit()
     if conector == EDUCACAO:
         return _executar_educacao(db, ag, agora, leitor=leitor)
     if conector == CONTAGENS:
         return _executar_contagens(db, ag, agora)
+    if conector == AUDESP:
+        return _executar_audesp(db, ag, agora)
+    if conector == RH_PORTAL:
+        return _executar_rh(db, ag, agora)
+    if conector == CUBOS:
+        return _executar_cubos(db, ag, agora)
+    if conector == ANS:
+        return _executar_ans(db, ag, agora)
     motivo = ccomp.motivo_bloqueio(db, conector)
     if motivo:
         return _encerra(db, ag, "bloqueada", f"{motivo} (a agenda só repete cargas já liberadas).", agora, resolvido=True)
@@ -404,7 +552,7 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
             return _encerra(db, ag, "falha", f"Não foi possível consultar a origem de {nome}: "
                                              f"{motivo_seguro(c['classe'], c['numero'], c['tabela'], c['objeto'])}.",
                             agora, resolvido=False)
-        if ag.assinatura_origem == assin and anterior in RESOLVIDOS and not _tem_indisponivel(assin):
+        if not forcado and ag.assinatura_origem == assin and anterior in RESOLVIDOS and not _tem_indisponivel(assin):
             return _encerra(db, ag, "sem_mudanca", f"A origem de {nome} não mudou desde a última carga: nada foi lido.",
                             agora, resolvido=True)
     modo = modo_da_vez(ag, agora)
@@ -421,6 +569,8 @@ def executar(db: Session, ag: Agendamento, agora: datetime | None = None, leitor
                         agora, resolvido=False)
     ag.ultima_execucao_id = ex.id
     db.commit()
+    if forcado:
+        _consome_forcar(db, ag, ex.id)
     ex = esperar(db, ex.id, parar)
     db.refresh(ag)
     if ex.status == "em_andamento":
@@ -453,7 +603,7 @@ def ciclo(db: Session, agora: datetime | None = None, leitores: dict | None = No
         if parar is not None and parar.is_set():
             break
         momento = agora if relogio_fixo else datetime.now(UTC)
-        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS)) or not devido(ag, momento, ini, fim):
+        if (ag.conector not in ccomp.CONECTORES_COMPLETA and ag.conector not in (EDUCACAO, CONTAGENS, AUDESP, RH_PORTAL, CUBOS, ANS)) or not devido(ag, momento, ini, fim):
             continue
         leitor = (leitores or {}).get(ag.conector)
         feitos.append((ag.conector, executar(db, ag, momento, leitor=leitor, esperar=esperar, parar=parar)))
@@ -555,7 +705,10 @@ def estado(db: Session, agora: datetime | None = None) -> dict:
             "ultima_execucao": _execucao(db, ag.ultima_execucao_id),
             "em_andamento": _execucao(db, atual.id) if atual else None,
             "atualizado_por": ag.atualizado_por})
-    historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS
+    historico = [{"conector": EDUCACAO if e.sistema in EDUCACAO_SISTEMAS else AUDESP if e.sistema == "AUDESP"
+                  else RH_PORTAL if e.sistema == "PORTAL_RH"
+                  else CUBOS if e.sistema == "CUBOS"
+                  else ANS if e.sistema == "ANS"
                   else next((k for k, v in cc.CONECTORES.items() if v[0] == e.sistema), e.sistema),
                   **_execucao(db, e.id)}
                  for e in db.scalars(select(Execucao).where(Execucao.usuario == USUARIO,
@@ -592,43 +745,82 @@ class AgendaTravada(RuntimeError):
 
 
 def atualizar(db: Session, conector: str, usuario: str, horario: str | None = None, ativo: bool | None = None,
-              ordem: int | None = None) -> Agendamento:
+              ordem: int | None = None, forcar: bool | None = None) -> Agendamento:
+    if forcar is False and horario is None and ativo is None and ordem is None:
+        return limpar_forcar(db, conector, usuario)
+    if horario is None and ativo is None and ordem is None and forcar is None:  # #61 R2: {} / {"forcar": null}
+        return _agendamento(db, conector)  # nada a mudar: 200, sem tocar a linha e sem auditoria  # nunca passa pela trava amostra:SIL (AgendaTravada)
     # B1: antes da trava da linha (o reset segura a linha FOR UPDATE e a trava); try = sem esperar
     if ativo and conector == "sil" and not db.execute(
             text("select pg_try_advisory_xact_lock(:k)"), {"k": CHAVE_TRAVA_SIL}).scalar():
         db.rollback()
         raise AgendaTravada(MOTIVO_SIL_TRAVADA)
     ag = _agendamento(db, conector, travar=True)
-    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}
+    # D3 (#58): valores reais lidos (linha travada) antes de qualquer mudança, forcar incluso
+    antes = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
     if horario is not None:
         if not HORARIO.match(horario):
             raise AgendaInvalida("Horário deve ser HH:MM (00:00 a 23:59).")
         if horario != ag.horario:
             ag.ultima_data = None  # novo horário vale já hoje
         ag.horario = horario
-    forcar_cancelado = False
     if ativo is not None:
+        religou = ativo and not ag.ativo
         ag.ativo = ativo
         if ativo:
             ag.tentativas, ag.proxima_tentativa_em = 0, None
-        elif ag.forcar:  # #33 M1: desligar cancela um "Executar agora" pendente (não dispara ao religar)
-            ag.forcar, forcar_cancelado = False, True
+        # FA1: desligar NÃO zera o forcar (a fonte só não roda enquanto ativo=false).
+        # FA2: ao religar, o forcar só volta se o usuário mantiver a opção marcada (forcar=true); padrão false.
+        if religou:
+            ag.forcar = forcar is True
+    if forcar is True and ag.ativo:
+        ag.forcar, ag.tentativas, ag.proxima_tentativa_em = True, 0, None
     if ordem is not None:
         ag.ordem = ordem
+    forcar_limpo = None
+    if forcar is False:
+        forcar_limpo = ag.forcar
+        ag.forcar = False
+    depois = {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem, "forcar": bool(ag.forcar)}
+    if depois == antes:  # #61 R2: valores iguais aos atuais -> nada muda, nada é auditado
+        db.rollback()
+        return _agendamento(db, conector)
     ag.atualizado_por, ag.atualizado_em = usuario, datetime.now(UTC)
     db.commit()
     audita(db, usuario, "agenda_alterada", f"agendamento:{conector}",
-           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem}})
-    if forcar_cancelado:
-        audita(db, usuario, "agenda_executar_agora_cancelado", f"agendamento:{conector}",
-               {"motivo": "forcar_cancelado_desligado", "conector": conector})
+           {"antes": antes, "depois": {"horario": ag.horario, "ativo": ag.ativo, "ordem": ag.ordem,
+                                       "forcar": bool(ag.forcar)}})
+    if antes["forcar"] != bool(ag.forcar):
+        registra_forcar(db, conector, usuario, antes["forcar"], bool(ag.forcar), "tela")
+    if forcar_limpo is not None:
+        _audita_forcar_limpo(db, usuario, conector, forcar_limpo)
+    return ag
+
+
+def _audita_forcar_limpo(db: Session, usuario: str, conector: str, antes: bool) -> None:
+    audita(db, usuario, "agenda_forcar_limpo", f"agendamento:{conector}",
+           {"conector": conector, "antes": {"forcar": bool(antes)}, "depois": {"forcar": False},
+            "em": datetime.now(UTC).isoformat()})
+
+
+def limpar_forcar(db: Session, conector: str, usuario: str) -> Agendamento:
+    """Limpa um "Executar agora" pendente (forcar=false). Idempotente e sempre auditado (valor anterior incluso).
+    Não usa a trava amostra:SIL: limpar nunca é bloqueado por carga ou reset em andamento."""
+    ag = _agendamento(db, conector, travar=True)  # D3: lê o valor real (FOR UPDATE) antes de mudar
+    antes = bool(ag.forcar)
+    db.execute(update(Agendamento).where(Agendamento.conector == conector)
+               .values(forcar=False, atualizado_por=usuario, atualizado_em=datetime.now(UTC)))
+    db.commit()
+    db.refresh(ag)
+    _audita_forcar_limpo(db, usuario, conector, antes)
+    registra_forcar(db, conector, usuario, antes, False, "tela")
     return ag
 
 
 def forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     """#33 B2: forcar=true numa única UPDATE ... WHERE ativo (atômica). Se outro pedido desligou antes, nenhuma
     linha muda e sobe AgendaDesligada (409); se desligar vier depois, ele trava a linha e cancela o forcar."""
-    _agendamento(db, conector)  # 404 se não existe
+    antes = bool(_agendamento(db, conector).forcar)  # 404 se não existe
     feito = db.execute(update(Agendamento).where(Agendamento.conector == conector, Agendamento.ativo.is_(True))
                        .values(forcar=True, tentativas=0, proxima_tentativa_em=None, atualizado_por=usuario,
                                atualizado_em=datetime.now(UTC)).returning(Agendamento.id)).first()
@@ -638,4 +830,26 @@ def forcar(db: Session, conector: str, usuario: str) -> Agendamento:
     ag = _agendamento(db, conector)
     db.refresh(ag)
     audita(db, usuario, "agenda_executar_agora", f"agendamento:{conector}")
+    registra_forcar(db, conector, usuario, antes, True, "tela")
     return ag
+
+
+ORIGENS_FORCAR = ("tela", "agenda", "_encerra")
+
+
+def registra_forcar(db: Session, conector: str, usuario: str | None, antes: bool, depois: bool, origem: str,
+                    motivo: str | None = None) -> None:
+    """FA3: toda mudança do forcar vira uma linha em controle.logs: quem (id do usuário, nunca e-mail), quando
+    (criado_em), origem (tela | agenda | _encerra), antes e depois. Sem PII."""
+    from app.models.controle import Log, Usuario
+    if origem not in ORIGENS_FORCAR:
+        raise ValueError(origem)
+    quem = usuario or "?"
+    if "@" in quem:
+        uid = db.scalar(select(Usuario.id).where(Usuario.email == quem))
+        quem = f"usuario_id={uid}" if uid is not None else "usuario_id=?"
+    msg = (f"[agenda_forcar] conector={conector} antes={bool(antes)} depois={bool(depois)} origem={origem} "
+           f"quem={quem}" + (f" motivo={motivo}" if motivo else ""))
+    db.add(Log(execucao_id=None, nivel="INFO", mensagem=msg))
+    db.commit()
+    log.info(msg)

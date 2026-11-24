@@ -73,6 +73,22 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   `CONTAGENS_CPF_REPETIDO_TOP` (padrão 100) por tabela. Leitura só `admin_lgpd`
   (`GET /api/contagens/{id}/cpfs-repetidos`), auditada.
 
+## Chat de dados
+Página **Chat de dados** (`POST /api/chat`, autenticado). O modelo não escreve SQL: devolve uma consulta do catálogo (carga) ou uma consulta estruturada (entidade, filtros, agrupamento, métrica, ordenação, limite). O backend valida entidade, campo, operador e o tipo do valor, monta um SELECT parametrizado e executa em transação somente leitura, com limite de 50 linhas e `statement_timeout` de 8s. A resposta traz fonte, filtros e data da carga fora do texto. Sem chave, ou com o LiteLLM fora, a rota responde 503 sem stack.
+
+O catálogo das entidades é lido do schema (`bronze`, `silver`, `gold`, `ref`) e do comentário da tabela ou da coluna. Na subida da API, quando a lista de tabelas muda ou uma carga nova grava `controle.execucoes`, e no máximo a cada 3 minutos. Tabela ou campo novo passa a responder sem código novo. Sem comentário, a descrição é o nome legível. O prompt vai em duas etapas: primeiro só o resumo (id e descrição); depois os campos apenas das entidades escolhidas.
+
+| Variável | Uso |
+|---|---|
+| `LITELLM_BASE_URL` | URL base do LiteLLM, sem barra no fim. O backend chama `{LITELLM_BASE_URL}/v1/chat/completions` |
+| `LITELLM_MODEL` | nome do modelo |
+| `LITELLM_API_KEY` | chave. Só no Coolify. O cliente manda apenas `Authorization: Bearer` |
+| `LITELLM_TIMEOUT_S` | opcional, padrão 30 (entre 5 e 120). Não crie a variável vazia |
+
+Consultas de carga: última carga de uma fonte, empresas na última carga (SIL ou ISS) e registros por fonte (bronze, prata, ouro, pendentes). A consulta estruturada alcança as tabelas de negócio carregadas. Três delas têm nome estável: `folha_senior` (folha vigente — último mês comum do portal; o Senior ainda não tem tabela própria), `folha_legada` (histórico) e `empresas` / `divida`. As demais entram como `schema.tabela`. CPF, documento e colunas do mesmo tipo não estão no catálogo e o CPF é removido da resposta. Tabelas internas (usuário, sessão, auditoria, parâmetro, segredo) não entram.
+
+Escopo: admin e vínculo `TODAS` veem tudo o que a regra do domínio libera. Nos demais, a carga e cada entidade com domínio (folha, tributos, saúde, educação, cemitério, SEI) seguem a secretaria dona, a mesma de `escopo_do_usuario`. Campo sensível (nome, contato, endereço, saúde) só sai para quem já vê aquele domínio. Entidade nova, sem domínio reconhecido pelo nome, responde só com um número agregado (sem lista e sem agrupamento) até ter regra explícita. Na folha, nome e valor individual — e também o agregado — usam o vínculo: sem vínculo, recusa; com vínculo, só as secretarias dele. Cada pergunta grava `chat_consulta` na auditoria (pergunta sem CPF, consulta estruturada, usuário, resultado resumido, recusa).
+
 ## Variáveis numéricas no Coolify (nota do Tester, #45)
 - **Nunca crie uma variável numérica vazia** no Coolify (porta, limite, timeout, limiar…). Valor vazio não vira o
   padrão: a validação falha e o backend **não sobe** (ex.: `SIGPMF_RELEITURA_SAUDE_PORTA` vazia impediu a subida).
@@ -142,6 +158,27 @@ docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTG
   `RETENCAO_BRONZE_VERSOES_DIAS`, padrão 7) e logs técnicos com mais de `RETENCAO_LOGS_DIAS` (90). Nunca apaga a versão
   atual de um registro, linha citada pela prata, quarentena nem a auditoria. Cada execução fica em `controle.execucoes`
   (tipo `retencao`).
+
+## Cadastro físico de imóveis da SIL (CSV)
+
+A API da SIL não traz o cadastro físico. A carga lê o CSV (latin1, separador `;`, cabeçalho na 1ª linha,
+`;` sobrando no fim de cada linha) e faz upsert em `bronze.sil_imoveis_fisico` por `idfisico`
+(`INSERT ... ON CONFLICT (idfisico) DO UPDATE`). Rodar de novo não duplica: linha igual é ignorada,
+linha mudada é atualizada. Cada execução grava `controle.execucoes` com `sistema='SIL'`,
+`tipo='carga_sil_imoveis_fisico'`, contagens (`lidos`, `novos`, `atualizados`, `ignorados`) e
+`finalizado_em`, no mesmo lugar que o painel e o chat leem a SIL. A mensagem e o log só têm contagens
+(CPF/CNPJ não entra neles). A tabela nasce na migração `0047` no boot do backend (`alembic upgrade head`);
+não usa `SEED_ON_BOOT` e não apaga outras tabelas. O `scripts/reset_sil.py` não mexe nesta tabela.
+
+O `docker-compose.yml` não monta pasta de arquivo no backend (o volume `srvdisk` é só a medição de disco,
+somente leitura) e não há tela de upload deste CSV. O caminho simples é o stdin: o arquivo fica na máquina
+de quem opera e não é gravado no container.
+
+Na pasta do compose, no servidor:
+
+```bash
+docker compose exec -T backend python -m scripts.carga_sil_imoveis --arquivo - --usuario "Nome do operador" < /caminho/no/host/sil.csv
+```
 
 ## Reset da SIL (recomeçar do zero) — `backend/scripts/reset_sil.py`
 

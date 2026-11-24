@@ -3,7 +3,9 @@
 Fluxo (thread em segundo plano, só DEPOIS do /health da própria app responder 200; nunca segura o boot):
 1. fonte fora do catálogo da educação -> recusa `fonte_desconhecida` (não lê nada);
 2. sem SHA do deploy -> `sem_sha_deploy`; marcador `concluida` para (fonte, SHA) -> pula (INFO, nada muda);
-3. agenda da educação ligada -> `agenda_ligada`; sem amostra com sucesso -> `sem_amostra`; fora da janela -> `fora_janela`;
+3. RD1 (caso 348): agenda da educação com ativo=false -> `fonte_desligada`: nenhuma releitura e nenhuma execução
+   criada (só auditoria `educacao_releitura_deploy_pulada` e log INFO). Com a fonte ligada, a concorrência com a
+   agenda é resolvida pela trava do passo 4 (antes era recusa `agenda_ligada`); sem amostra com sucesso -> `sem_amostra`; fora da janela -> `fora_janela`;
 4. pega a MESMA trava da carga (advisory lock do sistema, carga_gestaoescolar._trava) -> ocupada = `trava_ocupada`;
    já com a trava, relê o marcador: `concluida` por outra instância no mesmo SHA -> pula (`ja_executada`);
    carga completa em_andamento -> `em_andamento`;
@@ -111,6 +113,12 @@ def executar(db: Session, fonte: str, sha: str, leitor_factory: Callable | None 
     fonte = (fonte or "").strip()
     if fonte not in POR_NOME:
         return _recusa(db, "fonte_desconhecida", fonte, None)
+    ag = db.scalar(select(Agendamento).where(Agendamento.conector == "educacao"))
+    if ag is not None and not ag.ativo:  # RD1 (caso 348): fonte desligada -> nenhuma releitura, nenhuma execução
+        db.rollback()
+        audita(db, USUARIO, "educacao_releitura_deploy_pulada", f"fonte:{fonte}", {"codigo": "fonte_desligada"})
+        _log.info("[releitura_deploy:fonte_desligada] agenda da educação com ativo=false; releitura não criada")
+        return {"resultado": "pulada", "codigo": "fonte_desligada", "execucao_id": None}
     m = _marcador(db, fonte, sha)
     if m.status == "concluida":
         db.commit()
@@ -118,9 +126,6 @@ def executar(db: Session, fonte: str, sha: str, leitor_factory: Callable | None 
         return {"resultado": "ja_executada", "codigo": "ja_executada", "execucao_id": m.execucao_id}
     m.tentativas = (m.tentativas or 0) + 1
     _marca(db, m, "em_andamento")
-    ag = db.scalar(select(Agendamento).where(Agendamento.conector == "educacao"))
-    if ag is not None and ag.ativo:
-        return _recusa(db, "agenda_ligada", fonte, m)
     if not cge.amostra_ok(db):
         return _recusa(db, "sem_amostra", fonte, m)
     agora = agora or datetime.now(UTC)

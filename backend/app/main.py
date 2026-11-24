@@ -1,19 +1,26 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
+from app.chat.rotas import chat
 from app.connectors.sei.rotas import sei
 from app.contagens.rotas import contagens
 from app.core.config import VERSION, get_settings
 from app.core.db import SessionLocal
 from app.core.security import hash_senha
+from app.core.seguranca_log import instalar_filtro, mensagem_erro_banco
 from app.explorador.rotas import explorador
 from app.models.controle import Usuario
+from app.paineis.rotas import paineis
+from app.plano_governo.rotas import plano
+from app.portal_cidadao.rotas import portal
 
 log = logging.getLogger("sigpmf")
 
@@ -32,10 +39,28 @@ def configurar_logs() -> logging.Logger:
         h._sigpmf_medicao = True
         med.addHandler(h)
     med.disabled = False
+    # SIL (TL 30/10): sem handler, o INFO de sigpmf.conector.sil / sigpmf.sil caía no lastResort do logging (só
+    # WARNING+), e a 349 falhou sem nenhuma linha. Os loggers do SIL só registram método, caminho sem query, status,
+    # tentativa e Sequencia; httpx/httpcore seguem em WARNING (logariam a URL com a query).
+    # sigpmf.carga_completa: WARNING (fechamento da execução por ErroSil) também sai no stdout.
+    for nome, nivel in (("sigpmf.conector.sil", logging.INFO), ("sigpmf.sil", logging.INFO),
+                        ("sigpmf.carga_completa", logging.WARNING)):
+        lg = logging.getLogger(nome)
+        lg.setLevel(nivel)
+        lg.propagate = False
+        if not any(getattr(h, "_sigpmf_stdout", False) for h in lg.handlers):
+            h = logging.StreamHandler(sys.stdout)
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+            h._sigpmf_stdout = True
+            lg.addHandler(h)
+        lg.disabled = False
+    for nome in ("httpx", "httpcore"):
+        logging.getLogger(nome).setLevel(logging.WARNING)
     return med
 
 
 configurar_logs()
+instalar_filtro()  # DSN/senha nunca saem em log (inclusive traceback do uvicorn)
 
 
 def bootstrap_admin() -> None:
@@ -82,6 +107,7 @@ def create_app() -> FastAPI:
     docs = s.app_env == "dev" and s.docs_habilitado
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        instalar_filtro()  # de novo: handlers criados depois do import (uvicorn/gunicorn)
         try:
             bootstrap_admin()
         except Exception as exc:  # noqa: BLE001
@@ -96,6 +122,17 @@ def create_app() -> FastAPI:
             iniciar_em_fundo()
         except Exception as exc:  # noqa: BLE001
             log.warning("releitura_deploy não iniciou: %s", type(exc).__name__)
+        try:
+            from app.chat.schema_cat import aquecer
+            aquecer()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("catálogo do chat não aqueceu: %s", type(exc).__name__)
+        if s.app_env != "test":  # aquece o retrato das contagens de /api/conectores em fundo (não bloqueia o boot)
+            try:
+                from app.services.contagens_cache import aquecer_em_fundo
+                aquecer_em_fundo()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("aquecer contagens falhou: %s", type(exc).__name__)
         yield
         if agendador is not None:
             agendador.parar()
@@ -105,6 +142,21 @@ def create_app() -> FastAPI:
     if s.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins.split(","), allow_methods=["*"],
                            allow_headers=["*"])
+
+    @app.middleware("http")
+    async def privacidade_portal(req: Request, call_next):
+        resposta = await call_next(req)
+        if req.url.path.startswith("/api/portal/"):
+            resposta.headers["Cache-Control"] = "no-store"
+            resposta.headers["Referrer-Policy"] = "no-referrer"
+            resposta.headers["X-Content-Type-Options"] = "nosniff"
+        return resposta
+
+    @app.exception_handler(DBAPIError)
+    async def erro_banco(_req: Request, exc: DBAPIError):  # nunca str(exc): pode trazer DSN/usuário/senha
+        log.error("Erro de banco na requisição: %s", type(exc.orig).__name__ if exc.orig is not None else type(exc).__name__)
+        return JSONResponse(status_code=503, content={"detail": mensagem_erro_banco(exc)})
+
     app.include_router(publico)
     app.include_router(publico, prefix="/api")
     app.include_router(api, prefix="/api")
@@ -112,6 +164,10 @@ def create_app() -> FastAPI:
     app.include_router(sei, prefix="/api")  # SEI1–SEI8
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
+    app.include_router(paineis, prefix="/api")  # onda 0: shell de painéis (P01–P08, K01–K04)
+    app.include_router(plano, prefix="/api")
+    app.include_router(portal, prefix="/api")
+    app.include_router(chat, prefix="/api")  # chat de dados: agregados somente leitura
 
     return app
 

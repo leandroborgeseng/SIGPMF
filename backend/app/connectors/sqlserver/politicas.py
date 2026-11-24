@@ -21,13 +21,14 @@ class BaseRecusada(TabelaRecusada):
     pass
 
 
-# PR-04 A2: os 20 bancos de descarte (plano-aproveitamento, "Vazio/descartar") e o Internet (holerites, sensível)
-# nunca entram em política nem em leitura, mesmo que alguém cadastre uma política apontando para eles.
+# PR-04 A2: bancos de descarte (plano-aproveitamento, "Vazio/descartar"), o Internet (holerites, sensível)
+# e as bases retiradas do catálogo (espelho, fotos, logs, GED sem CPF). Nunca entram em política nem em leitura.
 BASES_DESCARTE = frozenset({
-    "API_Usuario", "AtendSaude", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL", "DWConfiguration",
-    "DWDiagnostics", "DWQueue", "EFWeb", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "IPTU_Isencao",
-    "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014", "Novo_Cemiterio", "Senhas", "Telefonia",
-    "Traces", "TrendVP"})
+    "API_Usuario", "AtendSaude", "Baixas_Ant", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL",
+    "Divida_Anteriores", "DWConfiguration", "DWDiagnostics", "DWQueue", "EFWeb", "Estoque_Anterior",
+    "Financeiro_Anteriores", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "GED", "Geral",
+    "IPTU_Isencao", "Iptu_Anteriores", "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014",
+    "Novo_Cemiterio", "Senhas", "Telefonia", "Traces", "TrendVP"})
 BASES_SENSIVEIS_NUNCA = frozenset({"Internet"})
 BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 
@@ -36,6 +37,7 @@ BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 # (Base.schema.Tabela). Banco novo entra aqui por PR, nunca por variável de ambiente.
 BASES_PERMITIDAS = frozenset({
     "Saude", "Cemiterio", "ISS", "IPTU", "Divida", "Financeiro", "API SIL",  # conectores SQL/REST (POLITICAS)
+    "DBSENIOR",                                                            # folha nominal e dependentes (r034fun, r036dep)
     "FRA_GestaoEscolar", "FRA_CoreSSO",                                    # educação (LeitorGE)
     "Correios"})                                                           # DNE/CEP (#47)
 _DECORACAO = "[]\"'`;"
@@ -196,6 +198,8 @@ SAUDE = Politica(
     colunas={
         "pacientes": ("Matricula", "Nome", "NomeSocial", "Cpf", "Cartao_Sus", "Dt_Nasc", "Sexo", "Mae", "Pai",
                       "Cd_Rua", "Nr", "Cod_Bairro", "Cep", "Complemento", "Falecido", "DataObito",
+                      # EN11 (DBA 29/10): bloco Outro_* quando Cd_Rua está vazio. Cod_Cidade/Cod_Estado ficam fora (EN12)
+                      "Outra_Rua", "Outro_Numero", "Outro_Bairro", "Outra_Cidade", "Outro_Estado", "Outro_Cep",
                       "Normalizado", "Matricula_Correta", "Dt_Cad", "dt_ultimaatual"),
         "Pacientes_CNS": ("Matricula", "Cartao_Sus", "Data_Atribuicao", "Tipo_Cartao"),
         "ESUS_Cadastro_Domiciliar": ("Codigo_Cadastro", "UUID", "Nome_Logradouro", "Numero_Imovel", "Complemento",
@@ -216,11 +220,12 @@ SAUDE = Politica(
         "Unidades": ("Codigo", "Nome_Fantasia", "Tipo", "Inativo_Ativo", "Cd_Bai"),
         "Aux_Vacina": ("Cod_Vacina", "Vacina", "Dose"),
         "Aux_Especialidades": ("Codi_Espe", "Desc_Espe"),
+        "Aux_Bairro": ("Cd_Bai", "Bairro"),  # nomes dos bairros; a Geral, de mesma numeração, não é lida
     },
     filtros={"Consultas": ("Dt_Atend", lambda: date.today() - timedelta(days=365)),
              "Agendamento_Consulta": ("Dt_Cons", lambda: date.today() - timedelta(days=365)),
              "Vacina": ("Dt_Vacina", lambda: date.today() - timedelta(days=730))},
-    apoio=frozenset({"Aux_Bairro", "Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
+    apoio=frozenset({"Aux_Rua", "Aux_EnderecoTipoLogradouro", "Aux_Municipio", "Municipio",
                      "Aux_TpUnidade", "UnidadesESF", "UnidadesESFAgentes", "Aux_profissoes", "Medico_CBO",
                      "Aux_CBO_DePara"}),
     recusar=_RECUSA_COMUM,
@@ -256,7 +261,7 @@ CEMITERIO = Politica(
         "USUARIO_NOVO": ("COD_CEMITERIO", "QUADRA", "SEPULTURA", "SEQUENCIA", "USUARIO", "PARENTESCO", "TIPO_DOC",
                          "DOCUMENTO"),
         "Ocorrencia_Sepultura": ("Cod_Cemiterio", "Quadra", "Sepultura", "Seq_Ocorrencia", "Dt_Inclusao"),
-        "Cemiterio": ("codcemite", "nome"),
+        "Cemiterio": ("codcemite", "nomecemite"),
     },
     apoio=frozenset({"AuxQuadra", "AuxSepultura", "Aux_Quadra", "Aux_EstCivil", "ALTERACAO"}),
     recusar=(r"^Novo_Cemiterio", r"CONGELADO", r"VELHO", r"Antigo", r"^AAA_NAO_UTILIZADO",
@@ -294,11 +299,31 @@ IPTU = Politica(
     proibidas=frozenset({"NOME", "Email", "RG", "Celular", "Telefone", "OBS", "Observacao"}),
 )
 
+# PK clustered já existente em dbo.Divida_Conta_Corrente. A página ordena por ela (seek/scan limitado).
+# Identidade da bronze: CODI, SEQU, ANO, Sequencia, Data_Movimentacao (a data por último).
+# Tipos do predicado (CAST/CONVERT no parâmetro, não na coluna).
+# Leitura de 09/11/2026 na origem: CODI varchar(22), SEQU varchar(2), ANO int.
+# Sequencia e Data_Movimentacao ainda não foram confirmados nessa leitura.
+# Sequencia fica só nesta entrada: hoje "int", porque a fixture sintética grava número JSON.
+# Data_Movimentacao fica "datetime": o SQL manda CONVERT estilo 126, não CAST.
+# silver.dividas.sequ continua String(4); o predicado usa a largura lida na origem.
+ORDEM_KEYSET_CC = ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO")
+TIPOS_PK_CC = {
+    "Data_Movimentacao": "datetime",
+    "Sequencia": "int",
+    "CODI": "varchar(22)",
+    "SEQU": "varchar(2)",
+    "ANO": "int",
+}
+
 DIVIDA = Politica(
     sistema="DIVIDA", base="Divida",
     colunas={"Divida": ("CODI", "SEQU", "ANO", "Nr_Carne", "Cod_Nat", "DT_INSCR", "DT_VENC", "VR_ORIGEM", "VR_TOTA_DIVI",
                         "VR_PAGO_TOTAL", "STATUS", "SITUACAO", "DT_PAGAMENTO", "Data_Extincao", "QTDE_PROTESTO",
-                        "NR_PROC", "DT_CALCULO")},
+                        "NR_PROC", "DT_CALCULO", "COMPO"),
+             # DP-P20: pagamentos por linha do débito (CODI/SEQU/ANO); só valores, sem texto livre
+             "Divida_Conta_Corrente": ("Data_Movimentacao", "Sequencia", "CODI", "SEQU", "ANO", "Vr_Pago", "Compo")},
+    ordem={"Divida_Conta_Corrente": ORDEM_KEYSET_CC},
     recusar=(r"Planilha", r"Finalizados", r"Teste", r"SMS") + _RECUSA_COMUM,
     proibidas=frozenset({"OBS", "Info_Susp", "Moti_Extincao"}),
 )
@@ -331,8 +356,21 @@ SIL = Politica(
     proibidas=frozenset({"Email", "Telefone", "LocalEntrega"}),
 )
 
+# Folha nominal e dependentes. Sem verba, salário ou desconto: a coluna "salario" já é recusada pelo guarda de nomes.
+# datafa (data da situação funcional) é o marco de procedência do servidor. r036dep não tem coluna de alteração;
+# a prata copia a datafa do titular para o dependente.
+SENIOR = Politica(
+    sistema="SENIOR", base="DBSENIOR",
+    colunas={
+        "r034fun": ("numemp", "tipcol", "numcad", "nomfun", "numcpf", "datnas", "datadm", "sitafa", "datafa"),
+        "r036dep": ("numemp", "tipcol", "numcad", "coddep", "nomdep", "numcpf", "datnas", "grapar"),
+    },
+    ordem={"r034fun": ("numemp", "tipcol", "numcad"), "r036dep": ("numemp", "tipcol", "numcad", "coddep")},
+    proibidas=frozenset({"valsal", "valeve", "descontos"}),
+)
+
 POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
-                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
+                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL, "SENIOR": SENIOR}
 
 
 def classifica_listagem(pol: Politica, nomes) -> tuple[list[str], list[tuple[str, str]]]:

@@ -104,6 +104,7 @@ def gerar() -> dict[tuple[str, str], list[dict]]:
                 **SENSIVEIS_OBITO, **extra}
 
     cem = {
+        ("CEMITERIO", "Cemiterio"): [{"codcemite": 1, "nomecemite": "Cemitério Municipal Fictício"}],
         ("CEMITERIO", "Titulares"): [
             {"Cod_Cemiterio": 1, "Quadra": "Q1", "Sepultura": "S1", "Sequencia": 1, "Titular": "Saulo Sintetico Prado",
              "CPF": f"{sa1_cpf[:3]}.{sa1_cpf[3:6]}.{sa1_cpf[6:9]}-{sa1_cpf[9:]}", "Endereco": "Quadra 1, lote 3 (texto livre)",
@@ -134,6 +135,6 @@ ESPERADO = {
     "saude": {"bronze_registros": 13, "silver_cidadaos": 4, "silver_identificadores": 7, "silver_vinculos": 4,
               "silver_correlacoes_pendentes": 5, "silver_inconsistencias": 2, "tabelas_recusadas": 2},
     # #10 (TL): históricas AAA_NAO_UTILIZADO_* fora da política -> 2 linhas a menos na bronze, sem o dedupe histórico
-    "saude+cemiterio": {"bronze_registros": 20, "silver_cidadaos": 5, "silver_identificadores": 8, "silver_vinculos": 6,
+    "saude+cemiterio": {"bronze_registros": 21, "silver_cidadaos": 5, "silver_identificadores": 8, "silver_vinculos": 6,
                         "silver_correlacoes_pendentes": 10, "silver_inconsistencias": 3, "tabelas_recusadas": 4},
 }
