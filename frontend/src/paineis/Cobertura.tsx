@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, num, pct, type Ponto } from './graficos'
+import { BarrasH, Cabecalho, ColunasMes, FontesPainel, Kpi, Painel, num, pct, type Ponto } from './graficos'
 
 type Atual = { beneficiarios: number; odonto: number; populacao: number | null; taxa: number | null; taxa_anterior: number | null; beneficiarios_anterior: number | null; aderidos: number; cancelados: number }
 type Bairro = { bairro: string; pessoas: number; taxa_estimada: number }
@@ -47,6 +47,7 @@ export function PainelCobertura() {
               <Kpi rotulo="Entradas e saídas no mês" valor={`${num(a.aderidos)} / ${num(a.cancelados)}`} nota="adesões / cancelamentos" />
               <Kpi rotulo="Só plano odontológico" valor={num(a.odonto)} nota="não entra na cobertura médica" />
             </div>
+            <FontesPainel fonte="ANS · IBGE" atualizadoEm={d.carregado_em}>
             <div className="painel-grade">
               <Painel titulo="Cobertura por mês" nota="% da população com plano médico-hospitalar" largo><ColunasMes a={d.cobertura_mes ?? []} rotuloA="Cobertura" formato={pct} meses={72} /></Painel>
               <Painel titulo="Beneficiários por mês" largo><ColunasMes a={d.beneficiarios_mes ?? []} rotuloA="Beneficiários" meses={72} /></Painel>
@@ -79,7 +80,8 @@ export function PainelCobertura() {
                 )}
               </Painel>
             </div>
-            <p className="sutil">Fontes: ANS (Informações consolidadas de beneficiários), por município de residência informado pelas operadoras, e IBGE (estimativas de população e Censo 2022). Carregado em {dataHoraBR(d.carregado_em)}.</p>
+            </FontesPainel>
+            <p className="sutil">Fonte: ANS · IBGE · atualizado em {dataHoraBR(d.carregado_em)}. Beneficiários por município de residência e estimativas de população (Censo 2022).</p>
           </>
         )}
     </section>

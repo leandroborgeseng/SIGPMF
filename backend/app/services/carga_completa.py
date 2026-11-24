@@ -47,7 +47,7 @@ from app.silver import processamento
 TIPO = "carga_completa_conector"
 MODOS = ("completa", "incremental")
 MSG_CAMADAS_MANTIDAS = "Nada mudou nas entradas da prata e do ouro: reconstrução pulada (resultado idêntico)."
-CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil")
+CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil", "senior")
 NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro",
          "sil": "API SIL"}
 

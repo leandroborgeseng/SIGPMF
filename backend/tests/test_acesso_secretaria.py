@@ -174,7 +174,9 @@ def test_r4_saude_nominal_sem_conteudo_clinico(client, db, rbac):
     _vinculo(db, u, "SAUDE")
     cid = _cidadao(db)
     corpo = client.get(f"/api/gold/cidadaos/{cid}/saude", headers=h).json()
-    assert set(corpo) == {"cidadao_id", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo) == {"cidadao_id", "procedencia", "totais", "proximos", "atendimentos", "vacinas"}  # sem CID/diagnóstico/prescrição
+    assert set(corpo["procedencia"]) == {"sistema", "fonte", "fonte_atualizado_em", "atualizado_em"}
+    assert corpo["procedencia"]["sistema"] == "SAUDE"
 
 
 def test_regra_desligada_nao_muda_comportamento(client, db, monkeypatch):
@@ -449,6 +451,7 @@ PESSOAIS = {
     ("GET", "/api/gold/cidadaos/{cid}/linha-do-tempo"), ("GET", "/api/gold/cidadaos/{cid}/saude"),
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
+    ("GET", "/api/gold/cidadaos/{cid}/genealogia"),
     ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
     ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
     ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, dataHoraBR } from '../api'
 import { Erro, Esqueleto } from '../componentes'
 import { DrillCubo, doPeriodo, useDetalhe } from './Drill'
-import { BarrasH, Cabecalho, ColunasMes, Kpi, Painel, mesCurto, num, pct, reais, type Ponto } from './graficos'
+import { BarrasH, Cabecalho, ColunasMes, FontesPainel, Kpi, Painel, mesCurto, num, pct, reais, type Ponto } from './graficos'
 
 type Totais = { servidores: number; suprimido: boolean; bruto?: number; descontos?: number; liquido?: number; media?: number; mediana?: number
   afastados?: number; admissoes?: number; desligamentos?: number }
@@ -91,6 +91,7 @@ export function PainelRh() {
               </label>
               {(f.secretaria || f.grupo) && <button type="button" className="btn secundario limpar" onClick={() => muda({ secretaria: null, grupo: null })}>Limpar filtros</button>}
             </form>
+            <FontesPainel fonte="PORTAL_RH" atualizadoEm={d.disponivel.carregado_em}>
             {a.suprimido ? <p className="aviso-ambar">Este recorte tem menos de 5 pessoas e não é mostrado, para não identificar ninguém.</p> : (
               <div className="kpis" id="t-rh-kpis">
                 <Kpi rotulo="Pessoas pagas no mês" valor={num(a.servidores)} nota={variacao(a.servidores, d.anterior?.servidores, f)} mini={d.mensal?.servidores.map((p) => p.valor)} />
@@ -142,7 +143,8 @@ export function PainelRh() {
                 <DrillCubo key={JSON.stringify([f.ano, f.mes, recorte])} cubo="rh" fixos={{ ano: f.ano, mes: f.mes, ...recorte }} caminho={CAMINHO_RH} medidas={MEDIDAS_RH} nomeArquivo={`folha-${f.ano}-${f.mes}`} />
               </Painel>
             </div>
-            <p className="sutil">Fonte: Portal da Transparência de Franca, Servidores - Remuneração. Carregado em {dataHoraBR(d.disponivel.carregado_em)}. Secretarias com nomes padronizados ao longo dos anos.</p>
+            </FontesPainel>
+            <p className="sutil">Fonte: Portal da Transparência · atualizado em {dataHoraBR(d.disponivel.carregado_em)}. Servidores — remuneração. Secretarias com nomes padronizados ao longo dos anos.</p>
             {gaveta}
           </>
         )}

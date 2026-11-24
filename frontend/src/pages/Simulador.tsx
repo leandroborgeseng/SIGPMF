@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
+import ArvoreGenealogica from '../ArvoreGenealogica'
 import OrigemDado, { nomeFonte } from '../OrigemDado'
 import { AcessosCidadao, CemiterioCidadao, EducacaoCidadao, estadoArea, ImpostosCidadao, LinhaDoTempoCidadao, MapaAreas, ResumoPortal, SaudeCidadao, useDadosFicha, type ItemMapa } from '../FichaPortal'
 import { reais } from '../ImpostosCidadao'
@@ -23,6 +24,7 @@ type EnderecoFicha = { valor: string | null; linhas?: string[]; fonte: string | 
 // Sempre na ficha, com ou sem valor; campo novo do ouro entra depois destes, com o próprio nome
 const CAMPOS_FIXOS: [string, string][] = [['nome', 'Nome'], ['data_nascimento', 'Data de nascimento'], ['sexo', 'Sexo'], ['nome_mae', 'Nome da mãe'], ['nome_pai', 'Nome do pai'], ['endereco', 'Endereço']]
 const FORA_DA_LISTA = new Set([...CAMPOS_FIXOS.map(([c]) => c), 'cadastro', 'falecido', 'data_obito'])
+const ROTULO_CAMPO: Record<string, string> = { folha_nominal: 'Folha nominal' }
 const SEXO: Record<string, string> = { F: 'Feminino', M: 'Masculino' }
 const MOTIVO_MIN = Number(import.meta.env.VITE_REVELAR_MOTIVO_MIN ?? 10)
 
@@ -127,6 +129,11 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
   }
   useEffect(carregar, [id])
   useEffect(() => () => setCpf(null), [id])
+  useEffect(() => {
+    if (!f) return
+    const h = window.location.hash.replace('#', '')
+    if (h) document.getElementById(h)?.scrollIntoView({ block: 'start' })
+  }, [f])
 
   const revelado = (valor: string, segundos: number) => {
     setCpf(valor); setAviso('Revelação registrada na auditoria.')
@@ -201,7 +208,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
             })}
             {extras.map((d) => (
               <div key={`${d.campo}-${d.fonte}`} className="campo">
-                <dt>{d.campo.replace(/_/g, ' ')}</dt>
+                <dt>{ROTULO_CAMPO[d.campo] ?? d.campo.replace(/_/g, ' ')}</dt>
                 <dd><ValorCampo d={d} /><OrigemDado fonte={d.fonte} atualizadoEm={d.atualizado_em} /></dd>
               </div>
             ))}
@@ -212,6 +219,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
           </dl>
         )}
       </section>
+      <ArvoreGenealogica id={id} />
       <div className="portal-grade">
         <SaudeCidadao saude={saude} leitura={leituras.saude} fontes={fontes} />
         <div className="portal-coluna">

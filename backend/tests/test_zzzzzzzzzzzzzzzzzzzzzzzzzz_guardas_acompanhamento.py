@@ -43,7 +43,7 @@ def test_r1_permitida_com_decoracao_recusada(nome):
 def test_r1_fora_da_lista_recusada(nome):
     with pytest.raises(BaseRecusada) as e:
         P.autoriza_base(nome)
-    assert e.value.codigo in ("base_fora_da_lista", "base_nome_invalido")
+    assert e.value.codigo in ("base_fora_da_lista", "base_nome_invalido", "base_descartada")
 
 
 def test_r1_banco_test_so_em_app_env_test(monkeypatch):

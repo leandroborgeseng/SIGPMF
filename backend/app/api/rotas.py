@@ -862,9 +862,10 @@ def cemiterio_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_at
     from app.services import ficha_cidadao
     acs.exige(db, u, req, "cemiterio", dominios=["cemiterio"], alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    from app.gold.procedencia import carimbo, marco_ouro
     r = ficha_cidadao.cemiterio(db, cid)
     audita(db, u.email, "consulta_cemiterio", f"cidadao:{cid}", {k: len(v) for k, v in r.items()}, _ip(req))
-    return {"cidadao_id": cid, **r}
+    return {"cidadao_id": cid, "procedencia": carimbo("CEMITERIO", marco_ouro(db, cid, "CEMITERIO")), **r}
 
 
 @api.get("/gold/cidadaos/{cid}/cemiterio/titulares")
@@ -902,6 +903,18 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
             "enderecos": [{"valor": e.logradouro, "linhas": (e.logradouro or "").split("\n") if e.logradouro else [],
                            "fonte": e.sistema, "atualizado_em": e.fonte_atualizado_em,
                            "mais_recente": e.mais_recente, "origem_endereco": e.origem_endereco} for e in ends]}
+
+
+@api.get("/gold/cidadaos/{cid}/genealogia")
+def genealogia_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
+    """Ascendentes e descendentes (2 níveis). CadÚnico e BU educação aparecem como provedores sem acesso."""
+    from app.genealogia.arvore import montar
+    acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
+    db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
+    r = montar(db, cid)
+    audita(db, u.email, "consulta_genealogia", f"cidadao:{cid}",
+           {"ascendentes": len(r["ascendentes"]), "descendentes": len(r["descendentes"])}, _ip(req))
+    return r
 
 
 def _empresa_sil(e, *, revela: bool) -> dict:
@@ -963,6 +976,9 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
     total_lancs = db.scalar(select(func.count()).select_from(Lancamento).where(Lancamento.cidadao_id == cid)) or 0
     vencido = [x for x in em_aberto if x.vencimento and x.vencimento < hoje]
     ativa = [d for d in divs if d.em_aberto]  # DP-P20: só D/G/P/B com saldo líquido
+    from app.gold.procedencia import carimbo, marco_ouro
+    datas_imovel = [i.atualizado_em for i in imoveis.values() if getattr(i, "atualizado_em", None)]
+    quando_iptu = max(datas_imovel) if datas_imovel else marco_ouro(db, cid, "IPTU")
     audita(db, u.email, "consulta_tributario", f"cidadao:{cid}", {"imoveis": len(imoveis), "lancamentos": len(lancs),
                                                                   "dividas": len(divs), "empresas": len(empresas)}, _ip(req))
     return {
@@ -994,6 +1010,12 @@ def tributario_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_a
         # SIL16 + MÉDIO-1: sempre mascarado aqui, para todos os perfis (inclusive admin_lgpd). Em claro só pelo
         # POST .../tributario/revelar-empresas (admin_lgpd, motivo obrigatório, auditoria revelar_empresa_sil).
         "empresas": [_empresa_sil(e, revela=False) for e in empresas],
+        "procedencia": {
+            "imoveis": carimbo("IPTU", quando_iptu),
+            "lancamentos": carimbo("FINANCEIRO", marco_ouro(db, cid, "FINANCEIRO")),
+            "dividas": carimbo("DIVIDA", marco_ouro(db, cid, "DIVIDA")),
+            "empresas": carimbo("SIL", marco_ouro(db, cid, "SIL")),
+        },
     }
 
 
@@ -1015,9 +1037,18 @@ def linha_do_tempo(cid: str, req: Request, limite: int = 50, antes: str | None =
             raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
     evs = [e for e in db.scalars(q.order_by(Evento.data.desc(), Evento.id.desc()).limit(max(1, min(limite, 200))))
            if sec.ve(_AREA_DOMINIO.get((e.area or "").lower(), (e.area or "").lower()))]
+    from app.gold.procedencia import FONTE_EVENTO, iso, marco_ouro
+    marcos: dict[str, object] = {}
+
+    def quando_fonte(fonte: str | None):
+        sistema = FONTE_EVENTO.get(fonte or "", fonte or "")
+        if sistema not in marcos:
+            marcos[sistema] = marco_ouro(db, cid, sistema)
+        return marcos[sistema]
+
     audita(db, u.email, "consulta_linha_do_tempo", f"cidadao:{cid}", {"eventos": len(evs)}, _ip(req))
     return {"cidadao_id": cid, "eventos": [{"data": e.data, "area": e.area, "tipo": e.tipo, "titulo": e.titulo,
-                                            "fonte": e.fonte} for e in evs]}
+                                            "fonte": e.fonte, "atualizado_em": iso(quando_fonte(e.fonte))} for e in evs]}
 
 
 @api.get("/gold/cidadaos/{cid}/saude")
@@ -1037,8 +1068,10 @@ def saude_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual)
     at = list(db.scalars(select(Atendimento).where(Atendimento.cidadao_id == cid).order_by(Atendimento.data.desc().nulls_last()).limit(200)))
     va = list(db.scalars(select(Vacinacao).where(Vacinacao.cidadao_id == cid).order_by(Vacinacao.data.desc().nulls_last()).limit(200)))
     conta = lambda m: db.scalar(select(func.count()).select_from(m).where(m.cidadao_id == cid)) or 0  # noqa: E731
+    from app.gold.procedencia import carimbo, marco_ouro
     audita(db, u.email, "consulta_saude", f"cidadao:{cid}", {"agendamentos": len(ag), "atendimentos": len(at)}, _ip(req))
-    return {"cidadao_id": cid, "totais": {"atendimentos": conta(Atendimento), "vacinas": conta(Vacinacao)},
+    return {"cidadao_id": cid, "procedencia": carimbo("SAUDE", marco_ouro(db, cid, "SAUDE")),
+            "totais": {"atendimentos": conta(Atendimento), "vacinas": conta(Vacinacao)},
             "proximos": [{"data": a.data_consulta, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp),
                           "dias_espera": a.dias_espera} for a in ag],
             "atendimentos": [{"data": a.data, "unidade": uni.get(a.unidade), "especialidade": rotulo_especialidade(a.especialidade, esp)}
@@ -1053,12 +1086,16 @@ def indicadores_gestao(series: str | None = None, db: Session = Depends(get_db))
     q = select(Indicador)
     if series:
         q = q.where(Indicador.serie.in_([x.strip() for x in series.split(",") if x.strip()]))
+    from app.gold.procedencia import carimbo, sistema_da_serie
     out: dict[str, list] = {}
+    por_serie = {}
     atualizado = None
     for i in db.scalars(q.order_by(Indicador.serie, Indicador.periodo, Indicador.dim)):
         out.setdefault(i.serie, []).append({"periodo": i.periodo, "dim": i.dim, "valor": i.valor})
+        por_serie[i.serie] = max(por_serie[i.serie], i.atualizado_em) if i.serie in por_serie else i.atualizado_em
         atualizado = max(atualizado, i.atualizado_em) if atualizado else i.atualizado_em
-    return {"atualizado_em": atualizado, "series": out}
+    procedencia = {s: carimbo(sistema_da_serie(s), em) for s, em in por_serie.items()}
+    return {"atualizado_em": atualizado, "series": out, "procedencia": procedencia}
 
 
 @api.get("/gold/cidadaos/{cid}/acessos")
@@ -1070,7 +1107,7 @@ def acessos_ao_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atua
         raise HTTPException(403, "Perfil sem permissão para esta ação")
     acs.exige(db, u, req, "acessos", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
+    ROTULO = {"consulta_ficha": "Abriu a ficha", "consulta_genealogia": "Árvore genealógica", "consulta_tributario": "Impostos e imóveis", "consulta_saude": "Saúde", "consulta_educacao": "Educação", "consulta_cemiterio": "Cemitério", "consulta_cemiterio_titulares": "Titulares da sepultura", "consulta_linha_do_tempo": "Linha do tempo",
               "revelar_cpf": "Revelou o CPF", "revelar_empresa_sil": "Revelou dados de empresa (SIL)", "consulta_acessos": "Lista de acessos", "consulta_vinculos": "Vínculos"}
     regs = list(db.scalars(select(Auditoria).where(Auditoria.alvo == f"cidadao:{cid}")
                            .order_by(Auditoria.id.desc()).limit(50)))
@@ -1328,8 +1365,11 @@ def financas_painel(ano: int | None = None, mes_ate: int | None = None, orgao: s
                     fonte: str | None = None, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Painel Finanças (AUDESP): receita, despesa por fase, função, natureza, fonte, modalidade, fornecedores PJ e
     restos a pagos, do ano até o mês escolhido e o mesmo período do ano anterior. Só agregados (PF só somado)."""
+    from app.gold.procedencia import carimbo
     from app.services import painel_financas as pf
-    return pf.painel(db, ano, mes_ate, pf.filtro_valido(orgao), pf.filtro_valido(funcao), pf.filtro_valido(fonte))
+    r = pf.painel(db, ano, mes_ate, pf.filtro_valido(orgao), pf.filtro_valido(funcao), pf.filtro_valido(fonte))
+    r["procedencia"] = carimbo("AUDESP", (r.get("disponivel") or {}).get("carregado_em"))
+    return r
 
 
 # ---------- IEG-M (TCE-SP) ----------
@@ -1339,8 +1379,11 @@ IEGM_MAX_UPLOAD = 2 * 1024 * 1024
 @api.get("/iegm/painel")
 def iegm_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """IEG-M de Franca: faixa de cada índice por ano base, distribuição do estado e posição no último ano."""
+    from app.gold.procedencia import carimbo
     from app.services import iegm
-    return iegm.painel(db)
+    r = iegm.painel(db)
+    r["procedencia"] = carimbo("IEGM", r.get("carregado_em"))
+    return r
 
 
 @api.get("/iegm/estado")
@@ -1415,8 +1458,11 @@ def rh_carregar(req: Request, dados: dict | None = None, u: Usuario = Depends(ad
 def rh_painel(ano: int | None = None, mes: int | None = None, secretaria: str | None = None, grupo: str | None = None,
               u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Painel de RH: só agregados, com supressão de grupos com menos de 5 servidores. Nenhuma linha por pessoa."""
+    from app.gold.procedencia import carimbo
     from app.services import painel_rh as pr
-    return pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
+    r = pr.painel(db, ano, mes, (secretaria or "").strip()[:80] or None, grupo)
+    r["procedencia"] = carimbo("PORTAL_RH", (r.get("disponivel") or {}).get("carregado_em"))
+    return r
 
 
 # ---------- Cobertura de planos de saúde (ANS e IBGE) ----------
@@ -1442,8 +1488,11 @@ def cobertura_carregar(req: Request, u: Usuario = Depends(admin_auditado), db: S
 @api.get("/cobertura/painel")
 def cobertura_painel(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Cobertura de planos em Franca. Só agregados; a estimativa por bairro vem rotulada."""
+    from app.gold.procedencia import carimbo
     from app.services import painel_cobertura
-    return painel_cobertura.painel(db)
+    r = painel_cobertura.painel(db)
+    r["procedencia"] = carimbo("ANS", r.get("carregado_em"))
+    return r
 
 
 # ---------- Cubos e cruzamentos: CB1 a CB3 ----------
@@ -1483,7 +1532,11 @@ def cubo_consulta(cubo: str, req: Request, agrupar: str = "", medidas: str = "",
 def cruzamentos(u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
     """Matriz por bairro, destaques, correlações e cruzamentos da cidade. Só agregados."""
     from app.gold import cruzamentos as cz
-    return cz.tudo(db)
+    from app.gold.procedencia import carimbo
+    r = cz.tudo(db)
+    quando = r.get("gerado_em")
+    return {**r, "procedencia": [carimbo(s, quando) for s in (
+        "SAUDE", "IPTU", "FINANCEIRO", "DIVIDA", "EDUCACAO", "AUDESP", "PORTAL_RH", "SIL")]}
 
 
 # ---------- Educação (FRA_GestaoEscolar + FRA_CoreSSO): GE4, GE9 e GE11 ----------
@@ -1540,9 +1593,12 @@ def educacao_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atu
     sec = acs.exige(db, u, req, "educacao", dominios=["educacao"], alvo=f"cidadao:{cid}", revelou_cpf=acs.rbac_ativo())
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
     # R1 (TL 29/10): com vínculo vigente à Educação, tudo sai sem máscara, inclusive o CPF completo (auditado).
+    from app.gold.procedencia import carimbo
+    from app.models.camadas import EscolaAluno
     alunos = _educacao(db, cid, revela=sec.sem_mascara)
+    quando = db.scalar(select(func.max(EscolaAluno.atualizado_em)).where(EscolaAluno.cidadao_id == cid))
     audita(db, u.email, "consulta_educacao", f"cidadao:{cid}", {"alunos": len(alunos)}, _ip(req))
-    return {"cidadao_id": cid, "alunos": alunos}
+    return {"cidadao_id": cid, "alunos": alunos, "procedencia": carimbo("EDUCACAO", quando)}
 
 
 @api.post("/gold/cidadaos/{cid}/educacao/revelar")

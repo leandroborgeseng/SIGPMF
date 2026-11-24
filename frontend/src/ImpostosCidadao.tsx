@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, dataBR } from './api'
 import { Area, estadoArea, type Fontes, type Leitura } from './AreaFicha'
+import OrigemDado from './OrigemDado'
+import { FonteRodape } from './paineis/graficos'
 
 type Totais = { imoveis: number; em_aberto: number; parcelas_em_aberto: number; vencido: number; parcelas_vencidas: number
   divida_ativa: number; inscricoes_divida: number; protestada: boolean; lancamentos?: number }
@@ -24,8 +26,9 @@ type DivT = { codi: string; sequ?: string | null; ano: number | null; natureza: 
   valor_origem: number | null; protestos: number; extinta: boolean }
 type EmpresaT = { ccm: number; nome: string | null; documento: string; possui_debito: boolean | null; endereco: string | null
   bairro: string | null }
+type Proc = { sistema: string; fonte_atualizado_em?: string | null }
 export type RespTributario = { cidadao_id: string; totais: Totais; imoveis: ImovelT[]; lancamentos: LancT[]; dividas: DivT[]
-  empresas?: EmpresaT[] }
+  empresas?: EmpresaT[]; procedencia?: Partial<Record<'imoveis' | 'lancamentos' | 'dividas' | 'empresas', Proc>> }
 
 export const validaTributario = (r: unknown): r is RespTributario => !!r && typeof (r as RespTributario).totais === 'object'
   && Array.isArray((r as RespTributario).imoveis) && Array.isArray((r as RespTributario).lancamentos) && Array.isArray((r as RespTributario).dividas)
@@ -75,10 +78,12 @@ export default function ImpostosCidadao({ id, dados, leitura, fontes }: { id: st
                   <span className="sutil">{linha.detalhe}</span>
                 </div>
                 <span className={`selo ${i.ativo ? 'sucesso' : 'neutro'}`}><i aria-hidden="true" />{i.ativo ? 'Posse atual' : 'Posse anterior'}</span>
+                <OrigemDado fonte={d?.procedencia?.imoveis?.sistema || 'IPTU'} atualizadoEm={d?.procedencia?.imoveis?.fonte_atualizado_em} />
               </li>
             )
           })}
         </ul>
+        <FonteRodape fonte={d?.procedencia?.imoveis?.sistema || 'IPTU'} atualizadoEm={d?.procedencia?.imoveis?.fonte_atualizado_em} />
       </Area>
       <Area id="lancamentos" titulo="Impostos e taxas lançados" estado={estadoArea(l, totalLancs, fontes, 'lancamentos')} total={totalLancs} vazio="Nenhum imposto ou taxa lançado para este cidadão.">
         <table className="tabela">
@@ -97,6 +102,7 @@ export default function ImpostosCidadao({ id, dados, leitura, fontes }: { id: st
             })}
           </tbody>
         </table>
+        <FonteRodape fonte={d?.procedencia?.lancamentos?.sistema || 'FINANCEIRO'} atualizadoEm={d?.procedencia?.lancamentos?.fonte_atualizado_em} />
         {lancs.length > 8 && <button className="btn-link" aria-expanded={todos} onClick={() => setTodos(!todos)}>{todos ? 'Mostrar menos' : `Ver todos (${lancs.length})`}</button>}
         {totalLancs > lancs.length && todos && <p className="sutil">Mostrando os {lancs.length} mais recentes de {totalLancs}. Os totais acima contam todos.</p>}
       </Area>
@@ -106,9 +112,11 @@ export default function ImpostosCidadao({ id, dados, leitura, fontes }: { id: st
             <li key={`${x.codi}-${x.sequ ?? ''}-${x.ano}-${x.situacao ?? ''}`} className={x.em_aberto ? '' : 'inativo'}>
               <div><strong>Dívida {x.ano ?? ''}</strong><span className="sutil">{x.origem ? ` · ${x.origem}` : ''}{x.natureza_nome ? ` · ${x.natureza_nome}` : ''} · inscrita em {dataBR(x.inscrita_em)}{x.protestos ? ` · ${x.protestos} protesto(s)` : ''}</span></div>
               <span className={`selo ${x.em_aberto ? 'falha' : 'neutro'}`}><i aria-hidden="true" />{x.extinta ? 'Extinta' : x.em_aberto ? reais(x.saldo) : 'Sem saldo em aberto'}</span>
+              <OrigemDado fonte={d?.procedencia?.dividas?.sistema || 'DIVIDA'} atualizadoEm={d?.procedencia?.dividas?.fonte_atualizado_em} />
             </li>
           ))}
         </ul>
+        <FonteRodape fonte={d?.procedencia?.dividas?.sistema || 'DIVIDA'} atualizadoEm={d?.procedencia?.dividas?.fonte_atualizado_em} />
       </Area>
       <Area id="empresas" titulo="Empresas no CPF" estado={estadoArea(l, empresas.length, fontes, 'empresas')} total={empresas.length} vazio="Nenhuma empresa com inscrição municipal no CPF deste cidadão.">
         <ul className="impostos-imoveis" aria-label="Empresas">
@@ -121,9 +129,11 @@ export default function ImpostosCidadao({ id, dados, leitura, fontes }: { id: st
               <span className={`selo ${e.possui_debito ? 'falha' : e.possui_debito === false ? 'sucesso' : 'neutro'}`}>
                 <i aria-hidden="true" />{e.possui_debito ? 'Com débito' : e.possui_debito === false ? 'Sem débito' : 'Sem informação'}
               </span>
+              <OrigemDado fonte={d?.procedencia?.empresas?.sistema || 'SIL'} atualizadoEm={d?.procedencia?.empresas?.fonte_atualizado_em} />
             </li>
           ))}
         </ul>
+        <FonteRodape fonte={d?.procedencia?.empresas?.sistema || 'SIL'} atualizadoEm={d?.procedencia?.empresas?.fonte_atualizado_em} />
       </Area>
     </section>
   )

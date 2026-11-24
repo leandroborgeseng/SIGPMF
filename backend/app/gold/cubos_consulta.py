@@ -128,7 +128,12 @@ def consulta(db: Session, cubo: str, agrupar: list[str], medidas: list[str] | No
     except ProgrammingError:
         db.rollback()
         return vazio
-    r = {"linhas": linhas[:LIMITE_LINHAS], "ocultos": ocultos, "truncado": len(linhas) > LIMITE_LINHAS, "calculado": True}
+    from app.gold.procedencia import carimbo
+    fonte = {"saude": "SAUDE", "tributario": "FINANCEIRO", "divida": "DIVIDA", "imoveis": "IPTU", "empresas": "SIL",
+             "educacao": "EDUCACAO", "pessoas": "OURO", "rh": "PORTAL_RH", "despesa": "AUDESP", "receita": "AUDESP",
+             "folha_modelo": "EXEMPLO_FOLHA"}.get(cubo, "OURO")
+    r = {"linhas": linhas[:LIMITE_LINHAS], "ocultos": ocultos, "truncado": len(linhas) > LIMITE_LINHAS, "calculado": True,
+         "procedencia": carimbo(fonte, geracao(db))}
     _cache[chave] = r
     while len(_cache) > CACHE_MAX:
         _cache.popitem(last=False)

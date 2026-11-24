@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, ApiErro, dataHoraBR } from '../../api'
 import { ErrorBoundary } from '../../componentes'
+import { ColunasMes, Painel } from '../graficos'
 import { KpiCartao } from './KpiCartao'
 import { calcula, valorFmt } from './formato'
 import type { KpiDado, RespPainel } from './tipos'
@@ -103,6 +104,15 @@ export function PainelShell({ chave, kicker, sub }: { chave: string; kicker: str
           <div className="sk-kpis">
             {d.kpis.map((k) => <CartaoSeguro key={k.chave} k={k} ativo={(kpiSel ?? d.drill?.medida.chave) === k.chave} aoClicar={() => muda({ kpi: k.chave })} />)}
           </div>
+          {d.kpis.length > 0 && (() => {
+            const k = d.kpis.find((x) => x.chave === (kpiSel ?? d.drill?.medida.chave)) ?? d.kpis[0]
+            const pontos = k.serie.filter((p) => p.valor != null).map((p) => ({ periodo: p.competencia, dim: '', valor: p.valor as number }))
+            return (
+              <Painel titulo={`${k.rotulo} nos últimos 12 meses`} fonte={d.fonte?.sistema} atualizadoEm={d.fonte?.carga_em}>
+                <ColunasMes a={pontos} rotuloA={k.rotulo} formato={(v) => valorFmt(v, k.formato)} meses={12} />
+              </Painel>
+            )
+          })()}
           {d.drill && d.kpis.length > 0 && (
             <DrillMigalhas d={d} kpi={d.kpis.find((k) => k.chave === kpiSel) ?? d.kpis.find((k) => k.chave === d.drill!.medida.chave) ?? d.kpis[0]} muda={muda} />
           )}

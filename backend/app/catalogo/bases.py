@@ -33,6 +33,8 @@ BASES: list[tuple] = [
     ("Divida", _P, _A, _I, 8, ["DIVIDA"], "divida", "Dívida ativa (débitos do cidadão no painel)"),
     ("Financeiro", _P, _A, _I, 9, ["FINANCEIRO"], "financeiro", "Lançamentos tributários do exercício atual e anterior"),
     ("API SIL", _P, _A, _I, 10, ["SIL"], "sil", "API REST do tributário novo (SIL): empresas por CCM, só leitura"),
+    ("DBSENIOR", _P, _A, _I, 11, ["SENIOR"], "senior",
+     "Folha nominal (r034fun) e dependentes (r036dep); somente leitura; nominais isentos de k-anonimato"),
     ("Alvara", _B, _A, _T, 9, [], None, "Alvarás (sem CPF); indicador de licenciamento"),
     ("IntegracaoJuridicoDivida", _P, _A, _T, 10, [], None, "Dívida ativa judicial: cadastros, CDAs, acordos (painel)"),
     # ---- analisados, sem fila ----
@@ -40,11 +42,8 @@ BASES: list[tuple] = [
     ("Apacs", _P, _A, _T, None, [], None, "APAC/AIH do SUS por matrícula (→ Saude)"),
     ("Atend", _P, _A, _T, None, [], None, "Fila de senhas de atendimento; tempo de espera"),
     ("Educacao", _P, _A, _T, None, [], None, "Bolsa Universitária, Adote, UAB, Primeira Chance"),
-    ("GED", _P, _A, _T, None, [], None, "Índice de documentos digitalizados (cemitério)"),
     ("Gesad", _P, _A, _T, None, [], None, "Solicitações internas, emissão de RG, Procon"),
     ("IntegracaoSaudeTerceiros", _P, _A, _T, None, [], None, "Dispensação de medicamentos (→ Saude)"),
-    ("Iptu_Anteriores", _P, _A, _T, None, [], None, "Fotos anuais do cadastro de IPTU (histórico)"),
-    ("IPTU_Isencao", _P, _A, _T, None, [], None, "Isenção de IPTU (sistema novo, vazio)"),
     ("ITBI", _P, _A, _T, None, [], None, "ITBI: transmissões de imóveis"),
     ("PetSaude", _P, _A, _T, None, [], None, "PetSaúde (pouco usado)"),
     ("Raat", _P, _A, _T, None, [], None, "Acidentes de trabalho"),
@@ -58,8 +57,6 @@ BASES: list[tuple] = [
     ("Simples_Nacional", _B, _A, _T, None, [], None, "Empresas do Simples (só CNPJ)"),
     ("Transito", _B, _A, _T, None, [], None, "Multas de trânsito"),
     # ---- analisados e descartados ----
-    ("Geral", _P, _A, _X, None, [], None, "Espelho contido no ISS.Municipes — não ler (decisão 25/10/2026)"),
-    ("AtendSaude", _P, _A, _X, None, [], None, "Fila de senhas vazia (0 linhas)"),
     ("Novo_Cemiterio", _P, _A, _X, None, [], None, "Migração abandonada (0 linhas)"),
     ("ManutHardware", _C, _A, _X, None, [], None, "Chamados de TI internos"),
     ("Senhas", _C, _A, _X, None, [], None, "Credenciais — fora"),
@@ -72,11 +69,18 @@ BASES: list[tuple] = [
         "ArquivoHistorico", "Baixas", "Cert_Emit", "ConselhosMunicipais", "Controle_Despesa", "Controle_Documentacao",
         "Estoque", "Fiscalizacao_Rendas")],
     *[(n, _C, _N, _X, None, [], None, "Descartável (pré-triagem pelo nome)") for n in (
-        "API_Email", "API_Usuario", "Baixas_Ant", "CAL", "Central", "Correios", "DbPPrioritariosIdentityMunicipios",
-        "DBSENIOR", "DBSENIOR_EDOCS", "DBSENIOR_ESOCIAL", "DBSENIOR_PORTAL", "Divida_Anteriores", "DWConfiguration",
-        "DWDiagnostics", "DWQueue", "EFWeb", "Estoque_Anterior", "Financeiro_Anteriores", "Folpag_", "Internet",
-        "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014")],
+        "API_Email", "API_Usuario", "CAL", "Central", "Correios", "DbPPrioritariosIdentityMunicipios",
+        "DBSENIOR_EDOCS", "DBSENIOR_ESOCIAL", "DBSENIOR_PORTAL", "DWConfiguration",
+        "DWDiagnostics", "DWQueue", "EFWeb", "Folpag_", "Internet")],
 ]
+
+# Fora do catálogo, do mapeamento e da agenda. Linhas já gravadas no banco permanecem:
+# a leitura da API é que deixa de listá-las. Sem DROP e sem DELETE.
+RETIRADAS = frozenset({
+    "Geral", "IPTU_Isencao", "AtendSaude", "GED", "Iptu_Anteriores", "Divida_Anteriores",
+    "Financeiro_Anteriores", "Estoque_Anterior", "Baixas_Ant", "LogSistemas",
+    "LogSistemas_Anteriores", "LogSistemas_Ate2014",
+})
 
 CAMPOS = ("nome", "grupo", "triagem", "status", "prioridade", "sistemas", "conjunto", "descricao")
 

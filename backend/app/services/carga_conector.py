@@ -29,7 +29,7 @@ from app.silver import processamento
 # id do conector na API -> sistema da política / mapeamento e banco de origem esperado (PB12)
 CONECTORES = {"saude": ("SAUDE", "Saude"), "cemiterio": ("CEMITERIO", "Cemiterio"), "iss": ("ISS", "ISS"),
               "iptu": ("IPTU", "IPTU"), "divida": ("DIVIDA", "Divida"), "financeiro": ("FINANCEIRO", "Financeiro"),
-              "sil": ("SIL", "API SIL")}
+              "sil": ("SIL", "API SIL"), "senior": ("SENIOR", "DBSENIOR")}
 CONECTORES_API = ("sil",)  # origem REST: leitor próprio, sem banco SQL Server
 
 
@@ -38,6 +38,9 @@ def leitor_de(conector: str, cfg):
     if conector == "sil":
         from app.connectors.sil.conector import SilConnector
         return SilConnector(nome=conector)
+    if conector == "senior":
+        from app.connectors.senior.conector import ConectorSenior
+        return ConectorSenior(cfg, nome=conector)
     return SqlServerConnector(cfg, nome=conector)
 def base_sil_log() -> str:
     """Base da SIL desta execução (TL 29/10), sem credencial: 'ambiente=producao host=...'."""

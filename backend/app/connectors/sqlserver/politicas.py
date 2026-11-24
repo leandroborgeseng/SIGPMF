@@ -21,13 +21,14 @@ class BaseRecusada(TabelaRecusada):
     pass
 
 
-# PR-04 A2: os 20 bancos de descarte (plano-aproveitamento, "Vazio/descartar") e o Internet (holerites, sensível)
-# nunca entram em política nem em leitura, mesmo que alguém cadastre uma política apontando para eles.
+# PR-04 A2: bancos de descarte (plano-aproveitamento, "Vazio/descartar"), o Internet (holerites, sensível)
+# e as bases retiradas do catálogo (espelho, fotos, logs, GED sem CPF). Nunca entram em política nem em leitura.
 BASES_DESCARTE = frozenset({
-    "API_Usuario", "AtendSaude", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL", "DWConfiguration",
-    "DWDiagnostics", "DWQueue", "EFWeb", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "IPTU_Isencao",
-    "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014", "Novo_Cemiterio", "Senhas", "Telefonia",
-    "Traces", "TrendVP"})
+    "API_Usuario", "AtendSaude", "Baixas_Ant", "DbPPrioritariosIdentityMunicipios", "DBSENIOR_PORTAL",
+    "Divida_Anteriores", "DWConfiguration", "DWDiagnostics", "DWQueue", "EFWeb", "Estoque_Anterior",
+    "Financeiro_Anteriores", "FRA_AVA_API", "FRA_CoreSSO_Log", "FRA_OauthProvider", "GED", "Geral",
+    "IPTU_Isencao", "Iptu_Anteriores", "LogSistemas", "LogSistemas_Anteriores", "LogSistemas_Ate2014",
+    "Novo_Cemiterio", "Senhas", "Telefonia", "Traces", "TrendVP"})
 BASES_SENSIVEIS_NUNCA = frozenset({"Internet"})
 BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 
@@ -36,6 +37,7 @@ BASES_NUNCA = BASES_DESCARTE | BASES_SENSIVEIS_NUNCA
 # (Base.schema.Tabela). Banco novo entra aqui por PR, nunca por variável de ambiente.
 BASES_PERMITIDAS = frozenset({
     "Saude", "Cemiterio", "ISS", "IPTU", "Divida", "Financeiro", "API SIL",  # conectores SQL/REST (POLITICAS)
+    "DBSENIOR",                                                            # folha nominal e dependentes (r034fun, r036dep)
     "FRA_GestaoEscolar", "FRA_CoreSSO",                                    # educação (LeitorGE)
     "Correios"})                                                           # DNE/CEP (#47)
 _DECORACAO = "[]\"'`;"
@@ -354,8 +356,21 @@ SIL = Politica(
     proibidas=frozenset({"Email", "Telefone", "LocalEntrega"}),
 )
 
+# Folha nominal e dependentes. Sem verba, salário ou desconto: a coluna "salario" já é recusada pelo guarda de nomes.
+# datafa (data da situação funcional) é o marco de procedência do servidor. r036dep não tem coluna de alteração;
+# a prata copia a datafa do titular para o dependente.
+SENIOR = Politica(
+    sistema="SENIOR", base="DBSENIOR",
+    colunas={
+        "r034fun": ("numemp", "tipcol", "numcad", "nomfun", "numcpf", "datnas", "datadm", "sitafa", "datafa"),
+        "r036dep": ("numemp", "tipcol", "numcad", "coddep", "nomdep", "numcpf", "datnas", "grapar"),
+    },
+    ordem={"r034fun": ("numemp", "tipcol", "numcad"), "r036dep": ("numemp", "tipcol", "numcad", "coddep")},
+    proibidas=frozenset({"valsal", "valeve", "descontos"}),
+)
+
 POLITICAS: dict[str, Politica] = {"SAUDE": SAUDE, "CEMITERIO": CEMITERIO, "ISS": ISS, "IPTU": IPTU,
-                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL}
+                                  "DIVIDA": DIVIDA, "FINANCEIRO": FINANCEIRO, "SIL": SIL, "SENIOR": SENIOR}
 
 
 def classifica_listagem(pol: Politica, nomes) -> tuple[list[str], list[tuple[str, str]]]:

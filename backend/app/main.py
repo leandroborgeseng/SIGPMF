@@ -19,6 +19,8 @@ from app.core.seguranca_log import instalar_filtro, mensagem_erro_banco
 from app.explorador.rotas import explorador
 from app.models.controle import Usuario
 from app.paineis.rotas import paineis
+from app.plano_governo.rotas import plano
+from app.portal_cidadao.rotas import portal
 
 log = logging.getLogger("sigpmf")
 
@@ -141,6 +143,15 @@ def create_app() -> FastAPI:
         app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins.split(","), allow_methods=["*"],
                            allow_headers=["*"])
 
+    @app.middleware("http")
+    async def privacidade_portal(req: Request, call_next):
+        resposta = await call_next(req)
+        if req.url.path.startswith("/api/portal/"):
+            resposta.headers["Cache-Control"] = "no-store"
+            resposta.headers["Referrer-Policy"] = "no-referrer"
+            resposta.headers["X-Content-Type-Options"] = "nosniff"
+        return resposta
+
     @app.exception_handler(DBAPIError)
     async def erro_banco(_req: Request, exc: DBAPIError):  # nunca str(exc): pode trazer DSN/usuário/senha
         log.error("Erro de banco na requisição: %s", type(exc.orig).__name__ if exc.orig is not None else type(exc).__name__)
@@ -154,6 +165,8 @@ def create_app() -> FastAPI:
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
     app.include_router(paineis, prefix="/api")  # onda 0: shell de painéis (P01–P08, K01–K04)
+    app.include_router(plano, prefix="/api")
+    app.include_router(portal, prefix="/api")
     app.include_router(chat, prefix="/api")  # chat de dados: agregados somente leitura
 
     return app

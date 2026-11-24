@@ -46,15 +46,18 @@ def carregado(client, tokens):
 
 def test_catalogo_tem_todas_as_bases_da_triagem(client, tokens):
     b = _bases(client, tokens["leitura"])
-    assert len(b) == len(BASES) == 74  # 73 bases SQL da triagem + API SIL
-    assert sum(1 for x in BASES if x[2] == "schema") == 40  # Financeiro (onda 2) e API SIL (OpenAPI) analisados
-    # ISS: 0006 (#8); IPTU, Divida e Financeiro: 0013 (onda 2, tributário)
+    assert len(b) == len(BASES) == 62  # 74 da triagem, menos as 12 bases retiradas (espelho, fotos, logs, GED)
+    assert sum(1 for x in BASES if x[2] == "schema") == 36  # DBSENIOR entrou como schema (folha nominal)
+    # ISS: 0006 (#8); IPTU, Divida e Financeiro: 0013 (onda 2, tributário); DBSENIOR: 0051
     assert {n for n, x in b.items() if x["status"] == "implementado"} == {"Saude", "Cemiterio", "ISS", "IPTU", "Divida",
-                                                                           "Financeiro", "API SIL"}
+                                                                           "Financeiro", "API SIL", "DBSENIOR"}
     fila = sorted((x["prioridade"], n) for n, x in b.items() if x["status"] == "mapeado")
     assert [n for _, n in fila] == ["CadastroUnico", "Protocolo_WEB", "Labor"]
-    for n in ("Senhas", "API_Usuario", "DBSENIOR", "LogSistemas", "Geral"):
+    for n in ("Senhas", "API_Usuario"):
         assert b[n]["status"] == "excluido"
+    assert b["DBSENIOR"]["status"] == "implementado" and b["DBSENIOR"]["conector_id"] == "senior"
+    from app.catalogo.bases import RETIRADAS
+    assert RETIRADAS.isdisjoint(b)
     assert b["Alvara"]["prioridade"] and b["IntegracaoJuridicoDivida"]["prioridade"]
 
 
