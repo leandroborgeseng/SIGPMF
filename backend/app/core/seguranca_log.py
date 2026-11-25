@@ -34,15 +34,46 @@ def mensagem_erro_banco(exc: BaseException) -> str:
     return f"Falha de acesso ao banco ({type(exc).__name__})."
 
 
+# Access log do uvicorn: logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method, full_path,
+# http_version, status_code). O AccessFormatter desempacota record.args. Renderizar a mensagem e
+# zerar args (o caminho dos outros logs) gera TypeError: cannot unpack non-iterable NoneType object
+# e a linha de acesso some. Aqui a tupla fica, com senha/DSN mascarados dentro das strings.
+def _args_access_uvicorn(record: logging.LogRecord) -> tuple | None:
+    if record.name != "uvicorn.access":
+        return None
+    args = record.args
+    if not isinstance(args, tuple) or len(args) != 5:
+        return None
+    client, method, path, version, status = args
+    if not all(isinstance(p, str) for p in (client, method, path, version)):
+        return None
+    if isinstance(status, bool) or not isinstance(status, int):
+        return None
+    return args
+
+
+def _mascarar_args_access(args: tuple) -> tuple:
+    client, method, path, version, status = args
+    return (mascarar(client), mascarar(method), mascarar(path), mascarar(version), status)
+
+
 class FiltroSegredos(logging.Filter):
-    """Mascara senha/DSN na mensagem, nos args e no traceback do registro. Nunca descarta o registro."""
+    """Mascara senha/DSN na mensagem, nos args e no traceback do registro. Nunca descarta o registro.
+
+    No access log do uvicorn a tupla de 5 args é preservada (o formatter do uvicorn a desempacota);
+    senha e DSN que estejam no caminho ou na query continuam mascarados.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            msg = record.getMessage()
-        except Exception:  # noqa: BLE001  (formatação quebrada: segue com o msg cru)
-            msg = str(record.msg)
-        record.msg, record.args = mascarar(msg), None
+        args_access = _args_access_uvicorn(record)
+        if args_access is not None:
+            record.args = _mascarar_args_access(args_access)
+        else:
+            try:
+                msg = record.getMessage()
+            except Exception:  # noqa: BLE001  (formatação quebrada: segue com o msg cru)
+                msg = str(record.msg)
+            record.msg, record.args = mascarar(msg), None
         if record.exc_info and not record.exc_text:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:

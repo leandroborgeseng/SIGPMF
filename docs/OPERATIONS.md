@@ -375,7 +375,7 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
 
 ## Bancos permitidos da origem SQL Server (R1/R2 do #49)
 - `autoriza_base` aceita só os bancos de `BASES_PERMITIDAS` (`app/connectors/sqlserver/politicas.py`): Saude,
-  Cemiterio, ISS, IPTU, Divida, Financeiro, API SIL, FRA_GestaoEscolar, FRA_CoreSSO e Correios. O nome é normalizado
+  Cemiterio, ISS, IPTU, Divida, Financeiro, API SIL, DBSENIOR, FRA_GestaoEscolar, FRA_CoreSSO e Correios. O nome é normalizado
   (NFKC, sem caracteres invisíveis, sem colchetes/aspas/`;`/espaços nas pontas, casefold); nome com qualquer decoração
   além de um par de colchetes é recusado (`base_nome_invalido`), banco de descarte/Internet dá `base_descartada` e o
   resto `base_fora_da_lista`. Banco novo entra só por PR. **Antes do deploy**, conferir que todo
@@ -391,5 +391,7 @@ O mesmo vale para qualquer outra fonte da educação (`--fonte <nome>`).
   Financeiro) e a conexão usa SEMPRE o nome canônico da lista, nunca o valor bruto da configuração. Nas contagens,
   bancos citados no SQL (`X.dbo.`, `[X].[dbo].`, `"X".dbo.`, `X..T`, `X.outro_schema.T`) também passam pela lista:
   fora dela a consulta fica `desligada` sem conectar. OPENQUERY/OPENROWSET/OPENDATASOURCE e nomes de 4 partes:
-  sempre `falha` com `acesso_remoto_recusado`. Hoje ficam desligadas: Q5/Q-A5 (Central), Q9 (CadastroUnico),
-  Q10 (DBSENIOR) e Q6 (cita Simples_Nacional).
+  sempre `falha` com `acesso_remoto_recusado`. Q5 (Central) e Q6 (cita Simples_Nacional) continuam de fora:
+  `ajustar` segue verdadeiro e só entram com `CONTAGENS_ATIVAS`. Q-A5 (Central) e Q9 (CadastroUnico) são
+  selecionadas, mas ficam `desligada` sem conectar (`base_fora_da_lista`). A Q10 (DBSENIOR) roda: desde o PR 98
+  o banco está em `BASES_PERMITIDAS` e `ajustar` continua falso.
