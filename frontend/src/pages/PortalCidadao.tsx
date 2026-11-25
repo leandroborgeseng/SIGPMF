@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../auth'
+import MinhaFicha, { fichaDemonstracao, type FichaVista, type Leitura } from '../portal/MinhaFicha'
 import '../portal-cidadao.css'
 
 type Parcela = { id: string; tributo: string; exercicio: number; parcela: number | null; imovel: string | null; vencimento: string | null; valor: number | null; situacao: 'pago' | 'vencido' | 'a_vencer' }
@@ -10,8 +11,11 @@ type Conta = { modo_teste?: boolean; nome: string; cpf: string; nascimento: stri
 type Config = { identificacao_disponivel: boolean; emissao_disponivel: boolean }
 const moeda = (v: number | null) => v == null ? 'Valor a consultar' : new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
 const data = (v: string | null) => v ? new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo' }).format(new Date(v.length === 10 ? v + 'T12:00:00Z' : v)) : 'Não informado'
-const nomes: Record<string, string> = { inicio: 'Início', tributos: 'IPTU e parcelas', acordos: 'Meus acordos', cadastro: 'Meu cadastro', imoveis: 'Meus imóveis' }
-const icones: Record<string, string> = { inicio: '⌂', tributos: '▤', acordos: '⇄', cadastro: '◎', imoveis: '▦' }
+const nomes: Record<string, string> = { inicio: 'Início', ficha: 'Minha ficha', tributos: 'IPTU e parcelas', acordos: 'Meus acordos', cadastro: 'Meu cadastro', imoveis: 'Meus imóveis' }
+const icones: Record<string, string> = { inicio: '⌂', ficha: '✦', tributos: '▤', acordos: '⇄', cadastro: '◎', imoveis: '▦' }
+const AREAS_FICHA = ['cadastro', 'tributario', 'saude', 'educacao', 'cemiterio', 'genealogia', 'linha', 'fontes'] as const
+const ROTA_FICHA: Record<(typeof AREAS_FICHA)[number], string> = { cadastro: '/me/cadastro', tributario: '/me/tributario', saude: '/me/saude', educacao: '/me/educacao', cemiterio: '/me/cemiterio', genealogia: '/me/genealogia', linha: '/me/linha-do-tempo', fontes: '/me/fontes' }
+const vistaVazia = (): FichaVista => ({ cadastro: null, tributario: null, saude: null, educacao: null, cemiterio: null, genealogia: null, linha: null, fontes: null, leituras: Object.fromEntries(AREAS_FICHA.map((k) => [k, 'carregando' as Leitura])) })
 const rotulos = { pago: 'Pago', vencido: 'Vencido', a_vencer: 'A vencer' }
 async function requisicao<T>(path: string, options: RequestInit = {}): Promise<T> {
   const r = await fetch('/api/portal' + path, { ...options, credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json', ...options.headers } })
@@ -42,10 +46,32 @@ export default function PortalCidadao() {
   const [acordos, setAcordos] = useState<Acordo[] | null>(null)
   const [erroAcordos, setErroAcordos] = useState('')
   const [guia, setGuia] = useState<{ url: string; mensagem: string } | null>(null)
+  const [ficha, setFicha] = useState<FichaVista | null>(null)
   const titulo = useRef<HTMLHeadingElement>(null)
   useEffect(() => { const anterior = document.title; document.title = 'Portal do Cidadão · Franca'; return () => { document.title = anterior } }, [])
   useEffect(() => { requisicao<Config>('/config').then(setConfig).catch(() => setConfig({ identificacao_disponivel: false, emissao_disponivel: false })); requisicao<Conta>('/me').then(setConta).catch(() => { /* Não há sessão do cidadão: mostra entrada. */ }) }, [])
   useEffect(() => { titulo.current?.focus(); window.scrollTo(0, 0) }, [tela, conta, etapa])
+  useEffect(() => {
+    if (tela !== 'ficha' || !conta || demo) return
+    let vivo = true
+    setFicha(vistaVazia())
+    Promise.all(AREAS_FICHA.map(async (chave) => {
+      try { return [chave, await requisicao<unknown>(ROTA_FICHA[chave]), 'ok' as Leitura] as const }
+      catch (err) { if ((err as { status?: number }).status === 401) throw err; return [chave, null, 'falha' as Leitura] as const }
+    })).then((pares) => {
+      if (!vivo) return
+      const prox = vistaVazia()
+      for (const [chave, corpo, leitura] of pares) {
+        prox.leituras[chave] = leitura
+        if (leitura === 'ok') (prox as unknown as Record<string, unknown>)[chave] = corpo
+      }
+      setFicha(prox)
+    }).catch((err) => {
+      if (!vivo) return
+      if ((err as { status?: number }).status === 401) { setConta(null); setFicha(null); setErro('Sua sessão terminou. Confirme sua identidade para entrar novamente.'); setEtapa('identificar') }
+    })
+    return () => { vivo = false }
+  }, [tela, conta, demo])
   useEffect(() => {
     if (!conta || demo) return
     const duracao = Date.parse(conta.expira_em) - Date.now()
@@ -76,7 +102,7 @@ export default function PortalCidadao() {
   }
   async function sair() {
     if (!demo && conta) { try { await requisicao('/sair', { method: 'POST', headers: { 'X-Portal-CSRF': conta.csrf } }) } catch { setErro('Não foi possível encerrar a sessão no servidor. Tente novamente.'); return } }
-    setConta(null); setDemo(false); setTela('inicio'); setEtapa('identificar'); setMensagem(''); setErro(''); setGuia(null); setAcordos(null)
+    setConta(null); setDemo(false); setFicha(null); setTela('inicio'); setEtapa('identificar'); setMensagem(''); setErro(''); setGuia(null); setAcordos(null)
   }
   async function emitir(tipo: 'lancamento' | 'acordo', id: string) {
     if (demo) { setMensagem('Esta é uma demonstração. No portal ativo, a guia será emitida pelo sistema tributário com os valores atualizados.'); return }
@@ -100,7 +126,8 @@ export default function PortalCidadao() {
       </form><div className="pc-privacidade"><b>{acessoTeste ? 'Teste sem envio de código' : 'Seus dados protegidos'}</b><p>{acessoTeste ? 'Sua sessão de administrador do SIGPMF autoriza o teste. CPF, nascimento e nome da mãe devem conferir com as bases internas; não é necessário e-mail ou celular cadastrado.' : 'Os dados cadastrais localizam seu registro. O código confirma o acesso pelo contato já cadastrado. Em computadores compartilhados, encerre a sessão ao terminar.'}</p></div>{config && !config.identificacao_disponivel && !acessoTeste && <p className="pc-disponibilidade">Acesso digital em preparação. Você já pode conhecer a demonstração do portal.</p>}</section></> : <>
         <div className="pc-titulo"><div><span className="pc-eyebrow">SEU ESPAÇO NA PREFEITURA</span><h1 ref={titulo} tabIndex={-1}>{tela === 'inicio' ? `Olá, ${conta.nome.split(' ')[0]}.` : nomes[tela]}</h1><p>{tela === 'inicio' ? 'O que você precisa resolver hoje?' : 'Informações do seu cadastro, com clareza e praticidade.'}</p></div><span className="pc-cpf">{conta.cpf}</span></div>
         {erro && <div className="pc-alerta erro" role="alert">{erro}</div>}{mensagem && <div className="pc-alerta" role="status">{mensagem}</div>}{guia && <div className="pc-guia" role="status"><h2>Sua guia está disponível</h2><p>{guia.mensagem}</p><a className="pc-btn" href={guia.url} target="_blank" rel="noopener noreferrer">Abrir guia oficial ↗</a></div>}
-        {tela === 'inicio' && <><section className="pc-resumo" aria-label="Resumo financeiro"><article><span>Em aberto na base consultada</span><strong>{moeda(conta.totais.em_aberto)}</strong><button onClick={() => { setFiltro('aberto'); mudar('tributos') }}>Ver parcelas →</button></article><article className="atencao"><span>Parcelas vencidas</span><strong>{moeda(conta.totais.vencido)}</strong><button onClick={() => { setFiltro('vencido'); mudar('tributos') }}>Consultar atualização →</button></article><article><span>Imóveis cadastrados</span><strong>{conta.imoveis.length}</strong><button onClick={() => mudar('imoveis')}>Ver meus imóveis →</button></article></section><p className="pc-nota">{conta.aviso_valores}</p><h2 className="pc-secao-titulo">Resolva por aqui</h2><div className="pc-atalhos">{(['tributos', 'acordos', 'cadastro'] as const).map(id => <button key={id} onClick={() => mudar(id)}><span className="pc-atalho-icon">{icones[id]}</span><b>{nomes[id]}</b><small>{id === 'tributos' ? 'Guias, parcelas vencidas e pagamentos' : id === 'acordos' ? 'Parcelamentos e próximos vencimentos' : 'Informações que temos sobre você'}</small><span className="pc-seta">→</span></button>)}</div><div className="pc-secao-head"><h2>Próximas pendências</h2><button className="pc-link" onClick={() => mudar('tributos')}>Ver todas →</button></div><div className="pc-parcelas">{conta.lancamentos.filter(p => p.situacao !== 'pago').slice(0, 3).map(cartaoParcela)}</div>{!conta.lancamentos.some(p => p.situacao !== 'pago') && <div className="pc-vazio">Nenhuma parcela em aberto na base consultada.</div>}</>}
+        {tela === 'ficha' && <MinhaFicha vista={demo ? fichaDemonstracao : (ficha ?? vistaVazia())} />}
+        {tela === 'inicio' && <><section className="pc-resumo" aria-label="Resumo financeiro"><article><span>Em aberto na base consultada</span><strong>{moeda(conta.totais.em_aberto)}</strong><button onClick={() => { setFiltro('aberto'); mudar('tributos') }}>Ver parcelas →</button></article><article className="atencao"><span>Parcelas vencidas</span><strong>{moeda(conta.totais.vencido)}</strong><button onClick={() => { setFiltro('vencido'); mudar('tributos') }}>Consultar atualização →</button></article><article><span>Imóveis cadastrados</span><strong>{conta.imoveis.length}</strong><button onClick={() => mudar('imoveis')}>Ver meus imóveis →</button></article></section><p className="pc-nota">{conta.aviso_valores}</p><h2 className="pc-secao-titulo">Resolva por aqui</h2><div className="pc-atalhos">{(['ficha', 'tributos', 'acordos', 'cadastro'] as const).map(id => <button key={id} onClick={() => mudar(id)}><span className="pc-atalho-icon">{icones[id]}</span><b>{nomes[id]}</b><small>{id === 'ficha' ? 'Cadastro, impostos, saúde, educação, cemitério e família' : id === 'tributos' ? 'Guias, parcelas vencidas e pagamentos' : id === 'acordos' ? 'Parcelamentos e próximos vencimentos' : 'Informações que temos sobre você'}</small><span className="pc-seta">→</span></button>)}</div><div className="pc-secao-head"><h2>Próximas pendências</h2><button className="pc-link" onClick={() => mudar('tributos')}>Ver todas →</button></div><div className="pc-parcelas">{conta.lancamentos.filter(p => p.situacao !== 'pago').slice(0, 3).map(cartaoParcela)}</div>{!conta.lancamentos.some(p => p.situacao !== 'pago') && <div className="pc-vazio">Nenhuma parcela em aberto na base consultada.</div>}</>}
         {tela === 'tributos' && <><p className="pc-nota">{conta.aviso_valores}</p><div className="pc-filtros"><label>Mostrar<select value={filtro} onChange={e => setFiltro(e.target.value)}><option value="aberto">Em aberto</option><option value="vencido">Vencidas</option><option value="a_vencer">A vencer</option><option value="pago">Pagas</option><option value="todos">Todas</option></select></label><label>Imóvel<select value={imovel} onChange={e => setImovel(e.target.value)}><option value="">Todos os imóveis / lançamentos</option>{conta.imoveis.map(i => <option key={i.id} value={i.id}>{i.inscricao || i.id}</option>)}</select></label></div><div className="pc-parcelas">{parcelas.map(cartaoParcela)}</div>{!parcelas.length && <div className="pc-vazio">Nenhuma parcela encontrada para este filtro.</div>}{conta.lista_limitada && <p className="pc-nota">Exibindo até 300 lançamentos recentes. O resumo considera apenas esta lista; consulte o atendimento para o histórico completo.</p>}</>}
         {tela === 'acordos' && <><p className="pc-nota">A situação e o valor atualizado de cada acordo são consultados no sistema tributário. Emitir uma guia não cria um novo acordo.</p>{erroAcordos ? <div className="pc-vazio" role="status"><h2>Consulta de acordos indisponível</h2><p>{erroAcordos}</p></div> : acordos === null ? <p role="status">Consultando seus acordos…</p> : acordos.length ? <div className="pc-parcelas">{acordos.map(a => <article className="pc-parcela" key={a.id}><span className="pc-status a_vencer">{a.situacao}</span><h3>{a.descricao}</h3><div className="pc-valor"><strong>{moeda(a.valor)}</strong><span>Vencimento {data(a.vencimento)}</span></div><button className="pc-btn pc-outline" disabled={busy} onClick={() => emitir('acordo', a.id)}>Consultar guia do acordo ↗</button></article>)}</div> : <div className="pc-vazio">Nenhum acordo foi retornado pelo sistema tributário.</div>}</>}
         {tela === 'cadastro' && <><section className="pc-cadastro"><h2>Seus dados cadastrais</h2><dl><div><dt>Nome</dt><dd>{conta.nome}</dd></div><div><dt>CPF</dt><dd>{conta.cpf}</dd></div><div><dt>Nascimento</dt><dd>{data(conta.nascimento)}</dd></div>{conta.cadastro.map((d, i) => <div key={i}><dt>{{ endereco: 'Endereço', email: 'E-mail', telefone: 'Telefone' }[d.campo] || d.campo}</dt><dd>{d.valor || 'Não informado'}<small>{d.fonte} · atualização {data(d.atualizado_em)}</small></dd></div>)}</dl></section><div className="pc-alerta"><b>Encontrou alguma informação incorreta?</b><p>Solicite a atualização no atendimento municipal. A alteração precisa ser conferida antes de substituir o registro oficial.</p></div></>}
