@@ -200,11 +200,31 @@ function PainelUsuario({ usuario }: { usuario: UsuarioAchado }) {
 export const MSG_PROPRIO_ACESSO = 'Você não pode alterar o seu próprio acesso. Peça a outro administrador.'
 export const MSG_TODAS_LGPD = 'O acesso a todas as secretarias só pode ser concedido pelo responsável LGPD.'
 
+/** Junta detail string, objeto ({code|razao|message}) e code no topo — os formatos que a API pode devolver. */
+function textosErro(v: unknown, acc: string[]): void {
+  if (typeof v === 'string') { acc.push(v); return }
+  if (Array.isArray(v)) { v.forEach((x) => textosErro(x, acc)); return }
+  if (!v || typeof v !== 'object') return
+  const o = v as Record<string, unknown>
+  for (const k of ['code', 'codigo', 'razao', 'detail', 'message', 'msg']) {
+    if (k in o) textosErro(o[k], acc)
+  }
+}
+
+/** 403 de auto-vínculo: código auto_alteracao, ou o texto «próprio acesso» / «a si mesmo» no detail. */
+function ehProprioAcesso(e: ApiErro): boolean {
+  const acc = [e.message]
+  textosErro(e.corpo, acc)
+  const t = acc.join('\n').toLowerCase()
+  return t.includes('auto_alteracao') || t.includes('próprio acesso') || t.includes('proprio acesso') || t.includes('a si mesmo')
+}
+
 function msgErro(e: unknown): string {
-  if (e instanceof ApiErro && e.status === 409) return CONFLITO
-  if (e instanceof ApiErro && e.status === 422 && e.message.startsWith('A data de fim')) return e.message
-  if (e instanceof ApiErro && e.status === 403 && e.message.includes('a si mesmo')) return MSG_PROPRIO_ACESSO
-  if (e instanceof ApiErro && e.status === 422 && e.message.startsWith('O acesso de prefeito')) return MSG_TODAS_LGPD
+  if (!(e instanceof ApiErro)) return ERRO_SALVAR
+  if (e.status === 409) return CONFLITO
+  if (e.status === 422 && e.message.startsWith('A data de fim')) return e.message
+  if (e.status === 403 && ehProprioAcesso(e)) return MSG_PROPRIO_ACESSO
+  if (e.status === 422 && e.message.startsWith('O acesso de prefeito')) return MSG_TODAS_LGPD
   return ERRO_SALVAR
 }
 

@@ -1,8 +1,23 @@
 import { cabecalhoMotivo, limpaMotivo } from './motivo'
 export class ApiErro extends Error {
-  constructor(public status: number, message: string) {
+  /** `corpo` é o JSON da resposta (detail string, objeto ou code). A mensagem continua o texto, quando houver. */
+  constructor(public status: number, message: string, public corpo: unknown = null) {
     super(message)
   }
+}
+
+/** Texto legível do erro. detail string entra direto; objeto só contribui se tiver message/msg/detail em texto. */
+function textoDetalhe(corpo: unknown): string | null {
+  if (!corpo || typeof corpo !== 'object') return null
+  const detail = (corpo as { detail?: unknown }).detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const o = detail as Record<string, unknown>
+    for (const k of ['message', 'msg', 'detail'] as const) {
+      if (typeof o[k] === 'string') return o[k]
+    }
+  }
+  return null
 }
 
 const CHAVE = 'sigpmf_sessao'
@@ -34,13 +49,15 @@ export async function api<T>(caminho: string, opcoes: RequestInit = {}): Promise
   }
   if (!r.ok) {
     let msg = 'Erro inesperado.'
+    let corpo: unknown = null
     try {
-      const d = await r.json()
-      if (typeof d.detail === 'string') msg = d.detail
+      corpo = await r.json()
+      const texto = textoDetalhe(corpo)
+      if (texto) msg = texto
     } catch {
       /* corpo sem JSON */
     }
-    throw new ApiErro(r.status, msg)
+    throw new ApiErro(r.status, msg, corpo)
   }
   return r.json() as Promise<T>
 }
