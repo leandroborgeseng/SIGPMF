@@ -313,7 +313,7 @@ def test_sf7_outros_mascarados_e_revelar_com_motivo(monkeypatch, client, tokens,
 
 # ------------------------------------------------------------------ SF8
 def test_sf8_migration_allowlist_e_auditoria_da_ficha():
-    txt = Path(__file__).resolve().parents[1].joinpath("alembic/versions/0052_sei_revisao_interessado.py").read_text()
+    txt = Path(__file__).resolve().parents[1].joinpath("alembic/versions/0053_sei_revisao_interessado.py").read_text()
     upgrade = txt.split("def downgrade")[0].upper()
     assert "IF NOT EXISTS" in upgrade
     for proibido in ("DROP ", "DELETE ", "TRUNCATE"):

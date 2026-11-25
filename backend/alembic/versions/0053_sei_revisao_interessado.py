@@ -3,13 +3,13 @@
 O nome (sem documento) fica em controle, fora do catálogo do chat. Não apaga linha.
 Reaplicar não recria a tabela.
 
-Revision ID: 0052
-Revises: 0051
+Revision ID: 0053
+Revises: 0052
 """
 from alembic import op
 
-revision = "0052"
-down_revision = "0051"
+revision = "0053"
+down_revision = "0052"
 branch_labels = None
 depends_on = None
 
