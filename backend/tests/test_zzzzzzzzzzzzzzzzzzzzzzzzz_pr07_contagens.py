@@ -206,13 +206,16 @@ def test_j4_banco_recusa_cpf_abaixo_do_limiar(db, cenario):
     db.rollback()
 
 
-def test_j4_lista_so_admin_lgpd_e_auditada(client, tokens, db, cenario):
+@pytest.mark.parametrize("rbac", ["false", "true"])
+def test_j4_lista_so_admin_lgpd_e_auditada(client, tokens, db, cenario, monkeypatch, rbac):
+    """Vale com SIGPMF_RBAC_SECRETARIA desligada e ligada: o admin_lgpd envia X-SIGPMF-Motivo (front #54)."""
+    monkeypatch.setenv("SIGPMF_RBAC_SECRETARIA", rbac)
     ex = job.executar(db, None, conectar=lambda b: Conn(_respostas))
     url = f"/api/contagens/{ex.id}/cpfs-repetidos"
     for perfil in ("admin", "operador", "leitura"):
         assert client.get(url, headers=tokens[perfil]).status_code == 403
     antes = db.execute(text("select count(*) from controle.auditoria where acao='contagens_cpf_repetido_leitura'")).scalar()
-    r = client.get(url, headers=tokens["admin_lgpd"])
+    r = client.get(url, headers={**tokens["admin_lgpd"], "X-SIGPMF-Motivo": "ZZTESTE auditoria de qualidade"})
     assert r.status_code == 200 and r.json()["itens"][0]["cpf"] == CPF_REP and r.json()["limiar"] == 50
     db.expire_all()
     depois = db.execute(text("select count(*) from controle.auditoria where acao='contagens_cpf_repetido_leitura'")).scalar()
@@ -221,6 +224,14 @@ def test_j4_lista_so_admin_lgpd_e_auditada(client, tokens, db, cenario):
     assert ult.status_code == 200 and CPF_REP not in ult.text
     assert client.get("/api/contagens/ultima", headers=tokens["leitura"]).status_code == 403
     assert client.post("/api/contagens/executar", headers=tokens["operador"]).status_code == 403
+
+
+def test_j4_admin_lgpd_sem_motivo_400_com_regra_ligada(client, tokens, db, cenario, monkeypatch):
+    monkeypatch.setenv("SIGPMF_RBAC_SECRETARIA", "true")
+    ex = job.executar(db, None, conectar=lambda b: Conn(_respostas))
+    url = f"/api/contagens/{ex.id}/cpfs-repetidos"
+    assert client.get(url, headers=tokens["admin_lgpd"]).status_code == 400
+    assert client.get(url, headers={**tokens["admin_lgpd"], "X-SIGPMF-Motivo": "curto"}).status_code == 400
 
 
 def test_marcadas_ajustar_so_rodam_liberadas(monkeypatch):

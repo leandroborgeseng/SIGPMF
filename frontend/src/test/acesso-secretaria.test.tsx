@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { salvaSessao } from '../api'
 import { AuthProvider } from '../auth'
-import AcessoSecretaria from '../pages/AcessoSecretaria'
+import AcessoSecretaria, { MSG_PROPRIO_ACESSO } from '../pages/AcessoSecretaria'
 
 const usuario = { id: 7, nome: 'ZZTESTE Maria', email: 'zzteste.maria@aion.local', perfil: 'leitura', secretarias: 2 }
 const vinculos = [
@@ -136,6 +136,66 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     expect(screen.getByLabelText('Secretaria')).toHaveValue('EDUCACAO')
   })
 
+  it('UX #50: 403 de auto-vínculo mostra o texto fixo e mantém o formulário preenchido', async () => {
+    mock({ '/vinculos/adicionar': { status: 403, corpo: { detail: 'Você não pode conceder acesso a si mesmo.' } } })
+    tela()
+    await abreUsuario()
+    await userEvent.click(screen.getByRole('button', { name: 'Adicionar secretaria' }))
+    await userEvent.selectOptions(screen.getByLabelText('Secretaria'), 'EDUCACAO')
+    await userEvent.type(screen.getByLabelText('Data de fim (opcional)'), '2099-12-31')
+    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }))
+    expect(await screen.findByText('Você não pode alterar o seu próprio acesso. Peça a outro administrador.')).toBeVisible()
+    expect(screen.getByLabelText('Secretaria')).toHaveValue('EDUCACAO')
+    expect(screen.getByLabelText('Data de fim (opcional)')).toHaveValue('2099-12-31')
+  })
+
+  it('editar o próprio vínculo: 403 auto_alteracao mostra MSG_PROPRIO_ACESSO e mantém o formulário', async () => {
+    // Formato real do backend: detail string. O código auto_alteracao vai no mesmo corpo (objeto ou code).
+    mock({ '/vinculos/editar': { status: 403, corpo: { detail: 'Você não pode alterar o seu próprio acesso.', code: 'auto_alteracao' } } })
+    tela()
+    await abreUsuario()
+    await userEvent.click(screen.getByRole('button', { name: 'Editar vigência de Secretaria de Saúde' }))
+    const dlg = screen.getByRole('dialog')
+    await userEvent.type(within(dlg).getByLabelText('Data de fim (opcional)'), '2099-12-31')
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Salvar' }))
+    expect(await within(dlg).findByText(MSG_PROPRIO_ACESSO)).toBeVisible()
+    expect(screen.queryByText('Não foi possível salvar. Tente de novo.')).toBeNull()
+    expect(within(dlg).getByLabelText('Data de início')).toHaveValue('2026-01-01')
+    expect(within(dlg).getByLabelText('Data de fim (opcional)')).toHaveValue('2099-12-31')
+  })
+
+  it('remover o próprio vínculo: 403 auto_alteracao (detail objeto) mostra MSG_PROPRIO_ACESSO e mantém o motivo', async () => {
+    mock({ '/vinculos/remover': { status: 403, corpo: { detail: { code: 'auto_alteracao' } } } })
+    tela()
+    await abreUsuario()
+    await userEvent.click(screen.getByRole('button', { name: 'Remover Secretaria de Saúde' }))
+    const dlg = screen.getByRole('dialog')
+    const motivo = 'ZZTESTE motivo de auditoria'
+    await userEvent.type(within(dlg).getByLabelText('Motivo (obrigatório)'), motivo)
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Remover acesso' }))
+    expect(await within(dlg).findByText(MSG_PROPRIO_ACESSO)).toBeVisible()
+    expect(screen.queryByText('Não foi possível salvar. Tente de novo.')).toBeNull()
+    expect(within(dlg).getByLabelText('Motivo (obrigatório)')).toHaveValue(motivo)
+    expect(screen.getByRole('dialog')).toBeVisible()
+  })
+
+  it('UX #50: "Todas as secretarias" fora do select de Adicionar; 422 do fluxo TODAS mostra o texto do responsável LGPD', async () => {
+    mock({
+      '/secretarias': { corpo: [{ codigo: 'TODAS', nome: 'Todas as secretarias' }, { codigo: 'EDUCACAO', nome: 'Secretaria de Educação' }] },
+      '/vinculos/adicionar': { status: 422, corpo: { detail: 'O acesso de prefeito é concedido só pelo perfil admin_lgpd, em fluxo próprio.' } },
+    })
+    tela()
+    await abreUsuario()
+    await userEvent.click(screen.getByRole('button', { name: 'Adicionar secretaria' }))
+    const opcoes = within(screen.getByLabelText('Secretaria')).getAllByRole('option').map((o) => o.textContent)
+    expect(opcoes).not.toContain('Todas as secretarias')
+    expect(screen.getByLabelText('Secretaria')).toHaveClass('campo-select')  // B5
+    await userEvent.selectOptions(screen.getByLabelText('Secretaria'), 'EDUCACAO')
+    await userEvent.click(screen.getByRole('button', { name: 'Salvar' }))
+    expect(await screen.findByText('O acesso a todas as secretarias só pode ser concedido pelo responsável LGPD.')).toBeVisible()
+    expect(screen.getByLabelText('Secretaria')).toHaveValue('EDUCACAO')
+  })
+
   it('formulário: Salvar desabilitado sem secretaria e fim antes do início com erro escrito', async () => {
     mock()
     tela()
@@ -175,5 +235,13 @@ describe('PR-06 tela de TI: acesso por secretaria', () => {
     expect(det.querySelector('time')).toHaveTextContent(/ BRT$/)
     const r = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } })
     expect(r.violations).toEqual([])
+  })
+})
+
+describe('B4 (#54)', () => {
+  it('index.html declara lang="pt-BR" no <html>', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    expect(readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')).toMatch(/<html lang="pt-BR">/)
   })
 })

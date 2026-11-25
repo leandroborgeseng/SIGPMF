@@ -6,6 +6,7 @@ import App from '../App'
 import { salvaSessao } from '../api'
 import { AuthProvider } from '../auth'
 import { formata, plural } from '../explorar'
+import { defineMotivo, limpaMotivo } from '../motivo'
 
 // Somente dados sintéticos, já mascarados como o backend devolve.
 const CPF = '52998224725'
@@ -56,11 +57,12 @@ function mock(over: Partial<Record<string, Rota>> = {}, revelar = false) {
 }
 const montar = (perfil: string) => {
   salvaSessao({ token: 't', perfil, nome: 'T' })
+  if (perfil === 'admin_lgpd') defineMotivo('ZZTESTE auditoria de qualidade')
   return render(<MemoryRouter initialEntries={['/explorar']}><AuthProvider><App /></AuthProvider></MemoryRouter>)
 }
 const abaAmostra = async (u: ReturnType<typeof userEvent.setup>) => { await u.click(await screen.findByRole('tab', { name: 'Amostra' })) }
 
-beforeEach(() => sessionStorage.clear())
+beforeEach(() => { sessionStorage.clear(); limpaMotivo() })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('Explorar dados', () => {

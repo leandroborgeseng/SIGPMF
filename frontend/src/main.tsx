@@ -20,3 +20,6 @@ createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </StrictMode>,
 )
+
+// B4 (#54): pt-BR no <html> (também em index.html) para datas em dd/mm/aaaa
+document.documentElement.lang = 'pt-BR'
