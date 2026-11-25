@@ -7,14 +7,15 @@
 - Andamento: id, processo, tarefa, data/hora e unidade. Descrição (texto livre) e usuário não entram. O
   andamentosCompletoResponse (OpenAPI) não traz nível de acesso: o sigilo vem do processo pai já gravado como
   público na bronze (mesmo ambiente). Processo restrito, sigiloso ou desconhecido: andamento descartado.
-- Interessado: CPF válido (campo cpf ou sigla com 11 dígitos) -> cidadao_id (uuid5 do CPF, peso 1.0). Sem CPF
-  válido: o nome vai para revisão (pendencia=revisao_nome), sem vínculo automático.
-- Visão: CPF e nome em claro só para admin_lgpd via revelar (motivo + auditoria); os demais veem mascarado.
+- Interessado: CPF válido (campo cpf ou sigla com 11 dígitos) -> cidadao_id (uuid5 do CPF, peso 1.0).
+  CNPJ válido (campo cnpj ou sigla com 14 posições) -> empresa_id (uuid5 do CNPJ, peso 1.0), sem cidadao_id.
+  Sem CPF/CNPJ válido: o nome vai para revisão (pendencia=revisao_nome), sem vínculo automático.
+- Visão: CPF, CNPJ e nome em claro só para admin_lgpd via revelar (motivo + auditoria); os demais veem mascarado.
 """
 from typing import Any, NamedTuple
 
 from app.identity.correlacao import cidadao_id_por_cpf
-from app.identity.cpf import mascara, normaliza, valido
+from app.identity.cpf import mascara, valido
 from app.identity.nome import mascara_nome
 
 PUBLICO = "0"
@@ -47,22 +48,49 @@ def processo_publico(det: dict) -> bool:
 
 
 def projeta_interessado(i: dict) -> dict:
-    doc = normaliza(_t(i.get("cpf")) or _t(i.get("sigla")) or "") or ""
+    from app.identity import documento as docmod
+    from app.identity.correlacao import empresa_id_por_cnpj
+
+    bruto = _t(i.get("cpf")) or _t(i.get("cnpj")) or _t(i.get("sigla")) or ""
+    doc = docmod.normaliza(bruto) or ""
     nome = _t(i.get("nome"))
+    base = {"cpf": None, "cnpj": None, "nome": nome, "cidadao_id": None, "empresa_id": None,
+            "peso": None, "pendencia": None}
     if len(doc) == 11 and valido(doc):
-        return {"cpf": doc, "nome": nome, "cidadao_id": cidadao_id_por_cpf(doc), "peso": 1.0, "pendencia": None}
-    return {"cpf": None, "nome": nome, "cidadao_id": None, "peso": None,
-            "pendencia": "revisao_nome" if nome else "sem_identificacao"}
+        return {**base, "cpf": doc, "cidadao_id": cidadao_id_por_cpf(doc), "peso": 1.0}
+    if len(doc) == 14 and docmod.cnpj_valido(doc):
+        return {**base, "cnpj": doc, "empresa_id": empresa_id_por_cnpj(doc), "peso": 1.0}
+    return {**base, "pendencia": "revisao_nome" if nome else "sem_identificacao"}
+
+
+def _ultimo_andamento(det: dict) -> dict | None:
+    """Último andamento do detalhe (sinRetornarUltimoAndamento). Sem usuário nem texto além da descrição."""
+    bruto = None
+    for k in ("ultimoAndamento", "UltimoAndamento", "andamentoAtual", "ultimaMovimentacao"):
+        if isinstance(det.get(k), dict):
+            bruto = det[k]
+            break
+    if bruto is None:
+        return None
+    desc = _t(bruto.get("descricao") if bruto.get("descricao") is not None else bruto.get("Descricao"))
+    unid = bruto.get("unidade") if isinstance(bruto.get("unidade"), dict) else bruto.get("Unidade")
+    return {"data_hora": _t(bruto.get("dataHora") or bruto.get("data")),
+            "descricao": desc[:300] if desc else None, "id_tarefa": _t(bruto.get("idTarefa")),
+            "unidade": _unidade(unid)}
 
 
 def projeta_processo(det: dict, ambiente: str) -> dict:
     tipos = det.get("TipoProcedimento") or []
     tipo = tipos[0] if isinstance(tipos, list) and tipos and isinstance(tipos[0], dict) else {}
     ger = det.get("andamentoGeracao") if isinstance(det.get("andamentoGeracao"), dict) else {}
+    ult = _ultimo_andamento(det)
+    ger_u = _unidade(ger.get("unidade"))
+    unid = (ult or {}).get("unidade") or {}
     return {"id_procedimento": _t(det.get("idProcedimento")), "protocolo": _t(det.get("procedimentoFormatado")),
             "data_autuacao": _t(det.get("dataAutuacao")), "nivel_acesso": PUBLICO,
             "tipo": {"id": _t(tipo.get("idTipoProcedimento")), "nome": _t(tipo.get("nome"))},
-            "unidade_geradora": _unidade(ger.get("unidade")),
+            "unidade_geradora": ger_u, "unidade_atual": (unid or {}).get("sigla") or (ger_u or {}).get("sigla"),
+            "ultimo_andamento": ult,
             "assuntos": [_t(a.get("codigoEstruturado")) for a in det.get("assuntos") or [] if isinstance(a, dict)],
             "interessados": [projeta_interessado(i) for i in det.get("interessados") or [] if isinstance(i, dict)],
             "ambiente_origem": ambiente}
@@ -144,8 +172,15 @@ def nivel_processo(det: dict) -> str | None:
 
 
 def visao_interessados(lista: list[dict], perfil: str, revela: bool = False) -> list[dict]:
-    """Fora do revelar (admin_lgpd + motivo), CPF e nome saem mascarados para todos os perfis."""
+    """Fora do revelar (admin_lgpd + motivo), CPF, CNPJ e nome saem mascarados para todos os perfis."""
     if revela and perfil in PERFIS_REVELAM:
         return [dict(i) for i in lista]
-    return [{**i, "cpf": mascara(i.get("cpf")) if i.get("cpf") else None, "nome": mascara_nome(i.get("nome"))}
-            for i in lista]
+    from app.identity import documento as docmod
+    out = []
+    for i in lista:
+        item = dict(i)
+        item["cpf"] = mascara(i.get("cpf")) if i.get("cpf") else None
+        item["cnpj"] = docmod.mascara(i.get("cnpj")) if i.get("cnpj") else None
+        item["nome"] = mascara_nome(i.get("nome"))
+        out.append(item)
+    return out

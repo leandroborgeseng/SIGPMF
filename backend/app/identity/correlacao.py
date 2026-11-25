@@ -31,6 +31,16 @@ def cidadao_id_por_cpf(cpf: str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"cpf:{d}"))
 
 
+def empresa_id_por_cnpj(cnpj: str) -> str:
+    """uuid5 do CNPJ válido (numérico ou alfanumérico). A ficha da empresa usa este id, nunca o documento na URL."""
+    from app.identity import documento as docmod
+
+    d = docmod.normaliza(cnpj)
+    if d is None or not docmod.cnpj_valido(d):
+        raise ValueError(docmod.MOTIVO_CNPJ_INVALIDO)
+    return str(uuid.uuid5(NAMESPACE, f"cnpj:{d}"))
+
+
 def cidadao_id_por_origem(sistema: str, tabela: str, id_origem: str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"origem:{sistema}:{tabela}:{id_origem}"))
 

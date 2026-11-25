@@ -452,6 +452,10 @@ PESSOAIS = {
     ("GET", "/api/gold/cidadaos/{cid}/acessos"), ("GET", "/api/vinculos/{no_id}"), ("GET", "/api/gold/cidadaos/{cid}/sistemas"),
     ("POST", "/api/silver/pendencias/{pid}/confirmar-obito"), ("GET", "/api/gold/cidadaos/{cid}/educacao"),
     ("GET", "/api/gold/cidadaos/{cid}/genealogia"),
+    ("GET", "/api/gold/cidadaos/{cid}/sei"), ("POST", "/api/gold/cidadaos/{cid}/sei/interessados"),
+    ("POST", "/api/gold/cidadaos/{cid}/sei/interessados/revelar"),
+    ("GET", "/api/gold/empresas/{empresa_id}/sei"), ("POST", "/api/gold/empresas/{empresa_id}/sei/interessados"),
+    ("POST", "/api/gold/empresas/{empresa_id}/sei/interessados/revelar"),
     ("POST", "/api/explorar/conectores"), ("POST", "/api/explorar/tabelas"), ("POST", "/api/explorar/perfil"),
     ("POST", "/api/explorar/amostra"), ("POST", "/api/explorar/funil"), ("POST", "/api/explorar/linhagem"),
     ("POST", "/api/explorar/revelar"), ("POST", "/api/sei/interessados"), ("POST", "/api/sei/interessados/revelar"),
@@ -501,10 +505,11 @@ NAO_PESSOAIS = {("GET", "/api/gold/ficha/fontes"),   # operação, catálogo, ag
 def _rotas_app():
     from app.api.acesso_ti import ti
     from app.api.rotas import api, publico
+    from app.connectors.sei.ficha_rotas import ficha_sei
     from app.connectors.sei.rotas import sei
     from app.contagens.rotas import contagens
     from app.explorador.rotas import explorador
-    return {(m, "/api" + r.path) for R in (api, publico, explorador, sei, ti, contagens) for r in R.routes for m in r.methods - {"HEAD"}}
+    return {(m, "/api" + r.path) for R in (api, publico, explorador, sei, ficha_sei, ti, contagens) for r in R.routes for m in r.methods - {"HEAD"}}
 
 
 def test_qa2_toda_rota_do_app_esta_classificada():
