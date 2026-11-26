@@ -49,7 +49,7 @@ MODOS = ("completa", "incremental")
 MSG_CAMADAS_MANTIDAS = "Nada mudou nas entradas da prata e do ouro: reconstrução pulada (resultado idêntico)."
 CONECTORES_COMPLETA = ("saude", "cemiterio", "iptu", "divida", "financeiro", "sil", "senior")
 NOMES = {"saude": "Saúde", "cemiterio": "Cemitério", "iptu": "IPTU", "divida": "Dívida ativa", "financeiro": "Financeiro",
-         "sil": "API SIL"}
+         "sil": "API SIL", "senior": "Senior"}
 
 
 SEM_AMOSTRA = "Rode a amostra acima e aprove o resultado para liberar a carga completa."
@@ -651,7 +651,7 @@ def _finaliza_parcial(db: Session, ex: Execucao, conector: str, parcial: dict, t
               f"{parcial['alerta']['ccms_distintos']} CCM distinto(s) em {parcial['alerta']['itens']} itens)"
               if parcial.get("alerta") else "teto SIL_MAX_LOTES_POR_EXECUCAO")
     _finaliza(db, ex, STATUS_PARCIAL,
-              f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem de {NOMES[conector]} "
+              f"parcial: {parcial['lotes_lidos']} lote(s) lido(s), há mais na origem de {NOMES.get(conector, conector)} "
               f"({motivo}). lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados}. "
               "Não é carga completa: prata e ouro não foram reconstruídas; a próxima execução continua de onde parou.",
               extra=parcial)
@@ -723,7 +723,7 @@ def rodar(ex_id: int, conector: str, trava, leitor=None, db: Session | None = No
             ex.tabela_atual = None
             _registra_erro_sil(db, ex, exc)
             motivo = str(exc) if isinstance(exc, ChaveInvalida | PrataInconsistente | CheckpointIncompativel) else ex.erro_publico()["motivo"]
-            _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES[conector]}: {motivo}. "
+            _finaliza(db, ex, "falha", f"Falha na carga completa de {NOMES.get(conector, conector)}: {motivo}. "
                                        "O que já entrou foi mantido; use Tentar de novo para retomar.")
     finally:
         if proprio:
@@ -781,7 +781,7 @@ def _executa(db: Session, ex: Execucao, conector: str, sistema: str, leitor) -> 
                 db.refresh(ex)
                 if ex.cancelar:
                     ex.tabela_atual = None
-                    return _finaliza(db, ex, "cancelada", f"Carga completa de {NOMES[conector]} cancelada. "
+                    return _finaliza(db, ex, "cancelada", f"Carga completa de {NOMES.get(conector, conector)} cancelada. "
                                      "Nada foi apagado; ao iniciar de novo, ela retoma do ponto em que parou.")
                 disco = recursos.motivo_disco_cheio(recursos.limite_pausa(), exige_leitura=True)
                 if disco:
@@ -938,11 +938,11 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
     lido = f"lidos={ex.lidos} novos={ex.novos} atualizados={ex.atualizados} ignorados={ex.ignorados}"
     if parcial_ate is not None:  # PP2/PP3: sem reconciliação (a leitura não terminou); checkpoint intacto
         return _finaliza(db, ex, STATUS_PARCIAL, f"Camadas sobre leitura parcial (até {parcial_ate}) de "
-                                                 f"{NOMES[conector]}: {resumo}. Não é carga completa: o checkpoint "
+                                                 f"{NOMES.get(conector, conector)}: {resumo}. Não é carga completa: o checkpoint "
                                                  "continua aberto e a próxima carga segue de onde parou.",
                          {"camadas_parcial": True, "ate": parcial_ate})
     if ex.modo == "incremental":  # a reconciliação compara com o COUNT(*) da última completa: não vale aqui
-        return _finaliza(db, ex, "sucesso", f"Carga incremental de {NOMES[conector]} concluída: {lido} {resumo}")
+        return _finaliza(db, ex, "sucesso", f"Carga incremental de {NOMES.get(conector, conector)} concluída: {lido} {resumo}")
     rec = reconciliacao(db, sistema)
     ok = all(r["ok"] for r in rec.values())
     db.add(Log(execucao_id=ex.id, nivel="INFO" if ok else "WARN",
@@ -954,7 +954,7 @@ def _camadas(db: Session, ex: Execucao, conector: str, sistema: str, pode_pular:
     quar = max(quar_total - pulos, 0)  # chave nula e demais motivos (texto de sempre)
     res_rec = ("ok com pendências" if quar_total else "ok") if ok else "divergente"
     aviso = tabelas_vazias.alerta(ex)
-    _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES[conector]} concluída: {lido} {resumo} "
+    _finaliza(db, ex, "sucesso", f"Carga completa de {NOMES.get(conector, conector)} concluída: {lido} {resumo} "
                                  f"reconciliacao={res_rec}"
                                  + (f"; {quar} linha(s) em quarentena (chave nula)" if quar else "")
                                  + (f"; {pulos} Sequencia(s) pulada(s) em quarentena (resposta inesperada da API SIL)"
@@ -1252,7 +1252,7 @@ def _executa_incremental(db: Session, ex: Execucao, conector: str, sistema: str,
                 db.refresh(ex)
                 if ex.cancelar:
                     ex.tabela_atual = None
-                    return _finaliza(db, ex, "cancelada", f"Carga incremental de {NOMES[conector]} cancelada. "
+                    return _finaliza(db, ex, "cancelada", f"Carga incremental de {NOMES.get(conector, conector)} cancelada. "
                                                           "O que já entrou foi mantido.")
                 disco = recursos.motivo_disco_cheio(recursos.limite_pausa(), exige_leitura=True)
                 if disco:
