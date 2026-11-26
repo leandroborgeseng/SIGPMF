@@ -4,12 +4,13 @@ import { api, ApiErro, dataBR } from '../api'
 import { useAuth } from '../auth'
 import { Erro, ErrorBoundary, Esqueleto } from '../componentes'
 import ArvoreGenealogica from '../ArvoreGenealogica'
+import ProcessosSei from '../ProcessosSei'
 import OrigemDado, { nomeFonte } from '../OrigemDado'
 import { AcessosCidadao, CemiterioCidadao, EducacaoCidadao, estadoArea, ImpostosCidadao, LinhaDoTempoCidadao, MapaAreas, ResumoPortal, SaudeCidadao, useDadosFicha, type ItemMapa } from '../FichaPortal'
 import { reais } from '../ImpostosCidadao'
 
 type Item = { cidadao_id: string; nome: string | null; cpf: string | null; sistemas: string[] | null }
-type Empresa = { documento: string; tipo_pessoa: string | null; nome: string | null; ccms: number[]; possui_debito: boolean | null; imoveis_ativos: number; fontes: string[] }
+type Empresa = { documento: string; tipo_pessoa: string | null; nome: string | null; ccms: number[]; possui_debito: boolean | null; imoveis_ativos: number; fontes: string[]; empresa_id?: string | null }
 
 /** CN4: CNPJ completo (numérico ou alfanumérico), raiz do CNPJ (8) ou CCM vão para a busca de empresa; o resto é cidadão. */
 function ehBuscaDeEmpresa(texto: string): boolean {
@@ -33,6 +34,7 @@ export default function Simulador() {
   const [buscado, setBuscado] = useState('')
   const [lista, setLista] = useState<Item[] | null>(null)
   const [empresas, setEmpresas] = useState<Empresa[] | null>(null)
+  const [fichaEmp, setFichaEmp] = useState<Empresa | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState(false)
   const [recusa, setRecusa] = useState<string | null>(null)
@@ -41,7 +43,7 @@ export default function Simulador() {
 
   const buscar = async (e?: FormEvent) => {
     e?.preventDefault()
-    setErro(false); setRecusa(null); setCarregando(true); setSel(null); setBuscado(busca)
+    setErro(false); setRecusa(null); setCarregando(true); setSel(null); setFichaEmp(null); setBuscado(busca)
     try {
       if (ehBuscaDeEmpresa(busca)) {
         setLista(null); setEmpresas((await api<Empresa[] | null>(`/silver/empresas?busca=${encodeURIComponent(busca)}`)) ?? [])
@@ -67,7 +69,9 @@ export default function Simulador() {
       {erro ? <Erro texto="Não foi possível carregar os dados do cidadão. Tente novamente." onRetry={buscar} />
         : carregando ? <Esqueleto />
         : recusa ? <p className="vazio" role="alert">{recusa}</p>
-        : empresas !== null ? <ListaEmpresas empresas={empresas} buscado={buscado} />
+        : empresas !== null ? (fichaEmp
+          ? <FichaEmpresa empresa={fichaEmp} voltar={() => setFichaEmp(null)} />
+          : <ListaEmpresas empresas={empresas} buscado={buscado} abrir={setFichaEmp} />)
         : lista === null ? !sel && <p className="vazio">Busque um cidadão por nome ou CPF, ou uma empresa pelo CNPJ ou CCM.</p>
         : lista.length === 0 ? <p className="vazio">Nenhum cidadão encontrado para "{buscado}". Confira a grafia ou busque pelo CPF.</p>
         : !sel && (
@@ -89,15 +93,16 @@ export default function Simulador() {
   )
 }
 
-function ListaEmpresas({ empresas, buscado }: { empresas: Empresa[]; buscado: string }) {
+function ListaEmpresas({ empresas, buscado, abrir }: { empresas: Empresa[]; buscado: string; abrir: (e: Empresa) => void }) {
   if (empresas.length === 0) return <p className="vazio">Nenhuma empresa encontrada para "{buscado}" na SIL, no ISS nem no IPTU.</p>
   return (
     <>
-      <p className="sutil">CNPJ e razão social aparecem mascarados (LGPD). A ficha completa da empresa vem numa próxima etapa.</p>
+      <p className="sutil">CNPJ e razão social aparecem mascarados (LGPD). A ficha mostra os processos SEI em que a empresa é interessada.</p>
       <ul className="lista-cartoes" aria-label="Empresas encontradas">
         {empresas.map((e) => (
           <li key={`${e.documento}-${e.ccms.join(',')}`} className="cartao">
             <strong>{e.nome || 'Nome não informado'}</strong>
+            {e.empresa_id && <button className="link-btn" type="button" onClick={() => abrir(e)}>Abrir ficha</button>}
             <div>{e.tipo_pessoa === 'PF' ? 'CPF' : 'CNPJ'}: {e.documento} · CCM: {e.ccms.join(', ') || '—'}</div>
             <div>
               {e.possui_debito === true ? 'Com débito na SIL' : e.possui_debito === false ? 'Sem débito na SIL' : 'Débito: sem informação'}
@@ -107,6 +112,22 @@ function ListaEmpresas({ empresas, buscado }: { empresas: Empresa[]; buscado: st
         ))}
       </ul>
     </>
+  )
+}
+
+function FichaEmpresa({ empresa, voltar }: { empresa: Empresa; voltar: () => void }) {
+  return (
+    <article className="ficha" aria-labelledby="t-ficha-emp">
+      <button className="btn secundario ficha-voltar" type="button" onClick={voltar}>Voltar à busca</button>
+      <header className="ficha-topo">
+        <p className="ficha-kicker">Visão da empresa · esta consulta fica registrada na auditoria</p>
+        <h2 id="t-ficha-emp">{empresa.nome || 'Nome não informado'}</h2>
+        <p className="ficha-doc"><span>CNPJ: {empresa.documento}</span></p>
+      </header>
+      {empresa.empresa_id
+        ? <ProcessosSei caminho={`/gold/empresas/${empresa.empresa_id}/sei`} />
+        : <p className="area-vazia">Nenhum processo SEI</p>}
+    </article>
   )
 }
 
@@ -219,6 +240,7 @@ function FichaCidadao({ id, voltar }: { id: string; voltar: () => void }) {
           </dl>
         )}
       </section>
+      <ProcessosSei caminho={`/gold/cidadaos/${id}/sei`} />
       <ArvoreGenealogica id={id} />
       <div className="portal-grade">
         <SaudeCidadao saude={saude} leitura={leituras.saude} fontes={fontes} />

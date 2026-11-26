@@ -795,8 +795,12 @@ def silver_empresas(req: Request, busca: str = "", u: Usuario = Depends(usuario_
     ou pelo CCM da SIL. Junta SIL (empresas_sil), ISS (municipes PJ) e IPTU (possuidor PJ). Não busca por nome: a razão
     social sai mascarada (SIL16) e a busca por nome a revelaria. A auditoria guarda o modo e a quantidade, nunca o CNPJ."""
     from app.identity import documento as docmod
+    from app.identity.correlacao import empresa_id_por_cnpj
     from app.models.camadas import EmpresaSil, ImovelPossuidor
     from app.services.vinculos import mascara_doc
+
+    def _empresa_id(doc: str | None) -> str | None:
+        return empresa_id_por_cnpj(doc) if doc and docmod.cnpj_valido(doc) else None
     termo = _LIMPA_DOC.sub("", busca or "").upper()
     ccm = int(termo) if termo.isdigit() and len(termo) <= 9 else None
     if re.fullmatch(r"[0-9A-Z]{12}[0-9]{2}", termo):
@@ -831,9 +835,9 @@ def silver_empresas(req: Request, busca: str = "", u: Usuario = Depends(usuario_
         fontes = [f for f, tem in (("SIL", sil), ("ISS", mun), ("IPTU", imoveis)) if tem]
         out.append({"documento": mascara_doc(doc), "tipo_pessoa": "PJ", "nome": mascara_nome(nome), "ccms": [e.ccm for e in sil],
                     "possui_debito": any(e.possui_debito for e in sil) if sil else None, "imoveis_ativos": imoveis,
-                    "fontes": fontes, "mascarado": True})
+                    "fontes": fontes, "mascarado": True, "empresa_id": _empresa_id(doc)})
     out += [{"documento": mascara_doc(e.documento) if e.documento else "—", "tipo_pessoa": e.tipo_pessoa, "nome": mascara_nome(e.nome), "ccms": [e.ccm], "possui_debito": e.possui_debito,
-             "imoveis_ativos": 0, "fontes": ["SIL"], "mascarado": True} for e in sil_sem_doc]
+             "imoveis_ativos": 0, "fontes": ["SIL"], "mascarado": True, "empresa_id": _empresa_id(e.documento)} for e in sil_sem_doc]
     audita(db, u.email, "busca_empresa", "empresas", {"modo": modo, "resultados": len(out)}, _ip(req))
     return out
 

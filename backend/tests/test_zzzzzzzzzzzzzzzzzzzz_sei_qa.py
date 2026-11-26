@@ -61,7 +61,7 @@ def test_qa_cpf_no_nome_mascarado_na_visao():
 
 def test_qa_campos_extras_do_interessado_descartados():
     p = pj.projeta_interessado({"sigla": CPF, "nome": "ZZTESTE", "email": "z@aion.local", "x": {"cpf": CPF}})
-    assert set(p) == {"cpf", "nome", "cidadao_id", "peso", "pendencia"}
+    assert set(p) == {"cpf", "cnpj", "nome", "cidadao_id", "empresa_id", "peso", "pendencia"}
 
 
 def test_qa_documento_sem_nivel_nao_gravado():

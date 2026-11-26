@@ -229,6 +229,21 @@ class CamadasEstado(Base):
     reconstruido_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SeiRevisaoInteressado(Base):
+    """0052: interessado do SEI só com nome (sem CPF/CNPJ). Não vincula ficha; espera revisão."""
+    __tablename__ = "sei_revisao_interessado"
+    __table_args__ = (UniqueConstraint("id_procedimento", "nome_norm", "ambiente_origem",
+                                       name="uq_sei_revisao_interessado"), S)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id_procedimento: Mapped[str] = mapped_column(String(50))
+    protocolo: Mapped[str | None] = mapped_column(String(80))
+    nome: Mapped[str | None] = mapped_column(String(300))
+    nome_norm: Mapped[str] = mapped_column(String(300))
+    pendencia: Mapped[str] = mapped_column(String(40))
+    ambiente_origem: Mapped[str] = mapped_column(String(20))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SeiPaiPendente(Base):
     """0023 (SEI M4): tentativas de consulta por processo pai desconhecido (persistem entre execuções; teto 3)."""
     __tablename__ = "sei_pais_pendentes"

@@ -28,6 +28,7 @@ from app.connectors.sei import projecao as pj
 from app.connectors.sei.cliente import ClienteSei, ErroSei, SeiDesabilitado
 from app.connectors.sei.config import ConfigSei
 from app.connectors.sei.paginacao import lista, paginar
+from app.connectors.sei.revisao import enfileira
 from app.core.audit import audita
 from app.models.camadas import RegistroBronze, SeiProcessoNaoPublico
 from app.models.controle import CheckpointCarga, Execucao, Log, SeiPaiPendente
@@ -38,7 +39,8 @@ TAB_PROCESSOS, TAB_DOCUMENTOS, TAB_ANDAMENTOS = "processos", "documentos", "anda
 LIMITE_PAGINA = 50
 MAX_TENTATIVAS_PAI = 3
 QUAR_RECLASS = "sei_reclassificado_restrito"
-PARAMS_DETALHE = {"sinRetornarInteressados": "S", "sinRetornarAssuntos": "S", "sinRetornarAndamentoGeracao": "S"}
+PARAMS_DETALHE = {"sinRetornarInteressados": "S", "sinRetornarAssuntos": "S", "sinRetornarAndamentoGeracao": "S",
+                  "sinRetornarUltimoAndamento": "S"}
 SEM_LIBERACAO = ("Carga do SEI além da amostra só depois da validação do Leandro "
                  "(SIGPMF_SRC_SEI_CARGA_LIBERADA=true).")
 SEM_AMOSTRA = "Rode e valide a amostra do SEI antes da carga incremental."
@@ -134,6 +136,7 @@ def executar_amostra(db: Session, usuario: str, config: ConfigSei | None = None,
                     else:
                         pd["id_procedimento"] = pd["id_procedimento"] or p["id_procedimento"]  # vínculo p/ reclassificar
                         docs.append(pd)
+            enfileira(db, procs, cfg.ambiente)
             bp = _grava(db, TAB_PROCESSOS, "id_procedimento", procs, ex)
             bd = _grava(db, TAB_DOCUMENTOS, "id_documento", docs, ex)
             cont["processos_gravados"], cont["documentos_gravados"] = len(procs), len(docs)
@@ -314,6 +317,7 @@ def _resolve_pais(db: Session, cli: ClienteSei, ex: Execucao, usuario: str, cfg:
             proc["id_procedimento"] = id_real
             proc["protocolo"] = proc["protocolo"] or prot_txt
             marca_publico(db, ex, usuario, id_real, prot_real, cfg.ambiente)
+            enfileira(db, [proc], cfg.ambiente)
             _grava(db, TAB_PROCESSOS, "id_procedimento", [proc], ex)
             publicos.por_id[id_real] = prot_real
             if prot_real:

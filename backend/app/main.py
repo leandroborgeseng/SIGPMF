@@ -10,6 +10,7 @@ from sqlalchemy.exc import DBAPIError
 from app.api.acesso_ti import ti
 from app.api.rotas import api, publico
 from app.chat.rotas import chat
+from app.connectors.sei.ficha_rotas import ficha_sei
 from app.connectors.sei.rotas import sei
 from app.contagens.rotas import contagens
 from app.core.config import VERSION, get_settings
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(api, prefix="/api")
     app.include_router(explorador, prefix="/api")  # EX1–EX7
     app.include_router(sei, prefix="/api")  # SEI1–SEI8
+    app.include_router(ficha_sei, prefix="/api")  # bloco Processos SEI na ficha (lê a bronze; não chama o SEI)
     app.include_router(ti, prefix="/api")  # PR-06 R5/R6
     app.include_router(contagens, prefix="/api")  # PR-07 J1–J4
     app.include_router(paineis, prefix="/api")  # onda 0: shell de painéis (P01–P08, K01–K04)
