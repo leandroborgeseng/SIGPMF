@@ -907,11 +907,23 @@ def simulador(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: S
 
 @api.get("/gold/cidadaos/{cid}/genealogia")
 def genealogia_do_cidadao(cid: str, req: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(get_db)):
-    """Ascendentes e descendentes (2 níveis). CadÚnico e BU educação aparecem como provedores sem acesso."""
+    """Ascendentes e descendentes (2 níveis) lidos de gold.genealogia_arestas.
+
+    Se a tabela ainda não foi populada ou a consulta passa de 10s, responde 503 com estado indisponível
+    em vez de varrer a cidade.
+    """
     from app.genealogia.arvore import montar
+    from app.genealogia.leitura import ArvoreIndisponivel
     acs.exige(db, u, req, "ficha", dominios=_dominios_cid(db, cid), alvo=f"cidadao:{cid}", menor=_menor_cid(db, cid))
     db.get(CidadaoSistemas, cid) or db.get(Cidadao, cid) or _404()
-    r = montar(db, cid)
+    try:
+        r = montar(db, cid)
+    except ArvoreIndisponivel as exc:
+        db.rollback()
+        audita(db, u.email, "consulta_genealogia", f"cidadao:{cid}",
+               {"estado": "indisponivel", "motivo": exc.motivo}, _ip(req))
+        return JSONResponse(status_code=503, content={
+            "estado": "indisponivel", "motivo": exc.motivo, "mensagem": exc.mensagem})
     audita(db, u.email, "consulta_genealogia", f"cidadao:{cid}",
            {"ascendentes": len(r["ascendentes"]), "descendentes": len(r["descendentes"])}, _ip(req))
     return r

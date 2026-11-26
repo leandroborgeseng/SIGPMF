@@ -139,7 +139,9 @@ def reconstruir(db: Session, progresso=None) -> dict[str, int]:
     db.execute(_SQL_CIDADAO_SISTEMAS)
     if progresso:
         progresso(feitos, total)
-    return {"dados": gravados[0]}
+    from app.genealogia.materializar import materializar
+    gen = materializar(db)
+    return {"dados": gravados[0], "genealogia_arestas": gen["arestas"]}
 
 
 def reconstruir_legado(db: Session) -> dict[str, int]:

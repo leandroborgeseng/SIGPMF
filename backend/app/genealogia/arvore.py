@@ -1,19 +1,19 @@
 """Monta a árvore: até 2 níveis acima e 2 abaixo, sem ciclo e sem duplicar a mesma pessoa.
 
+A ficha não varre a cidade. As arestas vêm de gold.genealogia_arestas (vizinhança indexada).
 Nominais de propósito. ISENTO_K_ANONIMATO: esta resposta não passa por app.paineis.privacidade.
 """
-from sqlalchemy import or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.genealogia.confianca import CRITERIO_FRACO
 from app.genealogia.indice import Indice
+from app.genealogia.leitura import ArvoreIndisponivel, Vizinhanca, carregar, eh_timeout
 from app.genealogia.provedores import REGISTRO, Aresta
 from app.identity.cpf import mascara
 from app.models.camadas import (
     Cidadao,
     EmpresaSil,
-    Endereco,
-    Identificador,
     ImovelPossuidor,
     Vinculo,
 )
@@ -23,17 +23,6 @@ from app.models.prata_modelo import CidadaoEmpresa
 ISENTO_K_ANONIMATO = True
 NIVEIS = 2
 _GERACAO = ("ascendente", "descendente")
-
-
-def _carrega(db: Session, indice: Indice) -> None:
-    cpfs = {i.cidadao_id: i.valor for i in db.scalars(select(Identificador).where(Identificador.tipo == "cpf"))}
-    ends: dict[str, tuple] = {}
-    for e in db.scalars(select(Endereco).order_by(Endereco.mais_recente.desc(), Endereco.id.desc())):
-        ends.setdefault(e.cidadao_id, (e.cep, e.logradouro))
-    for c in db.scalars(select(Cidadao)):
-        cep, log = ends.get(c.cidadao_id, (None, None))
-        indice.garante(nome=c.nome, cpf=cpfs.get(c.cidadao_id), cidadao_id=c.cidadao_id,
-                       nascimento=c.data_nascimento, cep=cep, logradouro=log, origem=f"CIDADAO:{c.cidadao_id}")
 
 
 def _filtra(indice: Indice, arestas: list[Aresta]) -> list[Aresta]:
@@ -130,45 +119,58 @@ def _iso(v):
 
 
 def _indicadores(db: Session, indice: Indice, chaves: list[str]) -> dict[str, dict]:
+    """Contagens só das pessoas da vizinhança. O CPF da SIL e do túmulo usa bronze.cpf_so_digitos, a expressão do índice."""
+    nos = [(chave, indice.no(chave)) for chave in chaves]
+    cids = list({no.cidadao_id for _, no in nos if no.cidadao_id})
+    cpfs = list({no.cpf for _, no in nos if no.cpf})
+    iptu_cid: set[str] = set()
+    iptu_cpf: set[str] = set()
+    sil_cpf: set[str] = set()
+    tum_cid: set[str] = set()
+    tum_cpf: set[str] = set()
+    emp_cid: set[str] = set()
+    emp_cpf: set[str] = set()
+    iss: set[str] = set()
+    if cids:
+        iptu_cid = set(db.scalars(select(ImovelPossuidor.cidadao_id).where(ImovelPossuidor.cidadao_id.in_(cids))))
+        tum_cid = set(db.scalars(select(Vinculo.cidadao_id).where(
+            Vinculo.cidadao_id.in_(cids), Vinculo.sistema == "CEMITERIO")))
+        emp_cid = set(db.scalars(select(EmpresaSil.cidadao_id).where(EmpresaSil.cidadao_id.in_(cids))))
+        iss = set(db.scalars(select(CidadaoEmpresa.cidadao_id).where(CidadaoEmpresa.cidadao_id.in_(cids))))
+    if cpfs:
+        iptu_cpf = set(db.scalars(select(ImovelPossuidor.documento).where(ImovelPossuidor.documento.in_(cpfs))))
+        emp_cpf = set(db.scalars(select(EmpresaSil.documento).where(EmpresaSil.documento.in_(cpfs))))
+        sil_cpf = {r[0] for r in db.execute(text(
+            "SELECT DISTINCT bronze.cpf_so_digitos(cpfcnpjresponsavel) FROM bronze.sil_imoveis_fisico "
+            "WHERE bronze.cpf_so_digitos(cpfcnpjresponsavel) = ANY(:cpfs)"), {"cpfs": cpfs}) if r[0]}
+        tum_cpf = {r[0] for r in db.execute(text(
+            "SELECT DISTINCT bronze.cpf_so_digitos(dados->>'CPF') FROM bronze.registros "
+            "WHERE sistema_origem = 'CEMITERIO' "
+            "AND tabela IN ('Titulares', 'Leilao', 'Pessoas_Autorizadas') "
+            "AND bronze.cpf_so_digitos(dados->>'CPF') = ANY(:cpfs)"), {"cpfs": cpfs}) if r[0]}
+
+    def bloco(fontes, cid, ancora):
+        return {"tem": bool(fontes), "fontes": fontes,
+                "ficha": f"/simulador?cid={cid}#{ancora}" if cid and fontes else None}
+
     out = {}
-    for chave in chaves:
-        no = indice.no(chave)
+    for chave, no in nos:
         cid, cpf = no.cidadao_id, no.cpf
         imovel, tumulo, empresa = [], [], []
-        if cid and db.scalar(select(ImovelPossuidor.id).where(ImovelPossuidor.cidadao_id == cid).limit(1)):
+        if cid and cid in iptu_cid:
             imovel.append("IPTU")
-        if cpf and db.scalar(select(ImovelPossuidor.id).where(ImovelPossuidor.documento == cpf).limit(1)):
-            if "IPTU" not in imovel:
-                imovel.append("IPTU")
-        if cpf and db.execute(text(
-                "SELECT 1 FROM bronze.sil_imoveis_fisico "
-                "WHERE regexp_replace(COALESCE(cpfcnpjresponsavel, ''), '[^0-9]', '', 'g') = :cpf LIMIT 1"),
-                {"cpf": cpf}).first():
+        if cpf and cpf in iptu_cpf and "IPTU" not in imovel:
+            imovel.append("IPTU")
+        if cpf and cpf in sil_cpf:
             imovel.append("SIL")
-        if cid and db.scalar(select(Vinculo.id).where(Vinculo.cidadao_id == cid, Vinculo.sistema == "CEMITERIO").limit(1)):
+        if (cid and cid in tum_cid) or (cpf and cpf in tum_cpf):
             tumulo.append("CEMITERIO")
-        if cpf and db.execute(text(
-                "SELECT 1 FROM bronze.registros WHERE sistema_origem = 'CEMITERIO' "
-                "AND tabela IN ('Titulares', 'Leilao', 'Pessoas_Autorizadas') "
-                "AND regexp_replace(COALESCE(dados->>'CPF', ''), '[^0-9]', '', 'g') = :cpf LIMIT 1"),
-                {"cpf": cpf}).first():
-            if "CEMITERIO" not in tumulo:
-                tumulo.append("CEMITERIO")
-        if cid or cpf:
-            cond = []
-            if cid:
-                cond.append(EmpresaSil.cidadao_id == cid)
-            if cpf:
-                cond.append(EmpresaSil.documento == cpf)
-            if db.scalar(select(EmpresaSil.ccm).where(or_(*cond)).limit(1)):
-                empresa.append("SIL")
-        if cid and db.scalar(select(CidadaoEmpresa.id).where(CidadaoEmpresa.cidadao_id == cid).limit(1)):
+        if (cid and cid in emp_cid) or (cpf and cpf in emp_cpf):
+            empresa.append("SIL")
+        if cid and cid in iss:
             empresa.append("ISS")
-        def bloco(fontes, ancora):
-            return {"tem": bool(fontes), "fontes": fontes,
-                    "ficha": f"/simulador?cid={cid}#{ancora}" if cid and fontes else None}
-        out[chave] = {"imovel": bloco(imovel, "area-imoveis"), "tumulo": bloco(tumulo, "area-tumulos"),
-                      "empresa": bloco(empresa, "area-empresas")}
+        out[chave] = {"imovel": bloco(imovel, cid, "area-imoveis"), "tumulo": bloco(tumulo, cid, "area-tumulos"),
+                      "empresa": bloco(empresa, cid, "area-empresas")}
     return out
 
 
@@ -196,26 +198,48 @@ def _lado(indice, itens, indicadores, nomes) -> list[dict]:
     return saida
 
 
+def _indice_da_vizinhanca(db: Session, cidadao_id: str, viz: Vizinhanca) -> tuple[Indice, list[Aresta]]:
+    indice = Indice()
+    c = db.get(Cidadao, cidadao_id)
+    indice.garante(nome=c.nome if c else None, cidadao_id=cidadao_id,
+                   nascimento=c.data_nascimento if c else None, origem=f"CIDADAO:{cidadao_id}")
+    for p in viz.pessoas:
+        indice.garante(nome=p.nome, cpf=p.cpf, cidadao_id=p.cidadao_id, nascimento=p.nascimento,
+                       origem=f"CIDADAO:{p.cidadao_id}")
+    arestas = []
+    for a in viz.arestas:
+        if a.origem not in indice.por_cid or a.destino not in indice.por_cid:
+            continue
+        arestas.append(Aresta(
+            de=indice.por_cid[a.origem], para=indice.por_cid[a.destino], sentido=a.sentido, base=a.base,
+            forca=a.forca, parentesco=a.parentesco, confianca=a.confianca, criterio=a.criterio or "",
+            fonte_atualizado_em=a.fonte_atualizado_em))
+    return indice, arestas
+
+
 def montar(db: Session, cidadao_id: str) -> dict:
     if not ISENTO_K_ANONIMATO:
         return {"foco": None, "ascendentes": [], "descendentes": [], "laterais": [], "provedores": [],
                 "criterio_vinculo_fraco": CRITERIO_FRACO, "isento_k_anonimato": False}
-    indice = Indice()
-    _carrega(db, indice)
-    brutas: list[Aresta] = []
-    provedores = []
-    for p in REGISTRO:
-        ok = p.disponivel(db)
-        provedores.append({"codigo": p.codigo, "disponivel": ok, "motivo": None if ok else p.motivo()})
-        if ok:
-            brutas.extend(p.arestas(db, indice))
-    foco = indice.por_cid.get(cidadao_id)
-    if foco is None:
-        c = db.get(Cidadao, cidadao_id)
-        foco = indice.garante(nome=c.nome if c else None, cidadao_id=cidadao_id, origem=f"CIDADAO:{cidadao_id}")
-    arv = arvore_de(foco, indice, brutas)
-    chaves = [arv["foco"]] + [c for _n, c, _v, _h in arv["ascendentes"] + arv["descendentes"] + arv["laterais"]]
-    ind = _indicadores(db, indice, chaves)
+    try:
+        viz = carregar(db, cidadao_id)
+        indice, brutas = _indice_da_vizinhanca(db, cidadao_id, viz)
+        provedores = []
+        for p in REGISTRO:
+            ok = p.disponivel(db)
+            provedores.append({"codigo": p.codigo, "disponivel": ok, "motivo": None if ok else p.motivo()})
+        foco = indice.por_cid[cidadao_id]
+        arv = arvore_de(foco, indice, brutas)
+        chaves = [arv["foco"]] + [c for _n, c, _v, _h in arv["ascendentes"] + arv["descendentes"] + arv["laterais"]]
+        ind = _indicadores(db, indice, chaves)
+    except ArvoreIndisponivel:
+        raise
+    except Exception as exc:
+        if eh_timeout(exc):
+            db.rollback()
+            from app.genealogia.leitura import MENSAGENS
+            raise ArvoreIndisponivel("timeout", MENSAGENS["timeout"]) from exc
+        raise
     nomes = {c: indice.no(c).nome for _n, c, _v, _h in arv["ascendentes"] + arv["descendentes"]}
     return {"foco": _pessoa(indice, arv["foco"], ind),
             "ascendentes": _lado(indice, arv["ascendentes"], ind, nomes),
