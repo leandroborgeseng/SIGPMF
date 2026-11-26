@@ -15,6 +15,7 @@ from app.core.security import ADMIN
 from app.identity.cpf import mascara, normaliza, valido
 from app.models.camadas import Cidadao, DadoGold, Identificador, Imovel, ImovelPossuidor, Lancamento
 from app.models.controle import Usuario
+from app.portal_cidadao import ficha as ficha_portal
 from app.portal_cidadao import servico as s
 from app.portal_cidadao.modelos import AcessoCidadao
 
@@ -175,6 +176,83 @@ def meus_dados(req: Request, response: Response, db: Session = Depends(get_db)):
             "totais": {"em_aberto": sum(f(x.valor) or 0 for x in abertos), "vencido": sum(f(x.valor) or 0 for x in vencidos)},
             "lista_limitada": len(lancs) == 300, "csrf": s.resumo_hash("csrf", req.cookies[s.COOKIE]), "expira_em": r.expira_em,
             "aviso_valores": "Valores da última base importada. Juros, descontos e situação atual devem ser confirmados na emissão da guia oficial."}
+
+
+def _cidadao_da_sessao(req: Request, db: Session):
+    """Sessão do portal (cookie opaco). O id da URL e o JWT de servidor não escolhem o cidadão."""
+    r = s.sessao(db, req)
+    c = db.get(Cidadao, r.cidadao_id)
+    if not c or c.falecido:
+        raise HTTPException(401, "Não foi possível abrir o cadastro. Procure o atendimento municipal.")
+    return c
+
+
+def _area(req: Request, response: Response, db: Session, acao: str, montar, detalhe_de=None):
+    c = _cidadao_da_sessao(req, db)
+    corpo = montar(db, c.cidadao_id)
+    detalhe = detalhe_de(corpo) if detalhe_de else {}
+    audita(db, "portal", acao, f"cidadao:{c.cidadao_id}", detalhe, req.client.host if req.client else None)
+    response.headers["Cache-Control"] = "no-store"
+    return corpo
+
+
+@portal.get("/me/cadastro")
+def meu_cadastro(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_cadastro", ficha_portal.cadastro)
+
+
+@portal.get("/me/tributario")
+def meu_tributario(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_tributario", ficha_portal.tributario,
+                 lambda corpo: {"imoveis": corpo["totais"]["imoveis"], "lancamentos": corpo["totais"]["lancamentos"],
+                                "dividas": corpo["totais"]["inscricoes_divida"], "empresas": corpo["totais"]["empresas"]})
+
+
+@portal.get("/me/saude")
+def minha_saude(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_saude", ficha_portal.saude,
+                 lambda corpo: {"atendimentos": corpo["totais"]["atendimentos"], "vacinas": corpo["totais"]["vacinas"]})
+
+
+@portal.get("/me/educacao")
+def minha_educacao(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_educacao", ficha_portal.educacao,
+                 lambda corpo: {"matriculas": len(corpo["matriculas"])})
+
+
+@portal.get("/me/cemiterio")
+def meu_cemiterio(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_cemiterio", ficha_portal.cemiterio,
+                 lambda corpo: {k: len(v) for k, v in corpo.items() if isinstance(v, list)})
+
+
+@portal.get("/me/genealogia")
+def minha_arvore(req: Request, response: Response, db: Session = Depends(get_db)):
+    return _area(req, response, db, "portal_consulta_genealogia", ficha_portal.genealogia,
+                 lambda corpo: {"estado": corpo["estado"], "parentes": len(corpo["parentes"])})
+
+
+@portal.get("/me/linha-do-tempo")
+def minha_linha(req: Request, response: Response, limite: int = 50, antes: str | None = None, db: Session = Depends(get_db)):
+    c = _cidadao_da_sessao(req, db)
+    try:
+        corpo = ficha_portal.linha(db, c.cidadao_id, limite, antes)
+    except ValueError:
+        raise HTTPException(422, "antes deve ser AAAA-MM-DD") from None
+    audita(db, "portal", "portal_consulta_linha_do_tempo", f"cidadao:{c.cidadao_id}",
+           {"eventos": len(corpo["eventos"])}, req.client.host if req.client else None)
+    response.headers["Cache-Control"] = "no-store"
+    return corpo
+
+
+@portal.get("/me/fontes")
+def minhas_fontes(req: Request, response: Response, db: Session = Depends(get_db)):
+    """Quais bases já têm linha. Sem dado de pessoa: separa vazio de base não carregada."""
+    c = _cidadao_da_sessao(req, db)
+    corpo = ficha_portal.fontes(db)
+    audita(db, "portal", "portal_consulta_fontes", f"cidadao:{c.cidadao_id}", {}, req.client.host if req.client else None)
+    response.headers["Cache-Control"] = "no-store"
+    return corpo
 
 
 def integracao(db, cid, operacao, extra=None):
